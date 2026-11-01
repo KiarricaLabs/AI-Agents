@@ -18,6 +18,7 @@ class PolicyEngine:
     def allow(self, subject: str, action: str, resource: str) -> bool:
         rules = self.policy.get("rules", [])
         for r in rules:
-            if r.get("subject") == subject and r.get("action") == action and r.get("resource") == resource:
+            s = r.get("subject"); a = r.get("action"); res = r.get("resource")
+            if (s in (subject, "*") and a in (action, "*") and res in (resource, "*")):
                 return r.get("effect", "deny") == "allow"
         return False  # default deny

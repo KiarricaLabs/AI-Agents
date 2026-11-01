@@ -23,7 +23,9 @@ class TestM2(unittest.TestCase):
         reg = AgentRegistry("/Users/kiarricafavors/personal-ai-team/agents")
         reg.load()
         from core.orchestrator import Orchestrator
-        orch = Orchestrator(reg)
+        from core.policy import PolicyEngine
+        pol = PolicyEngine.from_dict({"rules":[{"subject":"*","action":"*","resource":"*","effect":"allow"}]})
+        orch = Orchestrator(reg, policy=pol)
         res = orch.dispatch("tutor", "hello")
         self.assertEqual(res["agent"], "tutor")
 
@@ -31,7 +33,9 @@ class TestM2(unittest.TestCase):
         reg = AgentRegistry("/Users/kiarricafavors/personal-ai-team/agents")
         reg.load()
         from core.orchestrator import Orchestrator
-        orch = Orchestrator(reg)
+        from core.policy import PolicyEngine
+        pol = PolicyEngine.from_dict({"rules":[{"subject":"*","action":"*","resource":"*","effect":"allow"}]})
+        orch = Orchestrator(reg, policy=pol)
         with self.assertRaises(ValueError):
             orch.dispatch("nope", "hi")
 

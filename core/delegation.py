@@ -16,7 +16,8 @@ def _now():
 
 
 class DelegationService:
-    def __init__(self, db: Database, tenant_id: str, manifests: Dict[str, Any]):
+    def __init__(self, db: Database, tenant_id: str, manifests: Dict[str, Any], policy=None):
+        self.policy = policy
         self.db = db
         self.tenant_id = tenant_id
         self.manifests = manifests
@@ -40,6 +41,12 @@ class DelegationService:
         return True, eff
 
     def delegate(self, from_agent, to_agent, task, depth=0):
+        from core.tracing import start_span, end_span
+        span = start_span("delegation", {"from": from_agent, "to": to_agent})
+        if self.policy is None:
+            raise PermissionError("policy denied")
+        if not self.policy.allow(from_agent, "delegate", to_agent):
+            raise PermissionError("policy denied")
         ok, info = self.can_delegate(from_agent, to_agent, depth)
         outcome = "denied" if not ok else "allowed"
         eff = info if ok else set()

@@ -14,7 +14,9 @@ class TestM4(unittest.TestCase):
             "workspace_architect": {"permissions": ["memory:read"], "delegates_to": ["strategist"], "delegated_from": []},
             "strategist": {"permissions": ["memory:read"], "delegates_to": [], "delegated_from": ["workspace_architect"]},
         }
-        self.ds = DelegationService(db=self.db, tenant_id="t1", manifests=self.manifests)
+        from core.policy import PolicyEngine
+        pol = PolicyEngine.from_dict({"rules":[{"subject":"*","action":"*","resource":"*","effect":"allow"}]})
+        self.ds = DelegationService(db=self.db, tenant_id="t1", manifests=self.manifests, policy=pol)
 
     def tearDown(self):
         try: os.remove(self.path)

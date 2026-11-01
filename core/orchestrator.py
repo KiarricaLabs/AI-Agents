@@ -3,10 +3,19 @@ from agents.registry import AgentRegistry
 
 
 class Orchestrator:
-    def __init__(self, registry: AgentRegistry):
+    def __init__(self, registry: AgentRegistry, policy=None):
+        self.policy = policy
         self.registry = registry
 
     def dispatch(self, agent_name: str, task: str, context: Optional[Dict[str, Any]] = None):
+        from core.tracing import start_span, end_span
+        span = start_span("orchestrator.dispatch", {"agent": agent_name})
+        if self.policy is None:
+            end_span(span)
+            raise PermissionError("policy denied")
+        if not self.policy.allow("system", "dispatch", agent_name):
+            end_span(span)
+            raise PermissionError("policy denied")
         manifest = self.registry.get(agent_name)
         if not manifest:
             raise ValueError(f"Unknown agent: {agent_name}")
@@ -24,4 +33,6 @@ class Orchestrator:
         if not cls:
             raise ValueError(f"No implementation for {agent_name}")
         agent = cls(memory=None)
-        return agent.run(task, context)
+        result = agent.run(task, context)
+        end_span(span)
+        return result

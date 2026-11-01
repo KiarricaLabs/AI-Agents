@@ -37,3 +37,49 @@ def verify_token(tok: str) -> Optional[Dict[str, Any]]:
 
 def hash_refresh(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def issue_refresh(db, tenant_id, user_id, ttl=86400*7):
+    import uuid
+    from datetime import datetime, timezone, timedelta
+    raw = str(uuid.uuid4())
+    family = str(uuid.uuid4())
+    h = hash_refresh(raw)
+    exp = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
+    db.execute(
+        "INSERT INTO refresh_tokens (id,tenant_id,user_id,token_hash,family_id,expires_at,created_at) VALUES (?,?,?,?,?,?,?)",
+        (str(uuid.uuid4()), tenant_id, user_id, h, family, exp, datetime.now(timezone.utc).isoformat()))
+    return raw, family
+
+
+def rotate_refresh(db, old_raw, tenant_id, user_id):
+    h = hash_refresh(old_raw)
+    rows = db.query("SELECT * FROM refresh_tokens WHERE token_hash=? AND tenant_id=? AND user_id=?", (h, tenant_id, user_id))
+    if not rows:
+        return None, "not_found"
+    r = rows[0]
+    if r["revoked"] or r["reused"]:
+        # reuse detected: revoke entire family
+        db.execute("UPDATE refresh_tokens SET revoked=1 WHERE family_id=?", (r["family_id"],))
+        return None, "reuse_detected"
+    from datetime import datetime, timezone
+    if r["expires_at"] < datetime.now(timezone.utc).isoformat():
+        return None, "expired"
+    # mark old as reused
+    db.execute("UPDATE refresh_tokens SET reused=1 WHERE id=?", (r["id"],))
+    # issue new in same family
+    import uuid
+    new_raw = str(uuid.uuid4())
+    new_h = hash_refresh(new_raw)
+    from datetime import timedelta
+    exp = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    db.execute(
+        "INSERT INTO refresh_tokens (id,tenant_id,user_id,token_hash,family_id,expires_at,created_at) VALUES (?,?,?,?,?,?,?)",
+        (str(uuid.uuid4()), tenant_id, user_id, new_h, r["family_id"], exp, datetime.now(timezone.utc).isoformat()))
+    return new_raw, "ok"
+
+
+def revoke_refresh(db, raw, tenant_id, user_id):
+    h = hash_refresh(raw)
+    db.execute("UPDATE refresh_tokens SET revoked=1 WHERE token_hash=? AND tenant_id=? AND user_id=?", (h, tenant_id, user_id))
+    return True

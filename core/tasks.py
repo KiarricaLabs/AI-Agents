@@ -26,7 +26,8 @@ def _valid_payload(payload):
 
 
 class TaskService:
-    def __init__(self, db: Database, tenant_id: str, user_id: str, executor: Optional[Callable] = None):
+    def __init__(self, db: Database, tenant_id: str, user_id: str, executor: Optional[Callable] = None, policy=None):
+        self.policy = policy
         self.db = db
         self.tenant_id = tenant_id
         self.user_id = user_id
@@ -72,12 +73,18 @@ class TaskService:
         return True
 
     def run(self, task_id: str) -> Dict[str, Any]:
+        from core.tracing import start_span, end_span
+        span = start_span("task.run", {"task_id": task_id})
         with self._lock:
             t = self._get(task_id)
             if not t:
                 raise ValueError("task not found")
             if t["status"] == "cancelled":
                 return {"ok": False, "error": "cancelled"}
+            if self.policy is None:
+                return {"ok": False, "error": "policy denied"}
+            if not self.policy.allow(t["agent_id"], "execute", "task"):
+                return {"ok": False, "error": "policy denied"}
             if t["status"] == "done":
                 return {"ok": True, "result": json.loads(t["result_json"]) if t["result_json"] else None}
             # mark running

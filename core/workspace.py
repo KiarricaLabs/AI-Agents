@@ -100,10 +100,11 @@ class DeliverableService:
         self.db.execute("UPDATE deliverable_versions SET status='approved' WHERE id=?", (version_id,))
         self.db.execute("INSERT INTO deliverable_approvals (id,tenant_id,version_id,user_id,decision,created_at) VALUES (?,?,?,?,?,?)",
                         (str(uuid.uuid4()), self.tenant_id, version_id, user_id, "approved", _now()))
-    def reject(self, version_id, user_id):
+    def reject(self, version_id, user_id, reason=""):
         self.db.execute("UPDATE deliverable_versions SET status='rejected' WHERE id=?", (version_id,))
+        decision = ("rejected:" + reason) if reason else "rejected"
         self.db.execute("INSERT INTO deliverable_approvals (id,tenant_id,version_id,user_id,decision,created_at) VALUES (?,?,?,?,?,?)",
-                        (str(uuid.uuid4()), self.tenant_id, version_id, user_id, "rejected", _now()))
+                        (str(uuid.uuid4()), self.tenant_id, version_id, user_id, decision, _now()))
     def list_versions(self, deliverable_id):
         return self.db.query("SELECT * FROM deliverable_versions WHERE tenant_id=? AND deliverable_id=? ORDER BY version",
                              (self.tenant_id, deliverable_id))

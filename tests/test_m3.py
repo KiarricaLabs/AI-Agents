@@ -8,7 +8,9 @@ class TestM3(unittest.TestCase):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd); os.remove(self.path)
         self.db = Database(path=self.path, tenant_id="t1")
-        self.ts = TaskService(db=self.db, tenant_id="t1", user_id="u1", executor=lambda a, p: {"done": True})
+        from core.policy import PolicyEngine
+        pol = PolicyEngine.from_dict({"rules":[{"subject":"*","action":"*","resource":"*","effect":"allow"}]})
+        self.ts = TaskService(db=self.db, tenant_id="t1", user_id="u1", executor=lambda a, p: {"done": True}, policy=pol)
 
     def tearDown(self):
         try: os.remove(self.path)
@@ -32,7 +34,9 @@ class TestM3(unittest.TestCase):
     def test_retry(self):
         tid = self.ts.create("tutor", {"msg": "hi"})
         # force fail by bad executor? use new service with failing executor
-        ts2 = TaskService(db=self.db, tenant_id="t1", user_id="u1", executor=lambda a, p: (_ for _ in ()).throw(Exception("boom")))
+        from core.policy import PolicyEngine
+        pol = PolicyEngine.from_dict({"rules":[{"subject":"*","action":"*","resource":"*","effect":"allow"}]})
+        ts2 = TaskService(db=self.db, tenant_id="t1", user_id="u1", executor=lambda a, p: (_ for _ in ()).throw(Exception("boom")), policy=pol)
         tid2 = ts2.create("tutor", {"msg": "hi"})
         ts2.run(tid2)
         t = ts2.get(tid2)
@@ -47,11 +51,15 @@ class TestM3(unittest.TestCase):
 
     def test_tenant_isolation(self):
         tid = self.ts.create("tutor", {"msg": "hi"})
-        ts2 = TaskService(db=Database(path=self.path, tenant_id="t2"), tenant_id="t2", user_id="u1")
+        from core.policy import PolicyEngine
+        pol = PolicyEngine.from_dict({"rules":[{"subject":"*","action":"*","resource":"*","effect":"allow"}]})
+        ts2 = TaskService(db=Database(path=self.path, tenant_id="t2"), tenant_id="t2", user_id="u1", policy=pol)
         self.assertIsNone(ts2.get(tid))
 
     def test_user_ownership(self):
-        ts2 = TaskService(db=self.db, tenant_id="t1", user_id="u2")
+        from core.policy import PolicyEngine
+        pol = PolicyEngine.from_dict({"rules":[{"subject":"*","action":"*","resource":"*","effect":"allow"}]})
+        ts2 = TaskService(db=self.db, tenant_id="t1", user_id="u2", policy=pol)
         tid = self.ts.create("tutor", {"msg": "hi"})
         self.assertIsNone(ts2.get(tid))
 

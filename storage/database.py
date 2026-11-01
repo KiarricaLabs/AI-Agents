@@ -80,6 +80,17 @@ CREATE TABLE IF NOT EXISTS agent_private_memory (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    family_id TEXT NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    reused INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS memory_audit (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,

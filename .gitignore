@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local SQLite database (runtime data — backed up separately, not committed)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Environment & secrets
+.env
+.env.*
+*.local
+
+# Frontend build/test artifacts (node_modules & dist covered by frontend/.gitignore)
+frontend/test-results/
+frontend/playwright-report/
+
+# OS / editor
+.DS_Store
