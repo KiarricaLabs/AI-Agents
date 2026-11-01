@@ -5,4 +5,4 @@ class StrategistAgent(BaseAgent):
     name = "strategist"
 
     def run(self, task, context=None):
-        return {"agent": self.name, "reply": f"Strategist: {task}"}
+        return self._ground(task, context)

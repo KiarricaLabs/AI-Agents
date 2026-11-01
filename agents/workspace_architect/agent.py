@@ -5,4 +5,4 @@ class WorkspaceArchitectAgent(BaseAgent):
     name = "workspace_architect"
 
     def run(self, task, context=None):
-        return {"agent": self.name, "reply": f"WorkspaceArchitect: {task}"}
+        return self._ground(task, context)

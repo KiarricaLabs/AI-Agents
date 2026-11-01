@@ -5,4 +5,4 @@ class TutorAgent(BaseAgent):
     name = "tutor"
 
     def run(self, task, context=None):
-        return {"agent": self.name, "reply": f"Tutor: {task}"}
+        return self._ground(task, context)

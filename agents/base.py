@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from core.memory import MemoryService
 
 
@@ -8,9 +8,127 @@ class BaseAgent:
     name: str = "base"
     manifest: Dict[str, Any] = {}
 
-    def __init__(self, memory: MemoryService, model_router=None):
+    def __init__(self, memory: Optional[MemoryService] = None, router=None,
+                 manifest: Optional[Dict[str, Any]] = None, user_id: Optional[str] = None,
+                 tools=None, policy=None):
         self.memory = memory
-        self.model_router = model_router
+        self.router = router
+        self.manifest = manifest or {}
+        self.user_id = user_id
+        self.tools = tools
+        self.policy = policy
 
     def run(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         raise NotImplementedError
+
+    # --- Grounding + generation ---
+
+    def _ground(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Retrieve manifest-scoped memory, generate, and collect (approval-gated) proposals."""
+        facts: List[Dict[str, Any]] = []
+        proposal_ids: List[str] = []
+        if self.memory is not None and self.user_id is not None:
+            from core.memory_scope import ScopedMemory
+            scoped = ScopedMemory(self.memory, self.manifest, self.name, self.user_id, policy=self.policy)
+            facts = scoped.retrieve()
+            proposal_ids = self._collect_proposals(scoped, context)
+        tool_results = self._run_tools(context)
+        result = self._generate(task, context, facts=facts)
+        return {
+            "agent": self.name,
+            "reply": result.text,
+            "provider": result.provider,
+            "model": result.model,
+            "location": result.location,
+            "facts": facts,
+            "proposals": proposal_ids,
+            "tool_results": tool_results,
+        }
+
+    def _collect_proposals(self, scoped, context) -> List[str]:
+        ids: List[str] = []
+        for proposal in (context or {}).get("memory_proposals", []) or []:
+            pid = scoped.propose(
+                kind=proposal.get("kind", "fact"),
+                key=proposal["key"],
+                value=proposal["value"],
+                reason=proposal.get("reason"),
+                context=proposal.get("context"),
+                confidence=float(proposal.get("confidence", 0.5)),
+            )
+            ids.append(pid)
+        return ids
+
+    def _run_tools(self, context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Execute manifest-declared, policy-allowed tool calls from the context.
+
+        Each `context["tool_calls"]` entry is `{"tool": ..., "args": ..., "approved": ...}`.
+        Failures are isolated per-call so one failing call does not abort the others.
+        """
+        if self.tools is None:
+            return []
+        results: List[Dict[str, Any]] = []
+        calls = (context or {}).get("tool_calls") or []
+        if not isinstance(calls, list):
+            return []
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            tool_name = call.get("tool")
+            args = call.get("args") or {}
+            try:
+                r = self.tools.invoke(
+                    agent_id=self.name,
+                    tool_name=tool_name,
+                    args=args,
+                    manifest=self.manifest,
+                    policy=self.policy,
+                    user_id=self.user_id,
+                    approved=bool(call.get("approved", False)),
+                    context=context,
+                )
+                results.append({
+                    "tool": tool_name,
+                    "ok": r.get("ok", False),
+                    "result": r.get("result"),
+                    "error": r.get("error"),
+                })
+            except (PermissionError, ValueError) as e:
+                results.append({"tool": tool_name, "ok": False, "error": str(e)})
+            except Exception as e:  # defensive: never let one call crash the agent
+                results.append({"tool": tool_name, "ok": False, "error": str(e)})
+        return results
+
+    def _generate(self, task: str, context: Optional[Dict[str, Any]] = None,
+                  facts: Optional[List[Dict[str, Any]]] = None):
+        if self.router is None:
+            raise RuntimeError(f"Agent '{self.name}' has no ModelRouter configured.")
+        spec = self.manifest.get("model", {})
+        return self.router.complete(
+            agent_id=self.name,
+            prompt=task,
+            system=self._system_prompt(facts),
+            model_spec=spec,
+            context=context,
+        )
+
+    def _system_prompt(self, facts: Optional[List[Dict[str, Any]]] = None) -> str:
+        identity = self.manifest.get("identity", {})
+        role = identity.get("role", self.name)
+        personality = identity.get("personality", "")
+        capabilities = ", ".join(self.manifest.get("capabilities", []))
+        parts = [f"You are {role}."]
+        if personality:
+            parts.append(f"Personality: {personality}.")
+        if capabilities:
+            parts.append(f"Capabilities: {capabilities}.")
+        if facts:
+            from core.memory_scope import ScopedMemory
+            lines = ScopedMemory.format_facts(facts)
+            parts.append(
+                "\nKNOWN FACTS (approved memory - treat as established):\n- " + "\n- ".join(lines)
+            )
+            parts.append(
+                "\nDo not assert as fact anything not in KNOWN FACTS. Label anything else you add as an inference."
+            )
+        return "\n".join(parts)

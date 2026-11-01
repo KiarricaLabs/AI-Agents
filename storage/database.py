@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS memory_proposals (
     key TEXT NOT NULL,
     value TEXT NOT NULL,
     source TEXT,
+    reason TEXT,
+    context TEXT,
     confidence REAL DEFAULT 0.5,
     status TEXT NOT NULL DEFAULT 'proposed',
     expires_at TEXT,
@@ -176,6 +178,9 @@ CREATE TABLE IF NOT EXISTS goals (
     title TEXT NOT NULL,
     priority INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'open',
+    progress INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS assignments (
@@ -214,6 +219,41 @@ CREATE TABLE IF NOT EXISTS deliverable_approvals (
     decision TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tool_executions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    task_id TEXT,
+    tool TEXT NOT NULL,
+    params_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goal_events (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    detail TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goal_update_proposals (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    agent_id TEXT,
+    proposed_json TEXT NOT NULL,
+    reason TEXT,
+    context TEXT,
+    confidence REAL DEFAULT 0.5,
+    base_version INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    created_at TEXT NOT NULL,
+    decided_at TEXT
+);
 """
 
 import uuid
@@ -231,12 +271,48 @@ class Database:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as c:
             c.executescript(SCHEMA)
+            self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))
             c.commit()
 
+    @staticmethod
+    def _apply_migrations(c):
+        # Additive, idempotent migrations for pre-existing databases.
+        # Each is guarded so a freshly-created DB (already has the column) skips it.
+        migrations = [
+            "ALTER TABLE memory_proposals ADD COLUMN reason TEXT",
+            "ALTER TABLE memory_proposals ADD COLUMN context TEXT",
+            "ALTER TABLE goals ADD COLUMN progress INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE goals ADD COLUMN updated_at TEXT",
+            "ALTER TABLE goals ADD COLUMN version INTEGER NOT NULL DEFAULT 0",
+        ]
+        for m in migrations:
+            try:
+                c.execute(m)
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
     def _connect(self):
         return sqlite3.connect(self.path)
+
+    @contextmanager
+    def transaction(self):
+        """Yield a raw connection inside one transaction, serialized by _lock.
+
+        Callers must use the yielded cursor directly and MUST NOT call
+        self.execute / self.query inside the block (the lock is non-reentrant).
+        """
+        with self._lock:
+            c = self._connect()
+            try:
+                yield c
+                c.commit()
+            except Exception:
+                c.rollback()
+                raise
+            finally:
+                c.close()
 
     def execute(self, sql, params=(), tenant_id=None):
         tid = tenant_id or self.default_tenant

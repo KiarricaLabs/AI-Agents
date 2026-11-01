@@ -36,6 +36,11 @@ class MemoryService:
             "INSERT INTO memory_audit (id,tenant_id,user_id,agent_id,action,target_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?)",
             (str(uuid.uuid4()), self.tenant_id, user_id, agent_id, action, target_id, detail, _now()))
 
+    def record_retrieval(self, user_id: str, agent_id: str, categories: List[str]):
+        """Audit a memory retrieval without recording any memory contents."""
+        cats = ",".join(categories or [])
+        self._audit(user_id, agent_id, "retrieve", None, f"categories={cats}")
+
     # --- Profile memory (shared, approved only) ---
     def list_profile(self, user_id: str, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
         rows = self.db.query(
@@ -90,8 +95,9 @@ class MemoryService:
     # --- Proposals ---
     def propose(self, user_id: str, agent_id: str, kind: str, key: str, value: str,
                 source: str = "conversation", confidence: float = 0.5,
-                expires_at: Optional[str] = None) -> str:
-        if _is_sensitive(f"{key} {value}"):
+                expires_at: Optional[str] = None,
+                reason: Optional[str] = None, context: Optional[str] = None) -> str:
+        if _is_sensitive(f"{key} {value} {reason or ''} {context or ''}"):
             raise ValueError("Sensitive content cannot be proposed as profile memory.")
         if _is_temporary(f"{key} {value}") and confidence < 0.9:
             raise ValueError("Temporary content requires high confidence.")
@@ -99,9 +105,9 @@ class MemoryService:
             raise ValueError("Confidence too low to propose.")
         pid = str(uuid.uuid4())
         self.db.execute(
-            "INSERT INTO memory_proposals (id,tenant_id,user_id,agent_id,kind,key,value,source,confidence,status,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (pid, self.tenant_id, user_id, agent_id, kind, key, value, source, confidence,
-             "proposed", expires_at, _now()))
+            "INSERT INTO memory_proposals (id,tenant_id,user_id,agent_id,kind,key,value,source,reason,context,confidence,status,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (pid, self.tenant_id, user_id, agent_id, kind, key, value, source, reason, context,
+             confidence, "proposed", expires_at, _now()))
         self._audit(user_id, agent_id, "propose", pid, f"{kind}:{key}")
         return pid
 

@@ -1,4 +1,6 @@
 from __future__ import annotations
+import json
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -36,20 +38,199 @@ class ProjectService:
         return self.db.query("SELECT * FROM projects WHERE tenant_id=? AND user_id=?", (self.tenant_id, self.user_id))
 
 
+GOAL_STATUS_TRANSITIONS = {
+    "open": {"in_progress", "cancelled"},
+    "in_progress": {"done", "cancelled", "open"},
+    "done": set(),
+    "cancelled": set(),
+}
+GOAL_PATCH_KEYS = {"title", "priority", "status", "progress"}
+_GOAL_SENSITIVE = ("password", "secret", "token", "api_key", "api-key",
+                   "master_key", "private_key", "client_secret")
+
+
+def _goal_has_secret(text):
+    low = str(text or "").lower()
+    return any(p in low for p in _GOAL_SENSITIVE)
+
+
 class GoalService:
-    def __init__(self, db, tenant_id, user_id):
-        self.db = db; self.tenant_id = tenant_id; self.user_id = user_id
+    def __init__(self, db, tenant_id, user_id, policy=None):
+        self.db = db; self.tenant_id = tenant_id; self.user_id = user_id; self.policy = policy
+
+    def _get(self, goal_id):
+        rows = self.db.query(
+            "SELECT * FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+            (goal_id, self.tenant_id, self.user_id))
+        return rows[0] if rows else None
+
+    def _event(self, goal_id, status, detail=None):
+        self.db.execute(
+            "INSERT INTO goal_events (id,tenant_id,goal_id,status,detail,created_at) VALUES (?,?,?,?,?,?)",
+            (str(uuid.uuid4()), self.tenant_id, goal_id, status, detail, _now()))
+
     def create(self, project_id, title, priority=0):
+        if _goal_has_secret(title):
+            raise ValueError("goal title contains a secret")
         gid = str(uuid.uuid4())
-        self.db.execute("INSERT INTO goals (id,tenant_id,project_id,user_id,title,priority,created_at) VALUES (?,?,?,?,?,?,?)",
-                        (gid, self.tenant_id, project_id, self.user_id, title, priority, _now()))
+        now = _now()
+        self.db.execute(
+            "INSERT INTO goals (id,tenant_id,project_id,user_id,title,priority,status,progress,updated_at,version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (gid, self.tenant_id, project_id, self.user_id, title, priority, "open", 0, now, 0, now))
+        self._event(gid, "created", f"title={title}")
         return gid
+
+    def get(self, goal_id):
+        return self._get(goal_id)
+
     def list(self, project_id=None):
         if project_id:
             return self.db.query("SELECT * FROM goals WHERE tenant_id=? AND user_id=? AND project_id=? ORDER BY priority DESC",
                                  (self.tenant_id, self.user_id, project_id))
         return self.db.query("SELECT * FROM goals WHERE tenant_id=? AND user_id=? ORDER BY priority DESC",
                              (self.tenant_id, self.user_id))
+
+    def list_all(self):
+        return self.list()
+
+    def list_assigned(self, agent_id):
+        return self.db.query(
+            "SELECT g.* FROM goals g JOIN assignments a ON a.goal_id=g.id AND a.tenant_id=g.tenant_id AND a.user_id=g.user_id "
+            "WHERE g.tenant_id=? AND g.user_id=? AND a.agent_id=? ORDER BY g.priority DESC",
+            (self.tenant_id, self.user_id, agent_id))
+
+    # --- goal update proposals (approval-gated) ---
+    def propose_update(self, goal_id, agent_id, patch, reason=None, context=None,
+                       confidence=0.5, manifest=None, policy=None):
+        pol = policy if policy is not None else self.policy
+        perms = set((manifest or {}).get("permissions", []) or [])
+        if "goal:propose" not in perms:
+            raise PermissionError("agent lacks 'goal:propose' permission")
+        if pol is None or not pol.allow(agent_id, "goal", "propose"):
+            raise PermissionError("policy denies goal proposal")
+        goal = self._get(goal_id)
+        if goal is None:
+            raise ValueError("goal not found")
+        if _goal_has_secret(reason) or _goal_has_secret(context):
+            raise ValueError("proposal contains a secret")
+        patch = self._validate_patch(patch)
+        pid = str(uuid.uuid4())
+        self.db.execute(
+            "INSERT INTO goal_update_proposals (id,tenant_id,user_id,goal_id,agent_id,proposed_json,reason,context,confidence,base_version,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (pid, self.tenant_id, self.user_id, goal_id, agent_id, json.dumps(patch), reason, context, confidence, goal["version"], "proposed", _now()))
+        return pid
+
+    def _validate_patch(self, patch):
+        if not isinstance(patch, dict):
+            raise ValueError("patch must be a dict")
+        out = {}
+        for k, v in patch.items():
+            if k not in GOAL_PATCH_KEYS:
+                raise ValueError(f"invalid patch key: {k}")
+            out[k] = v
+        if not out:
+            raise ValueError("empty patch")
+        if "title" in out and (not isinstance(out["title"], str) or _goal_has_secret(out["title"])):
+            raise ValueError("invalid goal title")
+        if "priority" in out and (not isinstance(out["priority"], int) or isinstance(out["priority"], bool)):
+            raise ValueError("priority must be an int")
+        if "progress" in out:
+            p = out["progress"]
+            if not isinstance(p, int) or isinstance(p, bool) or p < 0 or p > 100:
+                raise ValueError("progress must be an int 0..100")
+        if "status" in out and out["status"] not in GOAL_STATUS_TRANSITIONS:
+            raise ValueError("invalid goal status")
+        return out
+
+    def _compute_update(self, goal, patch):
+        title = patch.get("title", goal["title"])
+        priority = patch.get("priority", goal["priority"])
+        status = patch.get("status", goal["status"])
+        progress = patch.get("progress", goal["progress"])
+        if status != goal["status"]:
+            allowed = GOAL_STATUS_TRANSITIONS.get(goal["status"], set())
+            if status not in allowed:
+                raise ValueError(f"invalid transition {goal['status']}->{status}")
+        if progress < 0 or progress > 100:
+            raise ValueError("progress out of range")
+        if status == "done" and progress != 100:
+            raise ValueError("done requires progress=100")
+        if progress == 100 and status != "done":
+            raise ValueError("progress=100 requires status=done")
+        return title, priority, status, progress
+
+    def approve_update(self, proposal_id, user_id):
+        # Ownership/state/staleness pre-check on the autocommit path so a
+        # 'stale' mark persists (independent of the atomic-apply transaction).
+        rows = self.db.query(
+            "SELECT * FROM goal_update_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+            (proposal_id, self.tenant_id, self.user_id))
+        if not rows:
+            raise ValueError("proposal not found")
+        prow = rows[0]
+        if prow["status"] != "proposed":
+            raise ValueError("proposal already decided")
+        grows = self.db.query(
+            "SELECT * FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+            (prow["goal_id"], self.tenant_id, self.user_id))
+        if not grows:
+            raise ValueError("goal not found")
+        grow = grows[0]
+        if prow["base_version"] != grow["version"]:
+            self.db.execute(
+                "UPDATE goal_update_proposals SET status='stale', decided_at=? WHERE id=?",
+                (_now(), proposal_id))
+            raise ValueError("goal changed since proposal; re-review required")
+
+        patch = json.loads(prow["proposed_json"])
+        title, priority, status, progress = self._compute_update(grow, patch)
+
+        # Atomic apply inside one transaction; the version guard prevents any
+        # lost update against a concurrent external writer.
+        with self.db.transaction() as c:
+            c.row_factory = sqlite3.Row
+            now = _now()
+            cur = c.execute(
+                "UPDATE goals SET title=?, priority=?, status=?, progress=?, updated_at=?, version=version+1 "
+                "WHERE id=? AND tenant_id=? AND version=?",
+                (title, priority, status, progress, now, grow["id"], self.tenant_id, prow["base_version"]))
+            if cur.rowcount == 0:
+                raise ValueError("goal changed concurrently; re-review required")
+            c.execute(
+                "INSERT INTO goal_events (id,tenant_id,goal_id,status,detail,created_at) VALUES (?,?,?,?,?,?)",
+                (str(uuid.uuid4()), self.tenant_id, grow["id"], "updated",
+                 f"title={title} status={status} progress={progress}", now))
+            c.execute("UPDATE goal_update_proposals SET status='approved', decided_at=? WHERE id=?", (now, proposal_id))
+        return True
+
+    def reject_update(self, proposal_id, user_id, reason=None):
+        rows = self.db.query(
+            "SELECT * FROM goal_update_proposals WHERE id=? AND tenant_id=? AND user_id=? AND status='proposed'",
+            (proposal_id, self.tenant_id, self.user_id))
+        if not rows:
+            raise ValueError("proposal not found or already decided")
+        self.db.execute("UPDATE goal_update_proposals SET status='rejected', decided_at=? WHERE id=?", (_now(), proposal_id))
+        return True
+
+    def expire_stale(self):
+        rows = self.db.query(
+            "SELECT p.id AS pid FROM goal_update_proposals p JOIN goals g ON g.id=p.goal_id AND g.tenant_id=p.tenant_id "
+            "WHERE p.tenant_id=? AND p.user_id=? AND p.status='proposed' AND p.base_version != g.version",
+            (self.tenant_id, self.user_id))
+        for r in rows:
+            self.db.execute("UPDATE goal_update_proposals SET status='stale', decided_at=? WHERE id=?", (_now(), r["pid"]))
+        return len(rows)
+
+    def list_proposals(self, status=None):
+        if status:
+            return self.db.query("SELECT * FROM goal_update_proposals WHERE tenant_id=? AND user_id=? AND status=?",
+                                 (self.tenant_id, self.user_id, status))
+        return self.db.query("SELECT * FROM goal_update_proposals WHERE tenant_id=? AND user_id=? ORDER BY created_at DESC",
+                             (self.tenant_id, self.user_id))
+
+    def list_events(self, goal_id):
+        return self.db.query("SELECT * FROM goal_events WHERE tenant_id=? AND goal_id=? ORDER BY created_at",
+                             (self.tenant_id, goal_id))
 
 
 class AssignmentService:

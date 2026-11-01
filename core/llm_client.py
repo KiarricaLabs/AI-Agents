@@ -16,7 +16,7 @@ class LLMClient:
         self.base_url = base_url or AI_BASE_URL
         self.api_key = api_key if api_key is not None else AI_API_KEY
 
-    def complete(self, prompt: str, system: str = "") -> str:
+    def complete(self, prompt: str, system: str = "", timeout: int = 120) -> str:
         if self.provider == "ollama":
             payload = {"model": self.model, "prompt": prompt, "system": system, "stream": False}
             req = urllib.request.Request(
@@ -24,7 +24,7 @@ class LLMClient:
                 data=json.dumps(payload).encode(),
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read())
             return data.get("response", "").strip()
         # Cloud providers require explicit api_key; fail loudly if missing
