@@ -14,3 +14,9 @@ AI_API_KEY = os.getenv("PAT_AI_API_KEY", "")
 
 MASTER_KEY = os.getenv("PAT_MASTER_KEY", "")  # Fernet key; required for credentials
 DEFAULT_TENANT = os.getenv("PAT_DEFAULT_TENANT", "local")
+
+# Local development identity (trusted, server-side, config-supplied).
+# When enabled and no valid token is presented, requests run as this identity.
+# Set PAT_LOCAL_MODE=0 (or "false") to require authenticated tokens (fail-closed).
+LOCAL_MODE = os.getenv("PAT_LOCAL_MODE", "1").strip().lower() in ("1", "true", "yes", "on")
+LOCAL_USER = os.getenv("PAT_LOCAL_USER", "local")

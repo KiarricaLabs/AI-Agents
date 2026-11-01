@@ -273,3 +273,88 @@ describe("Episodes", () => {
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
 });
+
+describe("Agents", () => {
+  const agentsFixture = () => ({
+    [`${API}/agents`]: () =>
+      ok({
+        agents: [
+          { name: "tutor", role: "Personal tutor", personality: "patient", capabilities: ["explain"] },
+          { name: "strategist", role: "Strategist", capabilities: ["plan"] },
+          { name: "executive_assistant", role: "Executive Assistant" },
+          { name: "communications", role: "Communications" },
+          { name: "soundboard", role: "Soundboard" },
+          { name: "workspace_architect", role: "Workspace Architect" },
+        ],
+      }),
+  });
+
+  it("lists all six agents and shows a selection prompt", async () => {
+    globalThis.fetch = makeFetch(agentsFixture()) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    expect(await screen.findByRole("button", { name: "tutor" })).toBeInTheDocument();
+    for (const n of ["strategist", "executive_assistant", "communications", "soundboard", "workspace_architect"]) {
+      expect(screen.getByRole("button", { name: n })).toBeInTheDocument();
+    }
+    expect(screen.getByText(/Select an agent to begin/)).toBeInTheDocument();
+  });
+
+  it("submits a task and renders the reply with its execution location", async () => {
+    const fn = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/tutor/run`]: () =>
+        ok({
+          agent: "tutor",
+          reply: "Gravity pulls objects together.",
+          location: "local:ollama:llama3.1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+        }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
+      target: { value: "Explain gravity" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/agents/tutor/run`,
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ task: "Explain gravity" }) })
+      );
+    });
+    expect(await screen.findByText("Gravity pulls objects together.")).toBeInTheDocument();
+    expect(screen.getByText(/Processed at: local:ollama:llama3.1/)).toBeInTheDocument();
+  });
+
+  it("shows an error when agent execution fails", async () => {
+    const fn = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/strategist/run`]: () =>
+        Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve({ detail: "Ollama unreachable" }) }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "strategist" }));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
+      target: { value: "Plan the quarter" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    expect(await screen.findByText(/Ollama unreachable/)).toBeInTheDocument();
+  });
+
+  it("keeps the run button disabled with no task entered", async () => {
+    globalThis.fetch = makeFetch(agentsFixture()) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
+    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+  });
+});
