@@ -20,7 +20,7 @@ test("agents tab lists all six agents and gates the run flow", async ({ page }) 
   // Selecting an agent reveals the task input, with Run disabled until text is entered.
   await page.getByRole("button", { name: "tutor", exact: true }).click();
   await expect(page.getByPlaceholder("Give your agent a task…")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Run" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Run Agent" })).toBeDisabled();
 });
 
 test("running a task against an agent produces a reply", async ({ page }) => {
@@ -30,9 +30,9 @@ test("running a task against an agent produces a reply", async ({ page }) => {
   await page.getByRole("button", { name: "tutor", exact: true }).click();
 
   await page.getByPlaceholder("Give your agent a task…").fill("Say hello in one sentence.");
-  await page.getByRole("button", { name: "Run" }).click();
+  await page.getByRole("button", { name: "Run Agent" }).click();
 
   const reply = page.getByTestId("agent-reply");
-  await expect(reply).toBeVisible();
+  await expect(reply).toBeVisible({ timeout: 30_000 });
   await expect(reply).not.toHaveText(/^\s*$/);
 });

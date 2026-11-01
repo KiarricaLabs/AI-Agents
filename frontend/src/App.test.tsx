@@ -68,7 +68,7 @@ describe("Workspaces", () => {
   it("disables create when offline", async () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error("offline"))) as any;
     render(<App />);
-    await screen.findByText(/offline - read only/);
+    await screen.findByText(/read-only/);
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
 });
@@ -112,7 +112,7 @@ describe("Goals", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "goals" }));
     expect(await screen.findByText(/Ship v1/)).toBeInTheDocument();
-    expect(screen.getByText(/\(p1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/p1/)).toBeInTheDocument();
   });
 
   it("creates a goal against the first project", async () => {
@@ -144,7 +144,7 @@ describe("Assignments", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "assignments" }));
     expect(await screen.findByText(/tutor/)).toBeInTheDocument();
-    expect(screen.getByText(/\(p2\)/)).toBeInTheDocument();
+    expect(screen.getByText(/p2/)).toBeInTheDocument();
   });
 });
 
@@ -320,7 +320,7 @@ describe("Agents", () => {
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
       target: { value: "Explain gravity" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
 
     await waitFor(() => {
       expect(fn).toHaveBeenCalledWith(
@@ -345,7 +345,7 @@ describe("Agents", () => {
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
       target: { value: "Plan the quarter" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
 
     expect(await screen.findByText(/Ollama unreachable/)).toBeInTheDocument();
   });
@@ -355,6 +355,6 @@ describe("Agents", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
-    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run Agent" })).toBeDisabled();
   });
 });
