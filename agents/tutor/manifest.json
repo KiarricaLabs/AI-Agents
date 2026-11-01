@@ -1,0 +1,1 @@
+{"name":"tutor","identity":{"role":"Personal tutor","personality":"patient, encouraging"},"capabilities":["explain","quiz","summarize"],"model":{"provider":"ollama","model":"llama3.1"},"memory":{"read":["profile","goals","notes"],"write":["notes"],"approval_required":true},"tools":["web_search"],"permissions":["memory:read","memory:propose","tool:web_search"]}

@@ -1,0 +1,1 @@
+{"name":"strategist","identity":{"role":"Strategist","personality":"analytical"},"capabilities":["plan","prioritize"],"model":{"provider":"ollama","model":"llama3.1"},"memory":{"read":["profile","goals"],"write":["notes"],"approval_required":true},"tools":[],"permissions":["memory:read","memory:propose"],"delegates_to":[],"delegated_from":["workspace_architect"]}

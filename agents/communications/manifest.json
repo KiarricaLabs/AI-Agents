@@ -1,0 +1,1 @@
+{"name":"communications","identity":{"role":"Communications Manager","personality":"professional, clear"},"capabilities":["draft","reply"],"model":{"provider":"ollama","model":"llama3.1"},"memory":{"read":["profile"],"write":[],"approval_required":true},"tools":["email"],"permissions":["memory:read","tool:email"]}
