@@ -130,6 +130,8 @@ export default function App() {
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentResult, setAgentResult] = useState<any>(null);
   const [agentError, setAgentError] = useState("");
+  const [threadIds, setThreadIds] = useState<Record<string, string>>({});
+  const [contextCounts, setContextCounts] = useState<Record<string, number>>({});
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -165,6 +167,7 @@ export default function App() {
     setAgentError("");
     setAgentResult(null);
     const payload: any = { task: task.trim() };
+    if (threadIds[selectedAgent]) payload.thread_id = threadIds[selectedAgent];
     try {
       const r = await fetch(`${API}/agents/${selectedAgent}/run`, {
         method: "POST",
@@ -176,12 +179,34 @@ export default function App() {
         setAgentError(body.detail || `request failed (${r.status})`);
       } else {
         setAgentResult(body);
+        if (body.thread_id) {
+          setThreadIds((prev) => ({ ...prev, [selectedAgent]: body.thread_id }));
+        }
+        if (typeof body.context_messages === "number") {
+          setContextCounts((prev) => ({ ...prev, [selectedAgent]: body.context_messages }));
+        }
       }
     } catch (e: any) {
       setAgentError(e?.message || "network error");
     } finally {
       setAgentRunning(false);
     }
+  };
+
+  const newConversation = () => {
+    setThreadIds((prev) => {
+      const next = { ...prev };
+      delete next[selectedAgent];
+      return next;
+    });
+    setContextCounts((prev) => {
+      const next = { ...prev };
+      delete next[selectedAgent];
+      return next;
+    });
+    setAgentResult(null);
+    setAgentError("");
+    setTask("");
   };
 
   const refresh = async () => {
@@ -611,6 +636,16 @@ export default function App() {
                       {agents.find((x) => x.name === selectedAgent)?.role}
                     </p>
                   </div>
+                  <div className="task-panel__meta">
+                    <span className="context-badge">
+                      Context: {contextCounts[selectedAgent] ?? 0} messages
+                    </span>
+                    {threadIds[selectedAgent] && (
+                      <button className="btn btn--ghost" onClick={newConversation}>
+                        New conversation
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <textarea
@@ -642,6 +677,9 @@ export default function App() {
                 </div>
 
                 {agentError && <p className="error">Error: {agentError}</p>}
+                {agentResult?.history_warning && (
+                  <p className="warning">Warning: {agentResult.history_warning}</p>
+                )}
 
                 {agentResult && (
                   <div className="result">

@@ -357,4 +357,70 @@ describe("Agents", () => {
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     expect(screen.getByRole("button", { name: "Run Agent" })).toBeDisabled();
   });
+
+  it("carries the thread id across turns and shows the context indicator", async () => {
+    const fn = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/tutor/run`]: (url: string, opts?: any) => {
+        const reqBody = JSON.parse(opts.body);
+        return ok({
+          agent: "tutor",
+          reply: "ack",
+          location: "local:ollama:llama3.1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+          thread_id: "tid-1",
+          context_messages: reqBody.thread_id ? 2 : 0,
+        });
+      },
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
+
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    await screen.findByTestId("agent-reply");
+
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "again" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+
+    await waitFor(() => {
+      const calls = fn.mock.calls.filter((c: any) => c[0] === `${API}/agents/tutor/run`);
+      expect(calls.length).toBeGreaterThanOrEqual(2);
+      expect(JSON.parse(calls[calls.length - 1][1].body).thread_id).toBe("tid-1");
+    });
+
+    expect(await screen.findByText(/Context: 2 messages/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New conversation" })).toBeInTheDocument();
+  });
+
+  it("resets to a fresh thread via New conversation", async () => {
+    globalThis.fetch = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/tutor/run`]: () =>
+        ok({
+          agent: "tutor",
+          reply: "ack",
+          location: "local:ollama:llama3.1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+          thread_id: "tid-1",
+          context_messages: 2,
+        }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    await screen.findByText(/Context: 2 messages/);
+
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    expect(screen.queryByRole("button", { name: "New conversation" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Context: 0 messages/)).toBeInTheDocument();
+  });
 });

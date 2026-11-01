@@ -55,5 +55,34 @@ class TestLiveAgents(unittest.TestCase):
                 self.assertEqual(r["location"], "local:ollama:llama3.1")
 
 
+@unittest.skipUnless(OLLAMA_UP, "Ollama not running — live test skipped")
+class TestLiveConversation(unittest.TestCase):
+    def test_two_turn_conversation_live(self):
+        """Real two-turn conversation through the actual HTTP router (Ollama)."""
+        import uuid
+        from fastapi.testclient import TestClient
+        from api.app import app
+        from core.auth import issue_token
+
+        c = TestClient(app)
+        tenant = f"liveconv-{uuid.uuid4().hex[:8]}"
+        tok = issue_token("u1", tenant, "admin")
+
+        r1 = c.post("/agents/tutor/run",
+                    json={"task": "Remember that my favorite fruit is mango."},
+                    headers={"x-token": tok})
+        self.assertEqual(r1.status_code, 200)
+        tid = r1.json()["thread_id"]
+        self.assertEqual(r1.json()["context_messages"], 0)
+
+        r2 = c.post("/agents/tutor/run",
+                    json={"task": "What is my favorite fruit?", "thread_id": tid},
+                    headers={"x-token": tok})
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r2.json()["context_messages"], 2)
+        self.assertTrue(r2.json()["reply"].strip())
+        self.assertEqual(r2.json()["location"], "local:ollama:llama3.1")
+
+
 if __name__ == "__main__":
     unittest.main()

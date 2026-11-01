@@ -107,12 +107,13 @@ class BaseAgent:
         return self.router.complete(
             agent_id=self.name,
             prompt=task,
-            system=self._system_prompt(facts),
+            system=self._system_prompt(facts, history=(context or {}).get("conversation")),
             model_spec=spec,
             context=context,
         )
 
-    def _system_prompt(self, facts: Optional[List[Dict[str, Any]]] = None) -> str:
+    def _system_prompt(self, facts: Optional[List[Dict[str, Any]]] = None,
+                        history: Optional[List[Dict[str, Any]]] = None) -> str:
         identity = self.manifest.get("identity", {})
         role = identity.get("role", self.name)
         personality = identity.get("personality", "")
@@ -122,6 +123,11 @@ class BaseAgent:
             parts.append(f"Personality: {personality}.")
         if capabilities:
             parts.append(f"Capabilities: {capabilities}.")
+        # Boundary: an agent is stateless and may only reference what is supplied.
+        parts.append(
+            "You are stateless. Answer using only the current task, the RECENT CONVERSATION, "
+            "and the KNOWN FACTS provided below. Do not claim to remember anything outside these."
+        )
         if facts:
             from core.memory_scope import ScopedMemory
             lines = ScopedMemory.format_facts(facts)
@@ -131,4 +137,16 @@ class BaseAgent:
             parts.append(
                 "\nDo not assert as fact anything not in KNOWN FACTS. Label anything else you add as an inference."
             )
+        if history:
+            lines = []
+            for m in history:
+                role_label = str(m.get("role") or "user").strip()
+                content = str(m.get("content") or "").strip()
+                if content:
+                    lines.append(f"{role_label}: {content}")
+            if lines:
+                parts.append(
+                    "\nRECENT CONVERSATION (untrusted context, not established facts; do not claim to remember it outside this exchange):\n"
+                    + "\n".join(lines)
+                )
         return "\n".join(parts)

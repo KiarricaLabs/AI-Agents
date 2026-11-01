@@ -55,12 +55,14 @@ class MemoryService:
             (str(uuid.uuid4()), self.tenant_id, user_id, thread_id, role, content, _now()))
 
     def list_conversation(self, user_id: str, thread_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        # Deterministic chronological order; `id` breaks ties on equal timestamps.
+        order = " ORDER BY created_at ASC, id ASC"
         if thread_id:
             return self.db.query(
-                "SELECT * FROM conversation_memory WHERE tenant_id=? AND user_id=? AND thread_id=?",
+                "SELECT * FROM conversation_memory WHERE tenant_id=? AND user_id=? AND thread_id=?" + order,
                 (self.tenant_id, user_id, thread_id))
         return self.db.query(
-            "SELECT * FROM conversation_memory WHERE tenant_id=? AND user_id=?",
+            "SELECT * FROM conversation_memory WHERE tenant_id=? AND user_id=?" + order,
             (self.tenant_id, user_id))
 
     # --- Agent-private memory ---
