@@ -88,6 +88,19 @@ class _ProposeTool(Tool):
             raise ValueError("a valid originating conversation thread is required")
 
         payload = dict(args.get("payload") or {})
+        # Goal-update version capture (approved Phase C addition): read the
+        # target goal's current version at propose time so approval can enforce a
+        # version guard. Never trust a model-supplied value; always server-read.
+        if self.work_type == "goal_update" and self.action == "update":
+            gid = args.get("target_id") or payload.get("target_id")
+            if not gid:
+                raise ValueError("target_id (goal) is required to propose a goal update")
+            gv = db.query(
+                "SELECT version FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+                (gid, tenant_id, user_id))
+            if not gv:
+                raise ValueError("goal not found in this tenant/user scope")
+            payload["_base_version"] = int(gv[0]["version"])
         reason = (args.get("reason") or "").strip()
         context_text = (args.get("context") or "").strip()
         # Sensitive-data protection (recursive).

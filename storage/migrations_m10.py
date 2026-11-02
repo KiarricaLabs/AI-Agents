@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS work_proposals (
     result_id TEXT,
     idempotency_key TEXT NOT NULL,
     decided_at TEXT,
+    decided_by TEXT,
+    rejection_reason TEXT,
     created_at TEXT NOT NULL,
     UNIQUE (tenant_id, idempotency_key)
 );
@@ -56,3 +58,21 @@ CREATE TABLE IF NOT EXISTS work_links (
     UNIQUE (tenant_id, work_type, work_id, thread_id)
 );
 """
+
+# Additive, idempotent columns added after Phase A/B for existing databases that
+# already created work_proposals. Fresh databases get them from the CREATE above.
+M10_PHASE_C_COLUMNS = (
+    "ALTER TABLE work_proposals ADD COLUMN decided_by TEXT",
+    "ALTER TABLE work_proposals ADD COLUMN rejection_reason TEXT",
+)
+
+
+def apply_m10_phase_c_columns(c):
+    """Apply the Phase C additive columns idempotently (guarded, no-op if present)."""
+    import sqlite3
+
+    for stmt in M10_PHASE_C_COLUMNS:
+        try:
+            c.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already exists
