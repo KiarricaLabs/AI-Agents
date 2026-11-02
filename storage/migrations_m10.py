@@ -76,3 +76,40 @@ def apply_m10_phase_c_columns(c):
             c.execute(stmt)
         except sqlite3.OperationalError:
             pass  # column already exists
+
+
+# --- M10 Phase D2: execution gating & episode tracking (additive) ---
+# Additive, nullable columns on episodes / episode_events plus a DB-level
+# partial unique index that enforces at most one ACTIVE (running) episode per
+# (tenant, user, work_type, work_id, agent_id). Existing rows are unaffected.
+M10_PHASE_D2_EPISODE_COLUMNS = (
+    "ALTER TABLE episodes ADD COLUMN work_type TEXT",
+    "ALTER TABLE episodes ADD COLUMN work_id TEXT",
+)
+
+M10_PHASE_D2_EVENT_COLUMNS = (
+    "ALTER TABLE episode_events ADD COLUMN evidence_json TEXT",
+    "ALTER TABLE episode_events ADD COLUMN progress INTEGER",
+)
+
+M10_PHASE_D2_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_episodes_active_work "
+    "ON episodes(tenant_id, user_id, work_type, work_id, agent_id) "
+    "WHERE status='running' AND work_type IS NOT NULL AND work_id IS NOT NULL"
+)
+
+
+def apply_m10_phase_d2_columns(c):
+    """Add the D2 additive columns idempotently (no-op if present)."""
+    import sqlite3
+
+    for stmt in M10_PHASE_D2_EPISODE_COLUMNS + M10_PHASE_D2_EVENT_COLUMNS:
+        try:
+            c.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+
+def apply_m10_phase_d2_index(c):
+    """Create the D2 partial unique index idempotently."""
+    c.execute(M10_PHASE_D2_INDEX)

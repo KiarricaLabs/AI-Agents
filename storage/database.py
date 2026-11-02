@@ -356,10 +356,18 @@ class Database:
             c.executescript(SCHEMA)
             # M10 (Agent-to-Workspace) additive DDL — isolated from the base schema
             # and from the Conversation History changes. Idempotent, additive only.
-            from storage.migrations_m10 import M10_DDL, apply_m10_phase_c_columns
+            from storage.migrations_m10 import (
+                M10_DDL,
+                apply_m10_phase_c_columns,
+                apply_m10_phase_d2_columns,
+                apply_m10_phase_d2_index,
+            )
             c.executescript(M10_DDL)
             # Phase C additive columns (guarded; no-op on fresh DBs).
             apply_m10_phase_c_columns(c)
+            # Phase D2: episode work-linkage columns + active-uniqueness index.
+            apply_m10_phase_d2_columns(c)
+            apply_m10_phase_d2_index(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))

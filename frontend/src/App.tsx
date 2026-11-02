@@ -235,6 +235,14 @@ export default function App() {
   const [threadLinks, setThreadLinks] = useState<any[]>([]);
   const [workThreads, setWorkThreads] = useState<Record<string, any[]>>({});
   // Work view -> originating conversation (work_type:work_id -> threads).
+  // --- M10 Phase D2: execution tracking (human-operated, evidence-gated) ---
+  const [workEpisodes, setWorkEpisodes] = useState<Record<string, any>>({});
+  const [execError, setExecError] = useState<string | null>(null);
+  const [execBusy, setExecBusy] = useState<string | null>(null);
+  const [cpProgress, setCpProgress] = useState("0.5");
+  const [cpEvidence, setCpEvidence] = useState("");
+  const [completeEvidence, setCompleteEvidence] = useState("");
+  const [epError, setEpError] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -687,6 +695,78 @@ export default function App() {
         setSelectedProjectId(dp.project_id);
         setSelectedDeliverable(targetId);
       }
+    }
+  };
+
+  // --- M10 Phase D2: human-operated execution tracking (evidence-gated) ---
+  const startExecution = async (work_type: string, work_id: string, agent_id: string) => {
+    if (offline || execBusy) return;
+    const key = `${work_type}:${work_id}`;
+    setExecBusy(key);
+    setExecError(null);
+    try {
+      const r = await fetch(`${API}/work/${encodeURIComponent(work_type)}/${encodeURIComponent(work_id)}/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setExecError((b as any).detail || `Could not start execution (${r.status}).`);
+        return;
+      }
+      setWorkEpisodes((prev) => ({ ...prev, [key]: b }));
+      refresh();
+    } catch {
+      setExecError("Could not start execution. Please try again.");
+    } finally {
+      setExecBusy(null);
+    }
+  };
+
+  const submitCheckpoint = async (eid: string) => {
+    if (offline) return;
+    const progress = Number(cpProgress);
+    const summary = cpEvidence.trim();
+    if (!summary) { setEpError("Evidence summary is required."); return; }
+    if (!Number.isFinite(progress) || progress < 0 || progress > 1) {
+      setEpError("Progress must be a number between 0 and 1."); return;
+    }
+    setEpError(null);
+    try {
+      const r = await fetch(`${API}/episodes/${eid}/checkpoint`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ progress, evidence: { summary } }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) { setEpError((b as any).detail || `Checkpoint failed (${r.status}).`); return; }
+      setCpEvidence("");
+      loadEpisode(eid);
+      refresh();
+    } catch {
+      setEpError("Checkpoint failed. Please try again.");
+    }
+  };
+
+  const submitComplete = async (eid: string) => {
+    if (offline) return;
+    const summary = completeEvidence.trim();
+    if (!summary) { setEpError("Completion evidence is required."); return; }
+    setEpError(null);
+    try {
+      const r = await fetch(`${API}/episodes/${eid}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ evidence: { summary } }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) { setEpError((b as any).detail || `Complete failed (${r.status}).`); return; }
+      setCompleteEvidence("");
+      loadEpisode(eid);
+      refresh();
+    } catch {
+      setEpError("Complete failed. Please try again.");
     }
   };
 
@@ -1349,6 +1429,30 @@ export default function App() {
                               </div>
                               <p className="detail-panel__meta">Created {formatStamp(g.created_at)} · {asgs.length} assignment(s)</p>
                               <OriginConversation types={["goal", "goal_update"]} wid={g.id} threadsByKey={workThreads} onLoad={loadWorkThreads} onOpen={openOriginatingThread} />
+                              {(() => {
+                                const agentId = asgs[0]?.agent_id || null;
+                                const key = `goal:${g.id}`;
+                                const ep = workEpisodes[key];
+                                if (ep && ep.status === "running") {
+                                  return (
+                                    <div className="exec-control">
+                                      <span className="badge badge--running">Tracking</span>
+                                      <button className="origin-link" onClick={() => { setTab("episodes"); setSelectedEpisode(ep.episode_id); loadEpisode(ep.episode_id); }}>Open in Activity</button>
+                                    </div>
+                                  );
+                                }
+                                if (!agentId) {
+                                  return <div className="exec-control"><span className="muted">Assign an agent to this goal to start tracking.</span></div>;
+                                }
+                                return (
+                                  <div className="exec-control">
+                                    <button className="btn btn--sm btn--primary" onClick={() => startExecution("goal", g.id, agentId)} disabled={offline || execBusy === key} data-testid={`track-${g.id}`}>
+                                      Track execution
+                                    </button>
+                                    {execError && <span className="muted">{execError}</span>}
+                                  </div>
+                                );
+                              })()}
                             </>
                           );
                         })()}
@@ -1633,17 +1737,63 @@ export default function App() {
                       <Empty text="No events recorded for this episode yet." />
                     ) : (
                       <ul className="list">
-                        {episodeEvents.map((ev, i) => (
-                          <li key={i} className="list__item">
-                            <span className="list__icon">
-                              <Icon name="activity" size={16} />
-                            </span>
-                            <span className="list__name">{statusLabel(ev.status)}</span>
-                            {ev.detail && <span className="badge badge--faint">{ev.detail}</span>}
-                            <span className="badge badge--faint">{formatStamp(ev.created_at)}</span>
-                          </li>
-                        ))}
+                        {episodeEvents.map((ev, i) => {
+                          let evSummary: string | null = null;
+                          try {
+                            const raw = ev.evidence_json;
+                            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+                            evSummary = parsed && parsed.summary ? String(parsed.summary) : null;
+                          } catch { evSummary = null; }
+                          return (
+                            <li key={i} className="list__item" data-testid={`event-${ev.status}`}>
+                              <span className="list__icon">
+                                <Icon name="activity" size={16} />
+                              </span>
+                              <span className="list__name">{statusLabel(ev.status)}</span>
+                              {ev.detail && <span className="badge badge--faint">{ev.detail}</span>}
+                              {evSummary && <span className="badge badge--faint">{evSummary}</span>}
+                              <span className="badge badge--faint">{formatStamp(ev.created_at)}</span>
+                            </li>
+                          );
+                        })}
                       </ul>
+                    )}
+                    {episodeDetail && episodeDetail.status === "running" && !offline && (
+                      <div className="exec-forms">
+                        <div className="exec-forms__head">Record progress (evidence required)</div>
+                        {epError && <p className="error" data-testid="ep-error">Error: {epError}</p>}
+                        <div className="exec-forms__row">
+                          <input
+                            className="input input--sm"
+                            aria-label="Progress (0..1)"
+                            value={cpProgress}
+                            onChange={(e) => setCpProgress(e.target.value)}
+                            placeholder="0..1"
+                          />
+                          <input
+                            className="input input--sm"
+                            aria-label="Evidence summary"
+                            value={cpEvidence}
+                            onChange={(e) => setCpEvidence(e.target.value)}
+                            placeholder="Evidence summary"
+                          />
+                          <button className="btn btn--sm btn--primary" onClick={() => submitCheckpoint(selectedEpisode as string)} data-testid="checkpoint-btn">
+                            Save progress
+                          </button>
+                        </div>
+                        <div className="exec-forms__row">
+                          <input
+                            className="input input--sm"
+                            aria-label="Completion evidence"
+                            value={completeEvidence}
+                            onChange={(e) => setCompleteEvidence(e.target.value)}
+                            placeholder="Completion evidence"
+                          />
+                          <button className="btn btn--sm btn--ghost" onClick={() => submitComplete(selectedEpisode as string)} data-testid="complete-btn">
+                            Complete
+                          </button>
+                        </div>
+                      </div>
                     )}
                   </>
                 ) : (

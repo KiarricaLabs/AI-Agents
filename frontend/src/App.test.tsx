@@ -1182,3 +1182,95 @@ describe("Approvals & work navigation (M10 D1)", () => {
     expect(screen.getByRole("button", { name: "Launch Goal" })).toBeInTheDocument();
   });
 });
+
+describe("Execution tracking (M10 D2)", () => {
+  const workFixture = (over: Record<string, Route> = {}) => ({
+    [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+    [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
+    [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", title: "Ship v1", project_id: "p1", status: "open" }] }),
+    [`${API}/workspaces/assignments`]: () => ok({ items: [{ id: "a1", goal_id: "g1", agent_id: "tutor", status: "queued" }] }),
+    [`${API}/workspaces/deliverables`]: () => ok({ items: [] }),
+    ...over,
+  });
+
+  it("starts tracking from the Work tab using the assigned agent", async () => {
+    const fn = makeFetch(workFixture({
+      [`${API}/work/goal/g1/execute`]: () => ok({ episode_id: "ep1", status: "running", already_active: false, work_type: "goal", work_id: "g1", agent_id: "tutor" }),
+    }));
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click((await screen.findAllByText("Ship v1"))[0]); // goals list row (first "Ship v1" in DOM)
+    fireEvent.click(await screen.findByTestId("track-g1"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/work/goal/g1/execute`,
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ agent_id: "tutor" }) })
+      );
+    });
+    expect(await screen.findByText("Tracking")).toBeInTheDocument();
+  });
+
+  it("records an evidence-gated checkpoint from Activity", async () => {
+    const fn = makeFetch({
+      [`${API}/episodes`]: () => ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0, created_at: "2026-11-01T00:00:00Z" }] }),
+      [`${API}/episodes/e1`]: () => ok({ episode: { id: "e1", agent_id: "tutor", status: "running", progress: 0 }, events: [] }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByText(/Tutor/));
+    await screen.findByTestId("checkpoint-btn");
+    fireEvent.change(screen.getByLabelText("Evidence summary"), { target: { value: "milestone reached" } });
+    fireEvent.click(screen.getByTestId("checkpoint-btn"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/episodes/e1/checkpoint`,
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ progress: 0.5, evidence: { summary: "milestone reached" } }),
+        })
+      );
+    });
+  });
+
+  it("does not post a checkpoint with empty evidence", async () => {
+    const fn = makeFetch({
+      [`${API}/episodes`]: () => ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0, created_at: "2026-11-01T00:00:00Z" }] }),
+      [`${API}/episodes/e1`]: () => ok({ episode: { id: "e1", agent_id: "tutor", status: "running", progress: 0 }, events: [] }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByText(/Tutor/));
+    fireEvent.click(await screen.findByTestId("checkpoint-btn"));
+    expect(fn).not.toHaveBeenCalledWith(
+      `${API}/episodes/e1/checkpoint`,
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(await screen.findByTestId("ep-error")).toBeInTheDocument();
+  });
+
+  it("completes an episode with validation evidence from Activity", async () => {
+    const fn = makeFetch({
+      [`${API}/episodes`]: () => ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0, created_at: "2026-11-01T00:00:00Z" }] }),
+      [`${API}/episodes/e1`]: () => ok({ episode: { id: "e1", agent_id: "tutor", status: "running", progress: 0 }, events: [] }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByText(/Tutor/));
+    await screen.findByTestId("complete-btn");
+    fireEvent.change(screen.getByLabelText("Completion evidence"), { target: { value: "work verified done" } });
+    fireEvent.click(screen.getByTestId("complete-btn"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/episodes/e1/complete`,
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ evidence: { summary: "work verified done" } }),
+        })
+      );
+    });
+  });
+});

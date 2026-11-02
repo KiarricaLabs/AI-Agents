@@ -9,7 +9,7 @@ exception details or leaks the existence of another user's proposal.
 """
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from core.work_proposals import (
@@ -21,7 +21,9 @@ from core.work_proposals import (
     ProposalExecutionFailed,
     ProposalValidationError,
     TransientApprovalError,
+    AGENT_SLUGS,
 )
+from core.episodes import EpisodeService
 from storage.database import Database
 from config.settings import DB_PATH, DEFAULT_TENANT
 
@@ -50,6 +52,53 @@ def _require_human(request: Request):
 
 def _svc(t: str, u: str):
     return WorkProposalService(_db, t, u)
+
+
+# Work types that can be explicitly executed (lifecycle-tracked) by a human.
+_EXEC_TYPES = {"assignment", "goal"}
+
+
+class ExecuteBody(BaseModel):
+    agent_id: str
+
+
+@router.post("/{work_type}/{work_id}/execute")
+def execute_work(work_type: str, work_id: str, body: ExecuteBody, request: Request, response: Response):
+    """Human-only, owner-scoped start of a tracked execution Episode for an
+    approved assignment or goal. Idempotent: an existing active episode is
+    returned. Lifecycle tracking only; never runs or dispatches an agent."""
+    t, u = _identity(request)
+    _require_human(request)
+    agent = (body.agent_id or "").strip()
+    if work_type not in _EXEC_TYPES:
+        raise HTTPException(status_code=422, detail="unsupported work type for execution")
+    if agent not in AGENT_SLUGS:
+        raise HTTPException(status_code=422, detail="invalid agent")
+    if agent == u:
+        raise HTTPException(status_code=403, detail="an agent cannot start its own execution")
+    # Revalidate ownership of the approved work record (server-scoped ids).
+    if work_type == "assignment":
+        rows = _db.query(
+            "SELECT id, agent_id FROM assignments WHERE id=? AND tenant_id=? AND user_id=?",
+            (work_id, t, u))
+        if not rows:
+            raise HTTPException(status_code=404, detail="assignment not found")
+        if agent != rows[0]["agent_id"]:
+            raise HTTPException(status_code=422, detail="agent does not match the assignment")
+    else:  # goal
+        rows = _db.query(
+            "SELECT id FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+            (work_id, t, u))
+        if not rows:
+            raise HTTPException(status_code=404, detail="goal not found")
+    es = EpisodeService(db=_db, tenant_id=t, user_id=u)
+    try:
+        result = es.start_for_work(work_type, work_id, agent)
+    except Exception:
+        raise HTTPException(status_code=503, detail="could not start execution")
+    payload = {**result, "work_type": work_type, "work_id": work_id, "agent_id": agent}
+    response.status_code = 201 if not result["already_active"] else 200
+    return payload
 
 
 @router.get("/proposals")

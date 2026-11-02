@@ -1508,3 +1508,10 @@ body {
 .badge--proposed { background: #eef2ff; color: #4353ff; }
 .badge--stale { background: #f3f4f6; color: #6b7280; }
 .badge--failed { background: #fee2e2; color: #b91c1c; }
+
+/* --- M10 Phase D2: execution tracking controls (additive) --- */
+.exec-control { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.exec-forms { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; padding-top: 10px; border-top: 1px solid #ececec; }
+.exec-forms__head { font-weight: 600; font-size: 13px; }
+.exec-forms__row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.input--sm { max-width: 180px; }

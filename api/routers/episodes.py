@@ -16,6 +16,12 @@ def _identity(request: Request):
     return tenant, user
 
 
+def _require_human(request: Request):
+    role = getattr(request.state, "role", "user")
+    if role not in {"user", "admin"}:
+        raise HTTPException(status_code=403, detail="human action required")
+
+
 @router.get("")
 def list_episodes(request: Request):
     t, u = _identity(request)
@@ -48,3 +54,44 @@ def resume(eid: str, request: Request):
     es = EpisodeService(db=_db, tenant_id=t, user_id=u)
     ok = es.recover(eid, lambda eid, prog, cp: None)
     return {"ok": ok}
+
+
+class CheckpointBody(BaseModel):
+    progress: float
+    evidence: dict
+
+
+class CompleteBody(BaseModel):
+    evidence: dict
+
+
+@router.post("/{eid}/checkpoint")
+def checkpoint(eid: str, body: CheckpointBody, request: Request):
+    t, u = _identity(request)
+    _require_human(request)
+    es = EpisodeService(db=_db, tenant_id=t, user_id=u)
+    if not es.get(eid):
+        raise HTTPException(status_code=404, detail="episode not found")
+    try:
+        ok = es.checkpoint_with_evidence(eid, body.progress, body.evidence)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=409, detail="episode cannot advance in its current state")
+    return {"ok": True, "episode_id": eid, "progress": body.progress}
+
+
+@router.post("/{eid}/complete")
+def complete(eid: str, body: CompleteBody, request: Request):
+    t, u = _identity(request)
+    _require_human(request)
+    es = EpisodeService(db=_db, tenant_id=t, user_id=u)
+    if not es.get(eid):
+        raise HTTPException(status_code=404, detail="episode not found")
+    try:
+        ok = es.complete_with_evidence(eid, body.evidence)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=409, detail="episode cannot be completed in its current state")
+    return {"ok": True, "episode_id": eid, "status": "done"}
