@@ -1,0 +1,284 @@
+"""WorkProposalService — M10 Agent-to-Workspace integration, Phase A.
+
+Structured, approval-gated *work proposals* for creating/updating workspace work
+(workspace / project / goal / goal_update / assignment / deliverable /
+deliverable_version). Phase A strictly:
+
+- records proposal *intent* only (never creates/mutates actual work records),
+- validates dependencies (parents must exist and be tenant/user-owned) up front,
+- preserves the distinction between suggestions, proposals, approved changes,
+  and completed work (via the ``status`` lifecycle),
+- never lets agents directly persist deliverable drafts/versions (draft content
+  stays proposal-only until the later approval implementation),
+- never creates Tasks or Episodes, and never auto-creates work from ordinary
+  conversations.
+
+Approval execution (running the real service operation, writing work_links,
+idempotent retry) is a later phase — this module only stores and lists proposals.
+"""
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+# work_type -> allowed actions.
+ALLOWED = {
+    "workspace": {"create", "update"},
+    "project": {"create", "update"},
+    "goal": {"create"},
+    "goal_update": {"update"},
+    "assignment": {"create", "update"},
+    "deliverable": {"create", "update"},
+    "deliverable_version": {"create"},
+}
+
+_TERMINAL = {"rejected", "failed"}
+_PENDING = {"proposed"}
+
+
+class WorkProposalService:
+    def __init__(self, db, tenant_id: str, user_id: str):
+        self.db = db
+        self.tenant_id = tenant_id
+        self.user_id = user_id
+
+    # ------------------------------------------------------------------ owners
+    def _owned(self, table: str, rid: str) -> bool:
+        rows = self.db.query(
+            f"SELECT id FROM {table} WHERE id=? AND tenant_id=? AND user_id=?",
+            (rid, self.tenant_id, self.user_id))
+        return bool(rows)
+
+    def _need(self, value: Optional[str], what: str) -> str:
+        if not value:
+            raise ValueError(f"{what} is required to create/update this work record")
+        return value
+
+    def _belongs(self, child_table: str, child_id: str, parent_col: str, parent_id: str):
+        rows = self.db.query(
+            f"SELECT id FROM {child_table} WHERE id=? AND tenant_id=? AND {parent_col}=?",
+            (child_id, self.tenant_id, parent_id))
+        if not rows:
+            raise ValueError(
+                f"relationship integrity: {child_table} {child_id} does not belong to "
+                f"{parent_col}={parent_id}")
+
+    # ------------------------------------------------- validate + resolve deps
+    def _validate_and_resolve(self, work_type: str, action: str, payload: Dict[str, Any],
+                              target_id: Optional[str]):
+        """Validate ownership/dependencies and resolve normalized parent IDs.
+
+        Returns (workspace_id, project_id, goal_id, subject_id). Raises
+        ValueError with a meaningful message on any missing/invalid dependency,
+        never silently inventing a parent record.
+        """
+        workspace_id = payload.get("workspace_id") or None
+        project_id = payload.get("project_id") or None
+        goal_id = payload.get("goal_id") or None
+        subject_id = payload.get("agent_id") or None
+        tid = target_id or payload.get("target_id") or None
+
+        if work_type == "workspace":
+            if action == "update":
+                workspace_id = self._need(tid, "target_id (workspace)")
+                self._owned_check("workspaces", workspace_id)
+        elif work_type == "project":
+            workspace_id = self._need(workspace_id, "workspace_id")
+            self._owned_check("workspaces", workspace_id)
+            if action == "update":
+                project_id = self._need(tid, "target_id (project)")
+                self._owned_check("projects", project_id)
+                self._belongs("projects", project_id, "workspace_id", workspace_id)
+        elif work_type == "goal":
+            if action != "create":
+                raise ValueError("goal supports only create; use goal_update for updates")
+            project_id = self._need(project_id, "project_id")
+            self._owned_check("projects", project_id)
+        elif work_type == "goal_update":
+            if action != "update":
+                raise ValueError("goal_update supports only update")
+            goal_id = self._need(tid, "target_id (goal)")
+            self._owned_check("goals", goal_id)
+            # optional parent cross-check when supplied
+            if project_id:
+                self._owned_check("projects", project_id)
+                self._belongs("goals", goal_id, "project_id", project_id)
+        elif work_type == "assignment":
+            if action == "create":
+                goal_id = self._need(goal_id, "goal_id")
+                self._owned_check("goals", goal_id)
+                subject_id = self._need(subject_id, "agent_id (subject)")
+            else:  # update
+                aid = self._need(tid, "target_id (assignment)")
+                self._owned_check("assignments", aid)
+                if goal_id:
+                    self._owned_check("goals", goal_id)
+        elif work_type == "deliverable":
+            if action == "create":
+                project_id = self._need(project_id, "project_id")
+                self._owned_check("projects", project_id)
+            else:  # update
+                self._need(tid, "target_id (deliverable)")
+                self._owned_check("deliverables", tid)
+        elif work_type == "deliverable_version":
+            if action != "create":
+                raise ValueError("deliverable_version supports only create (draft proposal)")
+            did = self._need(tid, "target_id (deliverable)")
+            self._owned_check("deliverables", did)
+            payload.setdefault("deliverable_id", did)
+        else:
+            raise ValueError(f"unsupported work_type: {work_type}")
+
+        return workspace_id, project_id, goal_id, subject_id
+
+    def _owned_check(self, table: str, rid: str):
+        if not self._owned(table, rid):
+            raise ValueError(f"ownership: no {table} with id {rid} in this tenant/user scope")
+
+    # ------------------------------------------------------------------- core
+    def propose(
+        self,
+        work_type: str,
+        agent_id: str,
+        *,
+        action: str = "create",
+        payload: Optional[Dict[str, Any]] = None,
+        thread_id: Optional[str] = None,
+        reason: Optional[str] = None,
+        context: Optional[str] = None,
+        confidence: float = 0.5,
+        idempotency_key: Optional[str] = None,
+        target_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        work_type = (work_type or "").strip()
+        action = (action or "create").strip()
+        if work_type not in ALLOWED or action not in ALLOWED[work_type]:
+            raise ValueError(f"unsupported work_type/action: {work_type}/{action}")
+        if not (agent_id or "").strip():
+            raise ValueError("agent_id is required")
+        payload = dict(payload or {})
+
+        # Idempotency: same tenant + explicit key returns the existing proposal.
+        key = (idempotency_key or "").strip() or str(uuid.uuid4())
+        existing = self.db.query(
+            "SELECT * FROM work_proposals WHERE tenant_id=? AND idempotency_key=?",
+            (self.tenant_id, key))
+        if existing:
+            return {"proposal_id": existing[0]["id"], "reused": True,
+                    "status": existing[0]["status"]}
+
+        ws, pr, gl, subj = self._validate_and_resolve(work_type, action, payload, target_id)
+
+        proposal_id = str(uuid.uuid4())
+        now = _now()
+        self.db.execute(
+            "INSERT INTO work_proposals "
+            "(id, tenant_id, user_id, agent_id, thread_id, work_type, action, "
+            " target_id, workspace_id, project_id, goal_id, subject_id, payload_json, "
+            " reason, context, confidence, status, idempotency_key, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (proposal_id, self.tenant_id, self.user_id, agent_id, thread_id,
+             work_type, action, target_id or payload.get("target_id"), ws, pr, gl, subj,
+             json.dumps(payload), reason, context, float(confidence),
+             "proposed", key, now))
+        return {"proposal_id": proposal_id, "status": "proposed", "reused": False}
+
+    # ------------------------------------------------------------------ reads
+    def list(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        if status:
+            return self.db.query(
+                "SELECT * FROM work_proposals WHERE tenant_id=? AND user_id=? AND status=? "
+                "ORDER BY created_at DESC", (self.tenant_id, self.user_id, status))
+        return self.db.query(
+            "SELECT * FROM work_proposals WHERE tenant_id=? AND user_id=? ORDER BY created_at DESC",
+            (self.tenant_id, self.user_id))
+
+    def get(self, proposal_id: str) -> Optional[Dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT * FROM work_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+            (proposal_id, self.tenant_id, self.user_id))
+        if not rows:
+            return None
+        p = rows[0]
+        try:
+            payload = json.loads(p.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        return {
+            **p,
+            "payload": payload,
+            "proposed_change": f"{p['action']} {p['work_type']}",
+            "expected_result": self._expected_result(p),
+            "source_thread_id": p.get("thread_id"),
+            "parent": {
+                "workspace_id": p.get("workspace_id"),
+                "project_id": p.get("project_id"),
+                "goal_id": p.get("goal_id"),
+            },
+            "affected_records": p.get("target_id"),
+        }
+
+    @staticmethod
+    def _expected_result(p: Dict[str, Any]) -> str:
+        wt, act, tid = p.get("work_type", ""), p.get("action", ""), p.get("target_id")
+        if act == "create":
+            return f"Creates a new {wt}"
+        return f"Updates {wt} {tid or ''} on approval"
+
+    # ------------------------------------------------------------- lifecycle
+    def _set_status(self, proposal_id: str, status: str, user_id: str) -> bool:
+        rows = self.db.query(
+            "SELECT status FROM work_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+            (proposal_id, self.tenant_id, self.user_id))
+        if not rows:
+            raise ValueError("proposal not found")
+        if rows[0]["status"] != "proposed":
+            raise ValueError("proposal already decided")
+        now = _now()
+        self.db.execute(
+            "UPDATE work_proposals SET status=?, decided_at=? WHERE id=? "
+            "AND tenant_id=? AND user_id=? AND status='proposed'",
+            (status, now, proposal_id, self.tenant_id, self.user_id))
+        return True
+
+    def reject(self, proposal_id: str, user_id: str, reason: Optional[str] = None):
+        """Marker phase-A reject: terminal, never overwrites a decided proposal."""
+        rows = self.db.query(
+            "SELECT * FROM work_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+            (proposal_id, self.tenant_id, self.user_id))
+        if not rows:
+            raise ValueError("proposal not found")
+        if rows[0]["status"] in _TERMINAL or rows[0]["status"] != "proposed":
+            raise ValueError("proposal already decided")
+        now = _now()
+        detail = (reason or "").strip()[:400]
+        self.db.execute(
+            "UPDATE work_proposals SET status='rejected', decided_at=?, context=COALESCE(context, ?) "
+            "WHERE id=? AND tenant_id=? AND user_id=? AND status='proposed'",
+            (now, detail or None, proposal_id, self.tenant_id, self.user_id))
+        return True
+
+    def mark_failed(self, proposal_id: str, error: Optional[str] = None) -> bool:
+        """Preserve the proposal on a real failure so it can be retried safely."""
+        self._set_status(proposal_id, "failed", self.user_id)
+        return True
+
+    def expire_stale(self) -> int:
+        rows = self.db.query(
+            "SELECT id FROM work_proposals WHERE tenant_id=? AND user_id=? AND status='proposed'",
+            (self.tenant_id, self.user_id))
+        count = 0
+        for r in rows:
+            self.db.execute(
+                "UPDATE work_proposals SET status='stale', decided_at=? WHERE id=? "
+                "AND tenant_id=? AND user_id=? AND status='proposed'",
+                (_now(), r["id"], self.tenant_id, self.user_id))
+            count += 1
+        return count

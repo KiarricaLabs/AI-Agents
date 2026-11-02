@@ -354,6 +354,10 @@ class Database:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as c:
             c.executescript(SCHEMA)
+            # M10 (Agent-to-Workspace) additive DDL — isolated from the base schema
+            # and from the Conversation History changes. Idempotent, additive only.
+            from storage.migrations_m10 import M10_DDL
+            c.executescript(M10_DDL)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))
