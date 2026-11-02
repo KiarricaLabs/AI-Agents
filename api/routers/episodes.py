@@ -2,7 +2,15 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from storage.database import Database
 from config.settings import DB_PATH, DEFAULT_TENANT
-from core.episodes import EpisodeService
+from core.episodes import (
+    EpisodeService,
+    EpisodeNotFound,
+    EpisodeNotCompleted,
+    MissingCompletionEvidence,
+    GoalNotFound,
+    StaleGoalVersion,
+    GoalCompletionConflict,
+)
 
 router = APIRouter(prefix="/episodes", tags=["episodes"])
 _db = Database(path=DB_PATH, tenant_id=DEFAULT_TENANT)
@@ -63,6 +71,25 @@ class CheckpointBody(BaseModel):
 
 class CompleteBody(BaseModel):
     evidence: dict
+
+
+@router.post("/{eid}/apply")
+def apply_completed(eid: str, request: Request):
+    """Human-only, owner-scoped application of a completed episode's evidence
+    to its referenced goal. One application per episode; version-guarded; uses
+    only persisted evidence (no client-supplied evidence/progress)."""
+    t, u = _identity(request)
+    _require_human(request)
+    es = EpisodeService(db=_db, tenant_id=t, user_id=u)
+    try:
+        result = es.apply_completed_episode(eid, u)
+    except (EpisodeNotFound, GoalNotFound):
+        raise HTTPException(status_code=404, detail="resource not found")
+    except (EpisodeNotCompleted, MissingCompletionEvidence, GoalCompletionConflict) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except StaleGoalVersion as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return result
 
 
 @router.post("/{eid}/checkpoint")

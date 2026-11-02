@@ -113,3 +113,24 @@ def apply_m10_phase_d2_columns(c):
 def apply_m10_phase_d2_index(c):
     """Create the D2 partial unique index idempotently."""
     c.execute(M10_PHASE_D2_INDEX)
+
+
+# --- M10 Phase D3: evidence-backed goal progress application (additive) ---
+# Nullable columns on episodes recording that a completed episode's evidence has
+# been applied to its referenced goal. One application per episode (no per-goal
+# unique index), so multiple completed episodes may each contribute to a goal.
+M10_PHASE_D3_EPISODE_COLUMNS = (
+    "ALTER TABLE episodes ADD COLUMN applied_at TEXT",
+    "ALTER TABLE episodes ADD COLUMN applied_by TEXT",
+)
+
+
+def apply_m10_phase_d3_columns(c):
+    """Add the D3 additive columns idempotently (no-op if present)."""
+    import sqlite3
+
+    for stmt in M10_PHASE_D3_EPISODE_COLUMNS:
+        try:
+            c.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already exists

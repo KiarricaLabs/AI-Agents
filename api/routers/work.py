@@ -130,6 +130,18 @@ def links_for_thread(request: Request, thread_id: Optional[str] = None):
     return {"items": _svc(t, u).links_for_thread(thread_id)}
 
 
+@router.get("/{work_type}/{work_id}/execution")
+def work_execution(work_type: str, work_id: str, request: Request):
+    """Read-only execution summary for a goal/assignment (active + completed
+    episodes, progress, latest evidence summary, apply state). Owner-scoped and
+    sanitized; never exposes raw evidence or credentials."""
+    t, u = _identity(request)
+    try:
+        return EpisodeService(db=_db, tenant_id=t, user_id=u).execution_summary(work_type, work_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="unsupported work type")
+
+
 @router.get("/links/work/{work_type}/{work_id}")
 def links_to_thread(work_type: str, work_id: str, request: Request):
     """Work record -> originating conversation thread(s) (read-only)."""

@@ -1274,3 +1274,51 @@ describe("Execution tracking (M10 D2)", () => {
     });
   });
 });
+
+describe("Evidence application & execution history (M10 D3)", () => {
+  const epFixture = (episode: any, events: any[] = []) => ({
+    [`${API}/episodes`]: () => ok({ items: [{ id: episode.id, agent_id: episode.agent_id, status: episode.status, progress: episode.progress, applied_at: episode.applied_at, created_at: "2026-11-01T00:00:00Z" }] }),
+    [`${API}/episodes/${episode.id}`]: () => ok({ episode, events }),
+  });
+
+  it("applies a completed episode to its goal via confirmation", async () => {
+    const fn = makeFetch(epFixture({ id: "e1", agent_id: "tutor", status: "done", progress: 1, applied_at: null }));
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByText(/Tutor/));
+    await screen.findByTestId("apply-btn");
+    fireEvent.click(screen.getByTestId("apply-btn"));
+    fireEvent.click(await screen.findByTestId("confirm-apply"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(`${API}/episodes/e1/apply`, expect.objectContaining({ method: "POST" }));
+    });
+  });
+
+  it("does not offer apply for an already-applied episode", async () => {
+    globalThis.fetch = makeFetch(epFixture({ id: "e1", agent_id: "tutor", status: "done", progress: 1, applied_at: "2026-11-01T00:00:00Z", applied_by: "u1" })) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByText(/Tutor/));
+    expect(await screen.findByTestId("episode-applied")).toBeInTheDocument();
+    expect(screen.queryByTestId("apply-btn")).not.toBeInTheDocument();
+  });
+
+  it("shows execution history in the goal detail panel", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
+      [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", title: "Ship v1", project_id: "p1", status: "in_progress" }] }),
+      [`${API}/workspaces/assignments`]: () => ok({ items: [] }),
+      [`${API}/workspaces/deliverables`]: () => ok({ items: [] }),
+      [`${API}/work/goal/g1/execution`]: () => ok({ work_type: "goal", work_id: "g1", episodes: [{ episode_id: "ep9", agent_id: "tutor", status: "done", progress: 1, evidence_summary: "ship verified", applied_at: "2026-11-01T00:00:00Z", applied_by: "u1" }] }),
+    }) as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click((await screen.findAllByText("Ship v1"))[0]);
+    const panel = await screen.findByTestId("exec-g1");
+    expect(panel).toBeInTheDocument();
+    expect(screen.getByText("ship verified")).toBeInTheDocument();
+    expect(screen.getByText("Applied")).toBeInTheDocument();
+  });
+});

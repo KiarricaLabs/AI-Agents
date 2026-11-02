@@ -153,6 +153,38 @@ function OriginConversation({
   );
 }
 
+function ExecutionPanel({
+  wtype, wid, data, onLoad, agentLabelFn,
+}: {
+  wtype: string;
+  wid: string;
+  data?: any;
+  onLoad: (w: string, i: string) => void;
+  agentLabelFn: (a: string) => string;
+}) {
+  useEffect(() => {
+    if (wid) onLoad(wtype, wid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wtype, wid]);
+  if (!data || !data.episodes || data.episodes.length === 0) return null;
+  return (
+    <div className="exec-history" data-testid={`exec-${wid}`}>
+      <span className="detail-panel__label">Execution history</span>
+      <ul className="list">
+        {data.episodes.map((e: any) => (
+          <li key={e.episode_id} className="list__item">
+            <span className="list__name">{agentLabelFn(e.agent_id)}</span>
+            <span className={`badge badge--${e.status || "neutral"}`}>{statusLabel(e.status)}</span>
+            <span className="badge badge--faint">{Math.round((e.progress || 0) * 100)}%</span>
+            {e.evidence_summary && <span className="badge badge--faint">{e.evidence_summary}</span>}
+            {e.applied_at && <span className="badge badge--approved">Applied</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Empty({ text }: { text: string }) {
   return <div className="empty">{text}</div>;
 }
@@ -243,6 +275,11 @@ export default function App() {
   const [cpEvidence, setCpEvidence] = useState("");
   const [completeEvidence, setCompleteEvidence] = useState("");
   const [epError, setEpError] = useState<string | null>(null);
+  // --- M10 Phase D3: evidence-backed goal application + execution history ---
+  const [workExec, setWorkExec] = useState<Record<string, any>>({});
+  const [applyEid, setApplyEid] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [applyingEid, setApplyingEid] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -767,6 +804,40 @@ export default function App() {
       refresh();
     } catch {
       setEpError("Complete failed. Please try again.");
+    }
+  };
+
+  // --- M10 Phase D3: evidence-backed goal application + execution history ---
+  const loadWorkExec = async (work_type: string, work_id: string) => {
+    const key = `${work_type}:${work_id}`;
+    if (workExec[key]) return; // already loaded
+    try {
+      const r = await fetch(`${API}/work/${encodeURIComponent(work_type)}/${encodeURIComponent(work_id)}/execution`);
+      if (!r.ok) return;
+      const d = await r.json();
+      setWorkExec((prev) => ({ ...prev, [key]: d }));
+    } catch { /* offline or backend unavailable */ }
+  };
+
+  const submitApply = async (episode_id: string) => {
+    if (offline || applyingEid) return;
+    setApplyingEid(episode_id);
+    setApplyError(null);
+    try {
+      const r = await fetch(`${API}/episodes/${episode_id}/apply`, { method: "POST" });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setApplyError((b as any).detail || `Apply failed (${r.status}).`);
+        return; // keep confirmation open; do not imply success
+      }
+      setApplyEid(null);
+      loadEpisode(episode_id);
+      refresh();
+      setWorkExec({}); // force exec history refresh on next open
+    } catch {
+      setApplyError("Apply failed. Please try again.");
+    } finally {
+      setApplyingEid(null);
     }
   };
 
@@ -1453,6 +1524,7 @@ export default function App() {
                                   </div>
                                 );
                               })()}
+                              <ExecutionPanel wtype="goal" wid={g.id} data={workExec[`goal:${g.id}`]} onLoad={loadWorkExec} agentLabelFn={agentLabel} />
                             </>
                           );
                         })()}
@@ -1733,6 +1805,28 @@ export default function App() {
                         <span className="badge badge--faint">started {formatStamp(episodeDetail.created_at)}</span>
                       )}
                     </div>
+                    {episodeDetail.status === "done" &&
+                      (episodeDetail.applied_at ? (
+                        <div className="exec-apply" data-testid="episode-applied"><span className="badge badge--approved">Applied</span></div>
+                      ) : !offline ? (
+                        <div className="exec-control exec-apply">
+                          {applyEid === episodeDetail.id ? (
+                            <>
+                              <span className="muted">Apply this completion to its goal using the recorded evidence?</span>
+                              <button className="btn btn--sm btn--primary" data-testid="confirm-apply" onClick={() => submitApply(episodeDetail.id)} disabled={!!applyingEid}>
+                                Confirm apply
+                              </button>
+                              <button className="btn btn--sm btn--ghost" onClick={() => setApplyEid(null)}>Cancel</button>
+                            </>
+                          ) : (
+                            <button className="btn btn--sm btn--primary" data-testid="apply-btn"
+                              onClick={() => { setApplyEid(episodeDetail.id); setApplyError(null); }}>
+                              Apply to goal
+                            </button>
+                          )}
+                          {applyError && <span className="muted" data-testid="apply-error">{applyError}</span>}
+                        </div>
+                      ) : null)}
                     {episodeEvents.length === 0 ? (
                       <Empty text="No events recorded for this episode yet." />
                     ) : (

@@ -11,6 +11,34 @@ from storage.database import Database
 SECRET_KEYS = {"password", "secret", "token", "api_key"}
 
 
+class EpisodeNotFound(ValueError):
+    pass
+
+
+class EpisodeNotCompleted(ValueError):
+    pass
+
+
+class MissingCompletionEvidence(ValueError):
+    pass
+
+
+class GoalNotFound(ValueError):
+    pass
+
+
+class StaleGoalVersion(ValueError):
+    pass
+
+
+class GoalCompletionConflict(ValueError):
+    pass
+
+
+class EpisodeAlreadyApplied(ValueError):
+    pass
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -196,12 +224,173 @@ class EpisodeService:
         only; does NOT mutate the referenced goal."""
         self._validate_evidence(evidence)
         t = self._get(episode_id)
-        if not t or t["status"] == "cancelled":
+        if not t or t["status"] != "running":
+            # Only running -> done is a valid transition. Already-done or
+            # cancelled episodes can never complete again (no duplicate event).
             return False
         now = _now()
         self.db.execute(
             "UPDATE episodes SET status='done', progress=1.0, updated_at=? "
             "WHERE id=? AND tenant_id=? AND user_id=? AND status='running'",
             (now, episode_id, self.tenant_id, self.user_id))
+        # Verify the transition actually happened (guards the narrow race where
+        # a concurrent cancel/complete won); only then record the completion event.
+        after = self._get(episode_id)
+        if not after or after["status"] != "done":
+            return False
         self._event(episode_id, "done", "completed", evidence=evidence, progress=1.0)
         return True
+
+    # ---------------- M10 Phase D3: evidence-backed goal progress application ---
+    def _completion_evidence(self, episode_id: str) -> Optional[Dict[str, Any]]:
+        """Persisted evidence of the completed episode (immutable; read-only)."""
+        rows = self.db.query(
+            "SELECT evidence_json FROM episode_events WHERE tenant_id=? AND episode_id=? "
+            "AND status='done' ORDER BY created_at DESC LIMIT 1",
+            (self.tenant_id, episode_id))
+        if not rows or not rows[0]["evidence_json"]:
+            return None
+        try:
+            return json.loads(rows[0]["evidence_json"])
+        except Exception:
+            return None
+
+    def _applied_result(self, ep: Dict[str, Any]) -> Dict[str, Any]:
+        return {"applied": True, "already_applied": True, "episode_id": ep["id"],
+                "work_type": ep.get("work_type"), "work_id": ep.get("work_id"),
+                "applied_at": ep.get("applied_at"), "applied_by": ep.get("applied_by")}
+
+    def apply_completed_episode(self, episode_id: str, approver_user_id: str) -> Dict[str, Any]:
+        """Human-controlled, evidence-backed application of a completed execution
+        Episode to its referenced goal. Uses ONLY the persisted episode evidence
+        and progress; never accepts replacement evidence/progress. Atomic; one
+        application per episode; version-guarded goal update; no client/"
+        conversation-derived proof."""
+        ep = self._get(episode_id)
+        if not ep:
+            raise EpisodeNotFound("episode not found")
+        if ep["status"] != "done":
+            raise EpisodeNotCompleted("episode is not completed")
+        if ep.get("applied_at"):
+            return self._applied_result(ep)  # idempotent: already applied
+
+        evidence = self._completion_evidence(episode_id)
+        if not evidence or not (str(evidence.get("summary") or "").strip()):
+            raise MissingCompletionEvidence("completion evidence is missing")
+
+        wt, wid = ep.get("work_type"), ep.get("work_id")
+        if wt == "assignment":
+            rows = self.db.query(
+                "SELECT goal_id FROM assignments WHERE id=? AND tenant_id=? AND user_id=?",
+                (wid, self.tenant_id, self.user_id))
+            if not rows:
+                raise GoalNotFound("assigned goal not found")
+            gid = rows[0]["goal_id"]
+        elif wt == "goal":
+            rows = self.db.query(
+                "SELECT id, progress, status, version FROM goals "
+                "WHERE id=? AND tenant_id=? AND user_id=?",
+                (wid, self.tenant_id, self.user_id))
+            if not rows:
+                raise GoalNotFound("goal not found")
+            gid = wid
+        else:
+            raise EpisodeNotCompleted("episode is not linked to an executable goal/assignment")
+
+        goal = self.db.query(
+            "SELECT * FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+            (gid, self.tenant_id, self.user_id))[0]
+
+        # Deterministic progress mapping (episode fraction 0..1 -> goal 0..100).
+        percent = min(100, int(round(float(ep.get("progress") or 0) * 100)))
+        new_progress = max(int(goal["progress"] or 0), percent)  # never reduce
+        cur_status = goal["status"]
+        if cur_status == "cancelled":
+            raise GoalCompletionConflict("cannot apply execution to a cancelled goal")
+        if float(ep.get("progress") or 0) >= 1.0:
+            if cur_status == "in_progress":
+                new_status = "done"
+            elif cur_status == "open":
+                # Preserve existing transition protection (open->done is disallowed).
+                raise GoalCompletionConflict(
+                    "goal must be in_progress before a completed execution can mark it done")
+            else:  # already done
+                new_status = "done"
+        else:
+            new_status = cur_status  # progress-only
+        if new_progress == 100 and new_status != "done":
+            raise GoalCompletionConflict("completed execution cannot be applied without completing the goal")
+
+        now = _now()
+        summary = str(evidence.get("summary"))[:120]
+        event_status = new_status if new_status != cur_status else "progress_update"
+        try:
+            with self.db.transaction() as c:
+                ap = c.execute(
+                    "UPDATE episodes SET applied_at=?, applied_by=? "
+                    "WHERE id=? AND tenant_id=? AND user_id=? AND applied_at IS NULL",
+                    (now, approver_user_id, episode_id, self.tenant_id, self.user_id))
+                if ap.rowcount == 0:
+                    raise EpisodeAlreadyApplied("episode already applied")
+                g = c.execute(
+                    "UPDATE goals SET progress=?, status=?, updated_at=?, version=version+1 "
+                    "WHERE id=? AND tenant_id=? AND user_id=? AND version=?",
+                    (new_progress, new_status, now, gid, self.tenant_id, self.user_id,
+                     int(goal["version"])))
+                if g.rowcount == 0:
+                    raise StaleGoalVersion("goal changed concurrently; re-review required")
+                c.execute(
+                    "INSERT INTO goal_events (id,tenant_id,goal_id,status,detail,created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), self.tenant_id, gid, event_status,
+                     f"progress={new_progress} status={new_status} evidence={summary}", now))
+        except EpisodeAlreadyApplied:
+            ep2 = self._get(episode_id)
+            return self._applied_result(ep2 or ep)
+        return {"applied": True, "already_applied": False, "episode_id": episode_id,
+                "work_type": wt, "work_id": wid, "goal_id": gid,
+                "goal_progress": new_progress, "goal_status": new_status,
+                "applied_at": now, "applied_by": approver_user_id,
+                "evidence_summary": summary}
+
+    def _latest_evidence_summary(self, episode_id: str) -> Optional[str]:
+        """Most recent persisted evidence summary (sanitized string only; never
+        returns raw evidence dicts or secret-bearing content)."""
+        rows = self.db.query(
+            "SELECT evidence_json FROM episode_events WHERE tenant_id=? AND episode_id=? "
+            "AND evidence_json IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+            (self.tenant_id, episode_id))
+        if not rows or not rows[0]["evidence_json"]:
+            return None
+        try:
+            summary = str(json.loads(rows[0]["evidence_json"]).get("summary") or "")
+            return summary[:200] or None
+        except Exception:
+            return None
+
+    def execution_summary(self, work_type: str, work_id: str) -> Dict[str, Any]:
+        """Read-only execution summary for a goal or assignment: active and
+        completed episodes with progress, latest evidence summary, and apply
+        state. Sanitized; no raw evidence/credentials exposed."""
+        if work_type not in {"goal", "assignment"}:
+            raise ValueError("unsupported work type")
+        rows = self.db.query(
+            "SELECT * FROM episodes WHERE tenant_id=? AND user_id=? AND work_type=? "
+            "AND work_id=? ORDER BY created_at ASC",
+            (self.tenant_id, self.user_id, work_type, work_id))
+        items = []
+        for r in rows:
+            items.append({
+                "episode_id": r["id"],
+                "agent_id": r["agent_id"],
+                "status": r["status"],
+                "progress": r.get("progress"),
+                "work_type": r.get("work_type"),
+                "work_id": r.get("work_id"),
+                "evidence_summary": self._latest_evidence_summary(r["id"]),
+                "applied_at": r.get("applied_at"),
+                "applied_by": r.get("applied_by"),
+                "created_at": r.get("created_at"),
+                "updated_at": r.get("updated_at"),
+            })
+        return {"work_type": work_type, "work_id": work_id, "episodes": items}
