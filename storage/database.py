@@ -254,6 +254,64 @@ CREATE TABLE IF NOT EXISTS goal_update_proposals (
     created_at TEXT NOT NULL,
     decided_at TEXT
 );
+CREATE TABLE IF NOT EXISTS brands (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_by_user_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS brand_facts (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    brand_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    source TEXT,
+    confidence REAL DEFAULT 0.5,
+    version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'approved',
+    proposal_id TEXT,
+    approved_by_user_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS brand_proposals (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    brand_id TEXT NOT NULL,
+    agent_id TEXT,
+    category TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    source TEXT,
+    reason TEXT,
+    context TEXT,
+    confidence REAL DEFAULT 0.5,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    base_version INTEGER,
+    created_by_user_id TEXT,
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by_user_id TEXT
+);
+CREATE TABLE IF NOT EXISTS brand_history (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    brand_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    category TEXT,
+    key TEXT,
+    old_value TEXT,
+    new_value TEXT,
+    proposal_id TEXT,
+    fact_id TEXT,
+    user_id TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 import uuid
