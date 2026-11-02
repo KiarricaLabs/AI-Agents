@@ -280,6 +280,8 @@ export default function App() {
   const [applyEid, setApplyEid] = useState<string | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyingEid, setApplyingEid] = useState<string | null>(null);
+  // --- M10 Phase D4.1: approved-assignment execution ---
+  const [confirmExec, setConfirmExec] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -838,6 +840,33 @@ export default function App() {
       setApplyError("Apply failed. Please try again.");
     } finally {
       setApplyingEid(null);
+    }
+  };
+
+  // --- M10 Phase D4.1: approved-assignment execution (human-confirmed) ---
+  const startApprovedExecution = async (aid: string, agentId: string) => {
+    if (offline || execBusy) return;
+    const key = `assignment:${aid}`;
+    setExecBusy(key);
+    setExecError(null);
+    setConfirmExec(null);
+    try {
+      const r = await fetch(`${API}/work/assignment/${aid}/execute-approved`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id: agentId }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setExecError((b as any).detail || `Could not start execution (${r.status}).`);
+        return;
+      }
+      setWorkEpisodes((prev) => ({ ...prev, [key]: b }));
+      refresh();
+    } catch {
+      setExecError("Could not start execution. Please try again.");
+    } finally {
+      setExecBusy(null);
     }
   };
 
@@ -1587,6 +1616,42 @@ export default function App() {
                               </div>
                               <p className="detail-panel__meta">Created {formatStamp(a.created_at)} · {ag ? `${ag.display_name || humanize(ag.name)} (${ag.archetype || ag.role})` : ""}</p>
                               <p className="detail-panel__hint">{a.task_id ? `Task: ${a.task_id}` : "No task attached yet."}</p>
+                              {(() => {
+                                const approved = feed.some(
+                                  (p) => p.work_type === "assignment" && p.status === "approved" && p.result_id === a.id);
+                                if (!approved) {
+                                  return <p className="detail-panel__hint" data-testid={`not-approved-${a.id}`}>Not approved for execution yet.</p>;
+                                }
+                                const key = `assignment:${a.id}`;
+                                const ep = workEpisodes[key];
+                                if (ep && ep.status === "running") {
+                                  return (
+                                    <div className="exec-control">
+                                      <span className="badge badge--running">Tracking</span>
+                                      <button className="origin-link" onClick={() => { setTab("episodes"); setSelectedEpisode(ep.episode_id); loadEpisode(ep.episode_id); }}>Open in Activity</button>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <div className="exec-control">
+                                    {confirmExec === a.id ? (
+                                      <>
+                                        <span className="muted">Start tracking this approved assignment?</span>
+                                        <button className="btn btn--sm btn--primary" data-testid={`run-${a.id}`} onClick={() => startApprovedExecution(a.id, a.agent_id)} disabled={!!execBusy}>
+                                          Confirm
+                                        </button>
+                                        <button className="btn btn--sm btn--ghost" onClick={() => setConfirmExec(null)}>Cancel</button>
+                                      </>
+                                    ) : (
+                                      <button className="btn btn--sm btn--primary" data-testid={`approved-run-${a.id}`} onClick={() => { setConfirmExec(a.id); setExecError(null); }} disabled={offline}>
+                                        Run approved
+                                      </button>
+                                    )}
+                                    {execError && <span className="muted">{execError}</span>}
+                                  </div>
+                                );
+                              })()}
+                              <ExecutionPanel wtype="assignment" wid={a.id} data={workExec[`assignment:${a.id}`]} onLoad={loadWorkExec} agentLabelFn={agentLabel} />
                             </>
                           );
                         })()}

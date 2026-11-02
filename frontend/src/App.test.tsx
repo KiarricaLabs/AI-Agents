@@ -1322,3 +1322,43 @@ describe("Evidence application & execution history (M10 D3)", () => {
     expect(screen.getByText("Applied")).toBeInTheDocument();
   });
 });
+
+describe("Approved-assignment execution (M10 D4.1)", () => {
+  const base = () => ({
+    [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+    [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
+    [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", title: "Ship v1", project_id: "p1", status: "open" }] }),
+    [`${API}/workspaces/assignments`]: () => ok({ items: [{ id: "a1", goal_id: "g1", agent_id: "tutor", status: "queued" }] }),
+    [`${API}/workspaces/deliverables`]: () => ok({ items: [] }),
+  });
+
+  it("shows Run approved only for a genuinely approved assignment", async () => {
+    const fn = makeFetch({
+      ...base(),
+      [`${API}/work/feed`]: () => ok({ items: [{ id: "pr1", work_type: "assignment", status: "approved", result_id: "a1" }] }),
+      [`${API}/work/assignment/a1/execute-approved`]: () => ok({ episode_id: "ep1", status: "running", already_active: false, assignment_id: "a1", agent_id: "tutor" }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click(await screen.findByTestId("assignment-a1"));
+    fireEvent.click(await screen.findByTestId("approved-run-a1"));
+    fireEvent.click(await screen.findByTestId("run-a1"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/work/assignment/a1/execute-approved`,
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ agent_id: "tutor" }) })
+      );
+    });
+    expect(await screen.findByText("Tracking")).toBeInTheDocument();
+  });
+
+  it("does not expose an execution control on an unapproved assignment", async () => {
+    globalThis.fetch = makeFetch({ ...base(), [`${API}/work/feed`]: () => ok({ items: [] }) }) as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click(await screen.findByTestId("assignment-a1"));
+    expect(await screen.findByTestId("not-approved-a1")).toBeInTheDocument();
+    expect(screen.queryByTestId("approved-run-a1")).not.toBeInTheDocument();
+  });
+});

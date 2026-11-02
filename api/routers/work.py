@@ -24,6 +24,14 @@ from core.work_proposals import (
     AGENT_SLUGS,
 )
 from core.episodes import EpisodeService
+from core.execution import (
+    ApprovedExecutionService,
+    AssignmentNotFound,
+    AssignmentNotApproved,
+    InvalidAgent,
+    AgentMismatch,
+    SelfExecution,
+)
 from storage.database import Database
 from config.settings import DB_PATH, DEFAULT_TENANT
 
@@ -60,6 +68,28 @@ _EXEC_TYPES = {"assignment", "goal"}
 
 class ExecuteBody(BaseModel):
     agent_id: str
+
+
+@router.post("/assignment/{assignment_id}/execute-approved")
+def execute_approved_assignment(assignment_id: str, body: ExecuteBody, request: Request, response: Response):
+    """Human-only execution tracking of an APPROVED assignment. Independently
+    verifies ownership + genuine approval before starting/reusing the Episode.
+    Lifecycle tracking only; no worker/dispatch/autonomy."""
+    t, u = _identity(request)
+    _require_human(request)
+    try:
+        result = ApprovedExecutionService(db=_db, tenant_id=t, user_id=u).execute_approved_assignment(
+            assignment_id, u, body.agent_id)
+    except AssignmentNotFound:
+        raise HTTPException(status_code=404, detail="assignment not found")
+    except AssignmentNotApproved:
+        raise HTTPException(status_code=403, detail="assignment is not approved for execution")
+    except (InvalidAgent, AgentMismatch) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except SelfExecution:
+        raise HTTPException(status_code=403, detail="an agent cannot start its own execution")
+    response.status_code = 201 if not result["already_active"] else 200
+    return result
 
 
 @router.post("/{work_type}/{work_id}/execute")
