@@ -1,23 +1,24 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { diffLines } from "./diff";
 import { Markdown } from "./markdown";
+import { KNOWN_SAMPLE_IDS } from "./knownSamples";
+import { statusLabel, priorityText } from "./uiText";
 import "./App.css";
 
 const API = "http://127.0.0.1:8001";
 
-type Tab =
-  | "overview"
-  | "workspace"
-  | "work"
-  | "episodes"
-  | "agents";
+// Browser-only, presentation-level storage keys for the sample-data control.
+const SAMPLE_VISIBLE_KEY = "pat.sampleData.visible";
+const SAMPLE_REVEALED_KEY = "pat.sampleData.revealed";
 
-const NAV: { id: Tab; icon: string }[] = [
-  { id: "overview", icon: "home" },
-  { id: "workspace", icon: "grid" },
-  { id: "work", icon: "briefcase" },
-  { id: "episodes", icon: "activity" },
-  { id: "agents", icon: "bot" },
+type Tab = "overview" | "workspace" | "work" | "episodes" | "agents";
+
+const NAV: { id: Tab; icon: string; label: string }[] = [
+  { id: "overview", icon: "home", label: "Overview" },
+  { id: "workspace", icon: "grid", label: "Workspaces" },
+  { id: "work", icon: "briefcase", label: "Work" },
+  { id: "episodes", icon: "activity", label: "Activity" },
+  { id: "agents", icon: "bot", label: "Agents" },
 ];
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
@@ -161,6 +162,65 @@ export default function App() {
   const [deliverableStatusFilter, setDeliverableStatusFilter] = useState("");
   const [deliverableSearch, setDeliverableSearch] = useState("");
 
+  // --- Sample-data presentation control (browser-only; no DB/API change) ---
+  const [sampleDataVisible, setSampleDataVisible] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SAMPLE_VISIBLE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [revealedIds, setRevealedIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(SAMPLE_REVEALED_KEY) || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [manageSamples, setManageSamples] = useState(false);
+  // Detail selections for click-through views.
+  const [selectedGoal, setSelectedGoal] = useState<string | null>(null);
+  const [selectedAssignment, setSelectedAssignment] = useState<string | null>(null);
+  // Deliverable version UX.
+  const [showRawDiff, setShowRawDiff] = useState(false);
+  const [rejectingVersion, setRejectingVersion] = useState<string | null>(null);
+  const [approvingVersion, setApprovingVersion] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [versionError, setVersionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SAMPLE_VISIBLE_KEY, sampleDataVisible ? "1" : "0");
+    } catch {}
+  }, [sampleDataVisible]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(SAMPLE_REVEALED_KEY, JSON.stringify(revealedIds));
+    } catch {}
+  }, [revealedIds]);
+
+  const isSample = (id: string) => KNOWN_SAMPLE_IDS.has(id);
+  const isRevealed = (id: string) => revealedIds.includes(id);
+  // A record is hidden only when sample data is hidden AND it is a known sample
+  // AND it has not been individually revealed. IDs are the sole signal — names
+  // are never used, so future legitimate records with any name stay visible.
+  const effectiveHide = (id: string) =>
+    !sampleDataVisible && isSample(id) && !isRevealed(id);
+  const visibleOnly = (arr: { id: string }[]): any[] =>
+    arr.filter((x) => !effectiveHide(x.id));
+  const revealSample = (id: string) =>
+    setRevealedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  const resetRevealed = () => setRevealedIds([]);
+  const toggleAllSamples = () => setSampleDataVisible((v) => !v);
+
+  // --- Conversation browser (global, all agents) ---
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [convFilter, setConvFilter] = useState("");
+  const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  const [transcript, setTranscript] = useState<any[]>([]);
+  const [renamingThread, setRenamingThread] = useState<string | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
+
   useEffect(() => {
     fetch(`${API}/health`)
       .then((r) => r.json())
@@ -171,6 +231,7 @@ export default function App() {
       });
     refresh();
     fetchAgents();
+    loadConvos();
   }, []);
 
   const fetchAgents = async () => {
@@ -183,10 +244,64 @@ export default function App() {
     }
   };
 
+  const loadConvos = async () => {
+    try {
+      const r = await fetch(`${API}/memory/conversations`);
+      const d = await r.json();
+      setConversations(d.items || []);
+    } catch {
+      /* offline or backend unavailable */
+    }
+  };
+
+  const openConversation = async (c: any) => {
+    setOpenThreadId(c.thread_id);
+    setTranscript([]);
+    setAgentResult(null);
+    setAgentError("");
+    try {
+      const r = await fetch(
+        `${API}/memory/conversation?thread_id=${encodeURIComponent(c.thread_id)}`
+      );
+      const d = await r.json();
+      setTranscript((d.items || []).map((m: any) => ({
+        role: m.role, content: m.content, created_at: m.created_at,
+      })));
+    } catch {
+      /* offline or backend unavailable */
+    }
+    // Restore the correct agent + thread so continuing appends to THIS thread.
+    if (c.agent_id) {
+      setSelectedAgent(c.agent_id);
+      setThreadIds((prev) => ({ ...prev, [c.agent_id]: c.thread_id }));
+    }
+  };
+
+  const renameConversation = async (c: any, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed || renamingThread !== c.thread_id) return;
+    await fetch(`${API}/memory/conversations/${encodeURIComponent(c.thread_id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: trimmed }),
+    });
+    setRenamingThread(null);
+    setRenameTitle("");
+    loadConvos();
+  };
+
+  const startRename = (c: any) => {
+    setRenamingThread(c.thread_id);
+    setRenameTitle(c.title || "");
+  };
+
   const selectAgent = (agentName: string) => {
     setSelectedAgent(agentName);
     setAgentResult(null);
     setAgentError("");
+    // Choosing an agent starts a fresh context (saved conversations are untouched).
+    setOpenThreadId(null);
+    setTranscript([]);
   };
 
   const runAgent = async () => {
@@ -211,13 +326,25 @@ export default function App() {
         setAgentError(body.detail || `request failed (${r.status})`);
         setTask(submitted); // preserve the message on a rejected submission
       } else {
-        setAgentResult(body);
+        // If this run continues the currently-open saved conversation, append the
+        // new turns to its transcript instead of replacing the last reply.
+        const continuing = Boolean(openThreadId) && body.thread_id === openThreadId;
+        if (continuing) {
+          setTranscript((prev) => [
+            ...prev,
+            { role: "user", content: submitted, created_at: new Date().toISOString() },
+            { role: "assistant", content: body.reply || "", created_at: new Date().toISOString() },
+          ]);
+        } else {
+          setAgentResult(body);
+        }
         if (body.thread_id) {
           setThreadIds((prev) => ({ ...prev, [selectedAgent]: body.thread_id }));
         }
         if (typeof body.context_messages === "number") {
           setContextCounts((prev) => ({ ...prev, [selectedAgent]: body.context_messages }));
         }
+        loadConvos();
       }
     } catch (e: any) {
       setAgentError(e?.message || "network error");
@@ -241,6 +368,11 @@ export default function App() {
     setAgentResult(null);
     setAgentError("");
     setTask("");
+    // Start fresh: stop viewing an opened transcript (saved conversations are
+    // never deleted or altered by New Conversation).
+    setOpenThreadId(null);
+    setTranscript([]);
+    loadConvos();
   };
 
   const refresh = async () => {
@@ -318,25 +450,58 @@ export default function App() {
 
   const loadVersions = async (did: string) => {
     setSelectedDeliverable(did);
-    const r = await fetch(`${API}/workspaces/deliverables/${did}/versions`);
-    const d = await r.json();
-    setVersions(d.items || []);
+    try {
+      const r = await fetch(`${API}/workspaces/deliverables/${did}/versions`);
+      if (!r.ok) {
+        setVersionError("Could not refresh deliverable versions.");
+        return;
+      }
+      const d = await r.json();
+      setVersions(d.items || []);
+      setVersionError(null);
+    } catch {
+      setVersionError("Could not refresh deliverable versions.");
+    }
   };
 
-  const approveVersion = async (vid: string) => {
+  const confirmApprove = async (vid: string) => {
     if (offline) return;
-    await fetch(`${API}/workspaces/versions/${vid}/approve`, { method: "POST" });
-    if (selectedDeliverable) loadVersions(selectedDeliverable);
+    setVersionError(null);
+    try {
+      const r = await fetch(`${API}/workspaces/versions/${vid}/approve`, { method: "POST" });
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({}));
+        setVersionError((b as any).detail || `Approve failed (${r.status}).`);
+        return; // keep prompt open; do not imply success
+      }
+      setApprovingVersion(null);
+      if (selectedDeliverable) loadVersions(selectedDeliverable);
+    } catch {
+      setVersionError("Approve failed. Please try again.");
+    }
   };
 
-  const rejectVersion = async (vid: string) => {
+  const submitReject = async (vid: string) => {
     if (offline) return;
-    await fetch(`${API}/workspaces/versions/${vid}/reject`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: "requested revision" }),
-    });
-    if (selectedDeliverable) loadVersions(selectedDeliverable);
+    const reason = rejectReason.trim() || "Requested revision";
+    setVersionError(null);
+    try {
+      const r = await fetch(`${API}/workspaces/versions/${vid}/reject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({}));
+        setVersionError((b as any).detail || `Reject failed (${r.status}).`);
+        return; // keep prompt open + reason; do not imply success
+      }
+      setRejectingVersion(null);
+      setRejectReason("");
+      if (selectedDeliverable) loadVersions(selectedDeliverable);
+    } catch {
+      setVersionError("Reject failed. Please try again.");
+    }
   };
 
   const cancelEpisode = async (eid: string) => {
@@ -389,12 +554,31 @@ export default function App() {
     setSelectedDeliverable(null);
   };
 
-  const projectsIn = (wid: string) => projects.filter((p) => p.workspace_id === wid);
-  const goalsIn = (pid: string) => goals.filter((g) => g.project_id === pid);
-  const deliverablesIn = (pid: string) => deliverablesList.filter((d) => d.project_id === pid);
+  // Jump to a project (or goal) detail from the Overview tab.
+  const goToProject = (pid: string) => {
+    const p = projects.find((x) => x.id === pid);
+    setTab("workspace");
+    setSelectedDeliverable(null);
+    setSelectedGoal(null);
+    setSelectedProjectId(pid || null);
+    setSelectedWorkspaceId(p ? p.workspace_id : null);
+  };
+  const goToGoal = (gid: string) => {
+    const g = goals.find((x) => x.id === gid);
+    const p = g ? projects.find((x) => x.id === g.project_id) : undefined;
+    setTab("workspace");
+    setSelectedDeliverable(null);
+    setSelectedGoal(gid);
+    setSelectedProjectId(p ? p.id : null);
+    setSelectedWorkspaceId(p ? p.workspace_id : null);
+  };
+
+  const projectsIn = (wid: string) => visibleOnly(projects.filter((p) => p.workspace_id === wid));
+  const goalsIn = (pid: string) => visibleOnly(goals.filter((g) => g.project_id === pid));
+  const deliverablesIn = (pid: string) => visibleOnly(deliverablesList.filter((d) => d.project_id === pid));
   const assignmentsIn = (pid: string) => {
-    const goalIds = new Set(goalsIn(pid).map((g) => g.id));
-    return assignments.filter((a) => goalIds.has(a.goal_id));
+    const goalIds = new Set(visibleOnly(goals).filter((g) => g.project_id === pid).map((g) => g.id));
+    return visibleOnly(assignments.filter((a) => goalIds.has(a.goal_id)));
   };
   const agentLabel = (slug: string) => {
     const a = agents.find((x) => x.name === slug);
@@ -403,10 +587,13 @@ export default function App() {
   const agentArchetype = (slug: string) => agents.find((x) => x.name === slug)?.archetype || "";
   const titleOfGoal = (gid: string) => goals.find((g) => g.id === gid)?.title || gid;
   const workspaceName = (wid: string) => workspaces.find((w) => w.id === wid)?.name || "Unknown workspace";
-  const openGoals = goals.filter((g) => g.status !== "done" && g.status !== "cancelled");
-  const recentProjects = [...projects]
+  const openGoals = visibleOnly(goals).filter((g) => g.status !== "done" && g.status !== "cancelled");
+  const recentProjects = [...visibleOnly(projects)]
     .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
     .slice(0, 5);
+  const visibleWorkspaces = visibleOnly(workspaces);
+  const visibleEpisodes = visibleOnly(episodes);
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
   // Work view: scope records to the selected project, then apply per-section filters.
   const workGoals = selectedProjectId ? goalsIn(selectedProjectId) : [];
@@ -448,15 +635,15 @@ export default function App() {
           </div>
           <div>
             <h1 className="brand__title">Personal AI Team</h1>
-            <p className="brand__tagline">Local multi-agent workspace</p>
+            <p className="brand__tagline">Your six AI teammates, on your own device</p>
           </div>
         </div>
         <div className="status">
           <span className={`status__dot status__dot--${status}`} />
           <span className="status__label">
-            {status === "checking" ? "Connecting" : status === "online" ? "Backend online" : "Offline"}
+            {status === "checking" ? "Connecting…" : status === "online" ? "Connected" : "Offline"}
           </span>
-          <span className="status__chip">local · Ollama</span>
+          <span className="status__chip">On-device · Ollama</span>
         </div>
       </header>
 
@@ -466,18 +653,69 @@ export default function App() {
         </div>
       )}
 
+      <div className="sample-bar">
+        <button className="btn btn--ghost btn--sm" onClick={toggleAllSamples}>
+          {sampleDataVisible ? "Hide sample data" : "Show sample data"}
+        </button>
+        <button className="btn btn--ghost btn--sm" onClick={() => setManageSamples(true)}>
+          Manage samples
+        </button>
+        <span className="sample-bar__hint">
+          {sampleDataVisible
+            ? "Showing all records, including sample data."
+            : "Sample/test data is hidden. Your own records are never hidden."}
+        </span>
+      </div>
+
       <nav className="nav" aria-label="Sections">
         {NAV.map((n) => (
           <button
             key={n.id}
+            data-route={n.id}
             className={`nav__btn${tab === n.id ? " nav__btn--active" : ""}`}
             onClick={() => setTab(n.id)}
+            aria-label={n.label}
           >
             <Icon name={n.icon} />
-            <span className="nav__label">{n.id}</span>
+            <span className="nav__label">{n.label}</span>
           </button>
         ))}
       </nav>
+
+      {manageSamples && (
+        <div className="sample-manage" role="dialog" aria-label="Manage sample data">
+          <div className="sample-manage__head">
+            <h3>Manage sample data</h3>
+            <div className="sample-manage__actions">
+              <button className="btn btn--ghost btn--sm" onClick={() => resetRevealed()}>
+                Reset reveals
+              </button>
+              <button className="btn btn--ghost btn--sm" onClick={() => setManageSamples(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+          <p className="sample-manage__hint">
+            Sample records stay in your database — hiding here is a view-only preference.
+          </p>
+          <ul className="list">
+            {visibleOnly(workspaces).filter((w) => KNOWN_SAMPLE_IDS.has(w.id)).length === 0 ? (
+              <li className="list__item"><span className="list__name">No hidden workspaces.</span></li>
+            ) : (
+              visibleOnly(workspaces)
+                .filter((w) => KNOWN_SAMPLE_IDS.has(w.id))
+                .map((w) => (
+                  <li key={w.id} className="list__item">
+                    <span className="list__name">{w.name}</span>
+                    <button className="btn btn--ghost btn--sm" onClick={() => revealSample(w.id)}>
+                      Keep visible
+                    </button>
+                  </li>
+                ))
+            )}
+          </ul>
+        </div>
+      )}
 
       <main className="content">
         {tab === "overview" && (
@@ -490,15 +728,15 @@ export default function App() {
             </div>
 
             <div className="stats">
-              <Stat icon="grid" label="Workspaces" value={workspaces.length} />
-              <Stat icon="briefcase" label="Projects" value={projects.length} />
+              <Stat icon="grid" label="Workspaces" value={visibleWorkspaces.length} />
+              <Stat icon="briefcase" label="Projects" value={visibleOnly(projects).length} />
               <Stat icon="target" label="Open goals" value={openGoals.length} />
-              <Stat icon="checklist" label="Assignments" value={assignments.length} />
-              <Stat icon="file" label="Deliverables" value={deliverablesList.length} />
+              <Stat icon="checklist" label="Assignments" value={visibleOnly(assignments).length} />
+              <Stat icon="file" label="Deliverables" value={visibleOnly(deliverablesList).length} />
             </div>
 
-            {workspaces.length === 0 ? (
-              <Empty text="No workspaces yet. Open the Workspace section to create your first workspace and start organizing projects." />
+            {visibleWorkspaces.length === 0 ? (
+              <Empty text="No workspaces yet. Open the Workspaces section to create your first workspace and start organizing projects." />
             ) : (
               <div className="overview-grid">
                 <div className="overview-col">
@@ -508,11 +746,15 @@ export default function App() {
                   ) : (
                     <ul className="list">
                       {recentProjects.map((p) => (
-                        <li key={p.id} className="list__item">
+                        <li
+                          key={p.id}
+                          className="list__item list__item--clickable"
+                          onClick={() => goToProject(p.id)}
+                        >
                           <span className="list__icon"><Icon name="briefcase" size={16} /></span>
                           <span className="list__name">{p.name}</span>
                           <span className="badge badge--faint">{workspaceName(p.workspace_id)}</span>
-                          <span className={`badge badge--${p.status || "neutral"}`}>{p.status}</span>
+                          <span className={`badge badge--${p.status || "neutral"}`}>{statusLabel(p.status)}</span>
                         </li>
                       ))}
                     </ul>
@@ -525,10 +767,14 @@ export default function App() {
                   ) : (
                     <ul className="list">
                       {openGoals.map((g) => (
-                        <li key={g.id} className="list__item">
+                        <li
+                          key={g.id}
+                          className="list__item list__item--clickable"
+                          onClick={() => goToGoal(g.id)}
+                        >
                           <span className="list__icon"><Icon name="target" size={16} /></span>
                           <span className="list__name">{g.title}</span>
-                          <span className={`badge badge--${g.status || "open"}`}>{g.status}</span>
+                          <span className={`badge badge--${g.status || "open"}`}>{statusLabel(g.status)}</span>
                         </li>
                       ))}
                     </ul>
@@ -592,11 +838,11 @@ export default function App() {
             </div>
 
             {!selectedWorkspaceId &&
-              (workspaces.length === 0 ? (
+              (visibleWorkspaces.length === 0 ? (
                 <Empty text="No workspaces yet — create one above to get started." />
               ) : (
                 <ul className="list">
-                  {workspaces.map((w) => (
+                  {visibleWorkspaces.map((w) => (
                     <li
                       key={w.id}
                       className="list__item list__item--clickable"
@@ -607,7 +853,7 @@ export default function App() {
                     >
                       <span className="list__icon"><Icon name="grid" size={16} /></span>
                       <span className="list__name">{w.name}</span>
-                      <span className="badge badge--neutral">{projectsIn(w.id).length} projects</span>
+                      <span className="badge badge--neutral">{plural(projectsIn(w.id).length, "project")}</span>
                     </li>
                   ))}
                 </ul>
@@ -633,8 +879,8 @@ export default function App() {
                       >
                         <span className="list__icon"><Icon name="briefcase" size={16} /></span>
                         <span className="list__name">{p.name}</span>
-                        <span className="badge badge--neutral">{goalsIn(p.id).length} goals</span>
-                        <span className={`badge badge--${p.status || "neutral"}`}>{p.status}</span>
+                        <span className="badge badge--neutral">{plural(goalsIn(p.id).length, "goal")}</span>
+                        <span className={`badge badge--${p.status || "neutral"}`}>{statusLabel(p.status)}</span>
                       </li>
                     ))}
                   </ul>
@@ -654,10 +900,10 @@ export default function App() {
                       <div>
                         <h3 className="section-title">{p?.name || "Project"}</h3>
                         <p className="panel__sub">
-                          {pGoals.length} goals · {pAssignments.length} assignments · {pDeliverables.length} deliverables
+                          {plural(pGoals.length, "goal")} · {plural(pAssignments.length, "assignment")} · {plural(pDeliverables.length, "deliverable")}
                         </p>
                       </div>
-                      <span className={`badge badge--${p?.status || "neutral"}`}>{p?.status || "—"}</span>
+                      <span className={`badge badge--${p?.status || "neutral"}`}>{statusLabel(p?.status)}</span>
                     </div>
 
                     <h4 className="subsection-title">Goals</h4>
@@ -666,14 +912,40 @@ export default function App() {
                     ) : (
                       <ul className="list">
                         {pGoals.map((g) => (
-                          <li key={g.id} className="list__item">
+                          <li
+                            key={g.id}
+                            className={`list__item list__item--clickable${selectedGoal === g.id ? " list__item--selected" : ""}`}
+                            onClick={() => setSelectedGoal(selectedGoal === g.id ? null : g.id)}
+                          >
                             <span className="list__icon"><Icon name="target" size={16} /></span>
                             <span className="list__name">{g.title}</span>
-                            <span className={`badge badge--${g.status || "open"}`}>{g.status}</span>
-                            <span className="badge badge--neutral">p{g.priority}</span>
+                            <span className={`badge badge--${g.status || "open"}`}>{statusLabel(g.status)}</span>
                           </li>
                         ))}
                       </ul>
+                    )}
+                    {selectedGoal && pGoals.some((g) => g.id === selectedGoal) && (
+                      <div className="detail-panel">
+                        {(() => {
+                          const g = pGoals.find((x) => x.id === selectedGoal)!;
+                          const asgs = pAssignments.filter((a) => a.goal_id === g.id);
+                          return (
+                            <>
+                              <div className="detail-panel__head">
+                                <h4 className="detail-panel__title">{g.title}</h4>
+                                <button className="btn btn--ghost btn--sm" onClick={() => setSelectedGoal(null)}>Close</button>
+                              </div>
+                              <div className="detail-panel__grid">
+                                <div className="detail-panel__item"><span className="detail-panel__label">Status</span><span className={`badge badge--${g.status || "open"}`}>{statusLabel(g.status)}</span></div>
+                                <div className="detail-panel__item"><span className="detail-panel__label">Progress</span><span>{g.progress ?? 0}%</span></div>
+                                <div className="detail-panel__item"><span className="detail-panel__label">Priority</span><span>{priorityText(g.priority)}</span></div>
+                              </div>
+                              <p className="detail-panel__meta">Created {formatStamp(g.created_at)} · {asgs.length} assignment(s)</p>
+                              <p className="detail-panel__hint">This goal is part of the project you are viewing. Deliverables and agent work for it appear under the relevant sections.</p>
+                            </>
+                          );
+                        })()}
+                      </div>
                     )}
 
                     <h4 className="subsection-title">Assignments</h4>
@@ -682,14 +954,41 @@ export default function App() {
                     ) : (
                       <ul className="list">
                         {pAssignments.map((a) => (
-                          <li key={a.id} className="list__item">
+                          <li
+                            key={a.id}
+                            className={`list__item list__item--clickable${selectedAssignment === a.id ? " list__item--selected" : ""}`}
+                            onClick={() => setSelectedAssignment(selectedAssignment === a.id ? null : a.id)}
+                          >
                             <span className="list__icon"><Icon name="checklist" size={16} /></span>
                             <span className="list__name">{agentLabel(a.agent_id)}</span>
                             <span className="badge badge--faint">{titleOfGoal(a.goal_id)}</span>
-                            <span className={`badge badge--${a.status || "queued"}`}>{a.status || "queued"}</span>
+                            <span className={`badge badge--${a.status || "queued"}`}>{statusLabel(a.status)}</span>
                           </li>
                         ))}
                       </ul>
+                    )}
+                    {selectedAssignment && pAssignments.some((a) => a.id === selectedAssignment) && (
+                      <div className="detail-panel">
+                        {(() => {
+                          const a = pAssignments.find((x) => x.id === selectedAssignment)!;
+                          const ag = agents.find((x) => x.name === a.agent_id);
+                          return (
+                            <>
+                              <div className="detail-panel__head">
+                                <h4 className="detail-panel__title">Assignment</h4>
+                                <button className="btn btn--ghost btn--sm" onClick={() => setSelectedAssignment(null)}>Close</button>
+                              </div>
+                              <div className="detail-panel__grid">
+                                <div className="detail-panel__item"><span className="detail-panel__label">Agent</span><span>{agentLabel(a.agent_id)}</span></div>
+                                <div className="detail-panel__item"><span className="detail-panel__label">Goal</span><span>{titleOfGoal(a.goal_id)}</span></div>
+                                <div className="detail-panel__item"><span className="detail-panel__label">Status</span><span className={`badge badge--${a.status || "queued"}`}>{statusLabel(a.status)}</span></div>
+                              </div>
+                              <p className="detail-panel__meta">Created {formatStamp(a.created_at)} · {ag ? `${ag.display_name || humanize(ag.name)} (${ag.archetype || ag.role})` : ""}</p>
+                              <p className="detail-panel__hint">{a.task_id ? `Task: ${a.task_id}` : "No task attached yet."}</p>
+                            </>
+                          );
+                        })()}
+                      </div>
                     )}
 
                     <h4 className="subsection-title">Deliverables</h4>
@@ -698,10 +997,16 @@ export default function App() {
                     ) : (
                       <ul className="list">
                         {pDeliverables.map((d) => (
-                          <li key={d.id} className="list__item">
+                          <li
+                            key={d.id}
+                            className={`list__item list__item--clickable${selectedDeliverable === d.id ? " list__item--selected" : ""}`}
+                            onClick={() => loadVersions(d.id)}
+                          >
                             <span className="list__icon"><Icon name="file" size={16} /></span>
                             <span className="list__name">{d.title}</span>
-                            <span className="badge badge--faint">#{d.id.slice(0, 6)}</span>
+                            <span className={`badge ${d.latest_status ? `badge--${d.latest_status}` : "badge--neutral"}`}>
+                              {d.latest_status ? statusLabel(d.latest_status) : "No versions"}
+                            </span>
                           </li>
                         ))}
                       </ul>
@@ -730,7 +1035,7 @@ export default function App() {
                 aria-label="Workspace"
               >
                 <option value="">Select a workspace…</option>
-                {workspaces.map((w) => (
+                {visibleWorkspaces.map((w) => (
                   <option key={w.id} value={w.id}>{w.name}</option>
                 ))}
               </select>
@@ -773,16 +1078,43 @@ export default function App() {
                   ) : filteredGoals.length === 0 ? (
                     <Empty text="No goals match your filters or search." />
                   ) : (
+                    <>
                     <ul className="list">
                       {filteredGoals.map((g) => (
-                        <li key={g.id} className="list__item">
+                        <li
+                          key={g.id}
+                          className={`list__item list__item--clickable${selectedGoal === g.id ? " list__item--selected" : ""}`}
+                          onClick={() => setSelectedGoal(selectedGoal === g.id ? null : g.id)}
+                        >
                           <span className="list__icon"><Icon name="target" size={16} /></span>
                           <span className="list__name">{g.title}</span>
-                          <span className={`badge badge--${g.status || "open"}`}>{g.status || "open"}</span>
-                          <span className="badge badge--neutral">p{g.priority}</span>
+                          <span className={`badge badge--${g.status || "open"}`}>{statusLabel(g.status)}</span>
                         </li>
                       ))}
                     </ul>
+                    {selectedGoal && workGoals.some((g) => g.id === selectedGoal) && (
+                      <div className="detail-panel">
+                        {(() => {
+                          const g = workGoals.find((x) => x.id === selectedGoal)!;
+                          const asgs = workAssignments.filter((a) => a.goal_id === g.id);
+                          return (
+                            <>
+                              <div className="detail-panel__head">
+                                <h4 className="detail-panel__title">{g.title}</h4>
+                                <button className="btn btn--ghost btn--sm" onClick={() => setSelectedGoal(null)}>Close</button>
+                              </div>
+                              <div className="detail-panel__grid">
+                                <div className="detail-panel__item"><span className="detail-panel__label">Status</span><span className={`badge badge--${g.status || "open"}`}>{statusLabel(g.status)}</span></div>
+                                <div className="detail-panel__item"><span className="detail-panel__label">Progress</span><span>{g.progress ?? 0}%</span></div>
+                                <div className="detail-panel__item"><span className="detail-panel__label">Priority</span><span>{priorityText(g.priority)}</span></div>
+                              </div>
+                              <p className="detail-panel__meta">Created {formatStamp(g.created_at)} · {asgs.length} assignment(s)</p>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+                    </>
                   )}
                 </div>
 
@@ -804,18 +1136,47 @@ export default function App() {
                   ) : filteredAssignments.length === 0 ? (
                     <Empty text="No assignments match your filters or search." />
                   ) : (
+                    <>
                     <ul className="list">
                       {filteredAssignments.map((a) => (
-                        <li key={a.id} className="list__item">
+                        <li
+                          key={a.id}
+                          data-testid={`assignment-${a.id}`}
+                          className={`list__item list__item--clickable${selectedAssignment === a.id ? " list__item--selected" : ""}`}
+                          onClick={() => setSelectedAssignment(selectedAssignment === a.id ? null : a.id)}
+                        >
                           <span className="list__icon"><Icon name="checklist" size={16} /></span>
                           <span className="list__name">{agentLabel(a.agent_id)}</span>
                           {agentArchetype(a.agent_id) && <span className="badge badge--faint">{agentArchetype(a.agent_id)}</span>}
                           <span className="badge badge--faint">{titleOfGoal(a.goal_id)}</span>
-                          <span className={`badge badge--${a.status || "queued"}`}>{a.status || "queued"}</span>
-                          <span className="badge badge--neutral">p{a.priority}</span>
+                          <span className={`badge badge--${a.status || "queued"}`}>{statusLabel(a.status)}</span>
                         </li>
                       ))}
                     </ul>
+                    {selectedAssignment && workAssignments.some((a) => a.id === selectedAssignment) && (
+                      <div className="detail-panel">
+                        {(() => {
+                          const a = workAssignments.find((x) => x.id === selectedAssignment)!;
+                          const ag = agents.find((x) => x.name === a.agent_id);
+                          return (
+                            <>
+                              <div className="detail-panel__head">
+                                <h4 className="detail-panel__title">Assignment</h4>
+                                <button className="btn btn--ghost btn--sm" onClick={() => setSelectedAssignment(null)}>Close</button>
+                              </div>
+                              <div className="detail-panel__grid">
+                                <div className="detail-panel__item"><span className="detail-panel__label">Agent</span><span>{agentLabel(a.agent_id)}</span></div>
+                                <div className="detail-panel__item"><span className="detail-panel__label">Goal</span><span>{titleOfGoal(a.goal_id)}</span></div>
+                                <div className="detail-panel__item"><span className="detail-panel__label">Status</span><span className={`badge badge--${a.status || "queued"}`}>{statusLabel(a.status)}</span></div>
+                              </div>
+                              <p className="detail-panel__meta">Created {formatStamp(a.created_at)} · {ag ? `${ag.display_name || humanize(ag.name)} (${ag.archetype || ag.role})` : ""}</p>
+                              <p className="detail-panel__hint">{a.task_id ? `Task: ${a.task_id}` : "No task attached yet."}</p>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+                    </>
                   )}
                 </div>
 
@@ -850,55 +1211,120 @@ export default function App() {
                           <span className="list__icon"><Icon name="file" size={16} /></span>
                           <span className="list__name">{d.title}</span>
                           <span className={`badge ${d.latest_status ? `badge--${d.latest_status}` : "badge--neutral"}`}>
-                            {d.latest_status || "no versions"}
+                            {statusLabel(d.latest_status) || "No versions"}
                           </span>
-                          <span className="badge badge--faint">#{d.id.slice(0, 6)}</span>
                         </li>
                       ))}
                     </ul>
                   )}
                 </div>
 
-                {selectedDeliverable && (
-                  <div className="versions">
-                    <h3 className="versions__title">Versions</h3>
-                    {versions.length === 0 ? (
-                      <Empty text="No versions yet." />
-                    ) : (
-                      <ul className="versions__list">
-                        {versions.map((v) => (
-                          <li key={v.id} className="version">
-                            <div className="version__meta">
-                              <span className={`badge badge--${v.status || "neutral"}`}>v{v.version}</span>
-                              <span className={`badge badge--${v.status || "neutral"}`}>{v.status}</span>
-                            </div>
-                            <div className="version__content">{v.content}</div>
-                            {!offline && v.status !== "approved" && (
-                              <div className="version__actions">
-                                <button className="btn btn--ghost" onClick={() => approveVersion(v.id)}>
-                                  Approve
-                                </button>
-                                <button className="btn btn--danger-ghost" onClick={() => rejectVersion(v.id)}>
-                                  Reject
-                                </button>
+                {selectedDeliverable &&
+                  (() => {
+                    const first = versions[0];
+                    const last = versions[versions.length - 1];
+                    const summary =
+                      first && last
+                        ? diffLines(first.content, last.content)
+                        : { added: [] as string[], removed: [] as string[], changed: [] as string[] };
+                    return (
+                      <div className="versions">
+                        <div className="versions__head">
+                          <h3 className="versions__title">Deliverable versions</h3>
+                          <span className="badge badge--faint">{versions.length} version(s)</span>
+                        </div>
+                        {versionError && (
+                          <div className="error-banner" role="alert" data-testid="version-error">
+                            {versionError}
+                          </div>
+                        )}
+                        {versions.length === 0 ? (
+                          <Empty text="No versions yet." />
+                        ) : (
+                          <div className="versions__list">
+                            {versions.map((v) => (
+                              <div key={v.id} className="version" data-testid="version">
+                                <div className="version__meta">
+                                  <span className={`badge badge--${v.status || "neutral"}`}>v{v.version}</span>
+                                  <span className={`badge badge--${v.status || "neutral"}`}>{statusLabel(v.status)}</span>
+                                  {v.created_at && <span className="badge badge--faint">created {formatStamp(v.created_at)}</span>}
+                                </div>
+                                {v.content ? (
+                                  <div className="version__content markdown"><Markdown source={v.content} /></div>
+                                ) : (
+                                  <p className="detail-panel__hint">No content in this version.</p>
+                                )}
+
+                                {!offline && v.status !== "approved" && v.status !== "rejected" && (
+                                  <div className="version__actions">
+                                    {approvingVersion === v.id ? (
+                                      <div className="confirm-row">
+                                        <span>Approve v{v.version}? This marks it as the accepted deliverable output.</span>
+                                        <button className="btn btn--primary btn--sm" onClick={() => confirmApprove(v.id)}>Confirm approve</button>
+                                        <button className="btn btn--ghost btn--sm" onClick={() => setApprovingVersion(null)}>Cancel</button>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <button className="btn btn--ghost btn--sm" onClick={() => setApprovingVersion(v.id)}>Approve</button>
+                                        <button className="btn btn--danger-ghost btn--sm" onClick={() => { setRejectReason(""); setRejectingVersion(v.id); }}>Request revision</button>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+
+                                {rejectingVersion === v.id && (
+                                  <div className="reject-row">
+                                    <label htmlFor={`reason-${v.id}`}>What should be revised? (optional)</label>
+                                    <input
+                                      id={`reason-${v.id}`}
+                                      className="input"
+                                      value={rejectReason}
+                                      onChange={(e) => setRejectReason(e.target.value)}
+                                      placeholder="Share what needs to change"
+                                    />
+                                    <button className="btn btn--primary btn--sm" onClick={() => submitReject(v.id)}>Send request</button>
+                                    <button className="btn btn--ghost btn--sm" onClick={() => setRejectingVersion(null)}>Cancel</button>
+                                  </div>
+                                )}
                               </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {versions.length >= 2 && first && last && (
+                          <div className="diff" data-testid="diff">
+                            <div className="diff__head">
+                              <h4 className="diff__title">Comparison: v{first.version} → v{last.version}</h4>
+                              <span className="badge badge--faint">
+                                +{summary.added.length} added · −{summary.removed.length} removed
+                              </span>
+                              <button className="btn btn--ghost btn--sm" onClick={() => setShowRawDiff((s) => !s)}>
+                                {showRawDiff ? "Hide technical diff" : "Show technical diff"}
+                              </button>
+                            </div>
+                            {showRawDiff ? (
+                              <pre className="diff__body">{summary.changed.join("\n")}</pre>
+                            ) : (
+                              <ul className="list">
+                                {summary.added.length === 0 && summary.removed.length === 0 ? (
+                                  <li className="list__item"><span className="list__name">No differences between these versions.</span></li>
+                                ) : (
+                                  <>
+                                    {summary.added.map((l, i) => (
+                                      <li key={`a${i}`} className="diff-summary diff-summary--added"><span>Added</span><span>{l}</span></li>
+                                    ))}
+                                    {summary.removed.map((l, i) => (
+                                      <li key={`r${i}`} className="diff-summary diff-summary--removed"><span>Removed</span><span>{l}</span></li>
+                                    ))}
+                                  </>
+                                )}
+                              </ul>
                             )}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {versions.length >= 2 && (
-                      <div className="diff" data-testid="diff">
-                        <h4 className="diff__title">
-                          Compare v1 vs v{versions[versions.length - 1].version}
-                        </h4>
-                        <pre className="diff__body">
-                          {diffLines(versions[0].content, versions[versions.length - 1].content).changed.join("\n")}
-                        </pre>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                )}
+                    );
+                  })()}
               </>
             )}
           </section>
@@ -908,15 +1334,15 @@ export default function App() {
           <section className="panel">
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Episodes</h2>
-                <p className="panel__sub">Agent execution history — what ran, its status, and its progress.</p>
+                <h2 className="panel__title">Agent Activity</h2>
+                <p className="panel__sub">What your agents have run recently, their status, and their progress.</p>
               </div>
             </div>
-            {episodes.length === 0 ? (
-              <Empty text="No agent runs recorded yet. Episodes appear here once an agent executes an instrumented run with progress checkpoints." />
+            {visibleEpisodes.length === 0 ? (
+              <Empty text="No agent activity yet. Runs appear here when you ask an agent to do work." />
             ) : (
               <ul className="list">
-                {episodes.map((e) => (
+                {visibleEpisodes.map((e) => (
                   <li
                     key={e.id}
                     className={`list__item list__item--clickable${selectedEpisode === e.id ? " list__item--selected" : ""}`}
@@ -926,7 +1352,7 @@ export default function App() {
                       <Icon name="activity" size={16} />
                     </span>
                     <span className="list__name">{agentLabel(e.agent_id)}</span>
-                    <span className={`badge badge--${e.status || "neutral"}`}>{e.status}</span>
+                    <span className={`badge badge--${e.status || "neutral"}`}>{statusLabel(e.status)}</span>
                     <span className="badge badge--faint">{Math.round((e.progress || 0) * 100)}%</span>
                     <span className="badge badge--faint">{formatStamp(e.created_at)}</span>
                     {!offline && e.status === "running" && (
@@ -952,11 +1378,11 @@ export default function App() {
 
             {selectedEpisode && (
               <div className="versions">
-                <h3 className="versions__title">Episode detail</h3>
+                <h3 className="versions__title">Activity detail</h3>
                 {episodeDetail ? (
                   <>
                     <div className="episode-meta">
-                      <span className={`badge badge--${episodeDetail.status || "neutral"}`}>{episodeDetail.status}</span>
+                      <span className={`badge badge--${episodeDetail.status || "neutral"}`}>{statusLabel(episodeDetail.status)}</span>
                       <span className="badge badge--faint">{Math.round((episodeDetail.progress || 0) * 100)}% progress</span>
                       {episodeDetail.created_at && (
                         <span className="badge badge--faint">started {formatStamp(episodeDetail.created_at)}</span>
@@ -971,7 +1397,7 @@ export default function App() {
                             <span className="list__icon">
                               <Icon name="activity" size={16} />
                             </span>
-                            <span className="list__name">{ev.status}</span>
+                            <span className="list__name">{statusLabel(ev.status)}</span>
                             {ev.detail && <span className="badge badge--faint">{ev.detail}</span>}
                             <span className="badge badge--faint">{formatStamp(ev.created_at)}</span>
                           </li>
@@ -992,9 +1418,79 @@ export default function App() {
             <div className="panel__head">
               <div>
                 <h2 className="panel__title">Agents</h2>
-                <p className="panel__sub">Select an agent and give it a task.</p>
+                <p className="panel__sub">Select an agent, review past conversations, and give it a task.</p>
               </div>
             </div>
+
+            {(() => {
+              const filtered = convFilter
+                ? conversations.filter((c) => c.agent_id === convFilter)
+                : conversations;
+              return (
+                <div className="conv-browser">
+                  <div className="conv-browser__head">
+                    <h3 className="section-title">Conversations</h3>
+                    <select
+                      className="select select--small"
+                      value={convFilter}
+                      onChange={(e) => setConvFilter(e.target.value)}
+                      aria-label="Filter conversations by agent"
+                    >
+                      <option value="">All agents</option>
+                      {agents.map((a) => (
+                        <option key={a.name} value={a.name}>
+                          {a.display_name || humanize(a.name)}{a.archetype ? ` · ${a.archetype}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {conversations.length === 0 ? (
+                    <Empty text="No saved conversations yet. Conversations appear here once you chat with an agent." />
+                  ) : filtered.length === 0 ? (
+                    <Empty text="No conversations for this agent yet." />
+                  ) : (
+                    <ul className="conv-browser__list">
+                      {filtered.map((c) => (
+                        <li
+                          key={c.thread_id}
+                          data-testid={`convo-${c.thread_id}`}
+                          className={`conv-browser__item${openThreadId === c.thread_id ? " conv-browser__item--active" : ""}`}
+                        >
+                          <button
+                            className="conv-browser__open"
+                            onClick={() => openConversation(c)}
+                          >
+                            <span className="conv-browser__title">{c.title}</span>
+                            <span className="conv-browser__meta">
+                              {c.agent_id ? agentLabel(c.agent_id) : "Agent unknown"}
+                              {" · "}{c.message_count} message(s) · {formatStamp(c.last_activity)}
+                            </span>
+                          </button>
+                          {renamingThread === c.thread_id ? (
+                            <span className="conv-browser__rename">
+                              <input
+                                className="input"
+                                value={renameTitle}
+                                onChange={(e) => setRenameTitle(e.target.value)}
+                                placeholder="Rename conversation"
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") renameConversation(c, renameTitle);
+                                  if (e.key === "Escape") setRenamingThread(null);
+                                }}
+                              />
+                              <button className="btn btn--ghost btn--sm" onClick={() => renameConversation(c, renameTitle)}>Save</button>
+                              <button className="btn btn--ghost btn--sm" onClick={() => setRenamingThread(null)}>Cancel</button>
+                            </span>
+                          ) : (
+                            <button className="btn btn--ghost btn--sm" onClick={(e) => { e.stopPropagation(); startRename(c); }}>Rename</button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="agents-grid">
               {agents.map((a) => {
@@ -1088,7 +1584,7 @@ export default function App() {
                   </div>
                   <div className="task-panel__meta">
                     <span className="context-badge">
-                      Context: {contextCounts[selectedAgent] ?? 0} messages
+                      This conversation · {contextCounts[selectedAgent] ?? 0} message(s)
                     </span>
                     {threadIds[selectedAgent] && (
                       <button className="btn btn--ghost" onClick={newConversation}>
@@ -1137,9 +1633,33 @@ export default function App() {
                   <p className="warning">Warning: {agentResult.history_warning}</p>
                 )}
 
-                {agentResult && (
+                {openThreadId && transcript.length > 0 && (
+                  <div className="result transcript" data-testid="transcript">
+                    {transcript.map((m, i) => (
+                      <div
+                        key={i}
+                        className={`chat-bubble chat-bubble--${m.role === "user" ? "user" : "agent"}`}
+                      >
+                        <div className="chat-bubble__role">
+                          {m.role === "user"
+                            ? "You"
+                            : (agents.find((x) => x.name === selectedAgent)?.display_name || humanize(selectedAgent))}
+                        </div>
+                        <div className="chat-bubble__body markdown"><Markdown source={m.content} /></div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!openThreadId && agentResult && (
                   <div className="result">
-                    <div className="result__meta">Processed at: {agentResult.location}</div>
+                    <div className="result__meta">
+                      Generated on your device
+                      <details className="tech-detail">
+                        <summary>Technical details</summary>
+                        <p>Execution: {agentResult.location}</p>
+                      </details>
+                    </div>
                     <div className="result__body" data-testid="agent-reply">
                       <Markdown source={agentResult.reply} />
                     </div>
@@ -1148,7 +1668,7 @@ export default function App() {
                         const facts = uniqueBy(agentResult.facts, (f: any) => `${f.key ?? ""}|${f.value ?? ""}`);
                         return facts.length > 0 ? (
                           <div className="result__section">
-                            <span className="result__heading">Known facts</span>
+                            <span className="result__heading">What I already know</span>
                             <ul className="chips">
                               {facts.map((f: any, i: number) => (
                                 <li key={i} className="chip">
@@ -1162,13 +1682,13 @@ export default function App() {
                     {agentResult.proposals?.length > 0 && (
                       <div className="result__section">
                         <span className="result__heading">
-                          Awaiting human approval: {agentResult.proposals.length} memory/goal proposal(s).
+                          {agentResult.proposals.length} item(s) need your approval to be remembered.
                         </span>
                       </div>
                     )}
                     {agentResult.tool_results?.length > 0 && (
                       <div className="result__section">
-                        <span className="result__heading">Tool results</span>
+                        <span className="result__heading">Tools used</span>
                         <ul className="chips">
                           {agentResult.tool_results.map((t: any, i: number) => (
                             <li key={i} className="chip">

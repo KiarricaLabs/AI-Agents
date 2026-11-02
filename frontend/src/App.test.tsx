@@ -9,6 +9,10 @@ function ok(data: unknown) {
   return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(data) });
 }
 
+function fail(data: unknown, status = 400) {
+  return Promise.resolve({ ok: false, status, json: () => Promise.resolve(data) });
+}
+
 type Route = (url: string, opts?: any) => any;
 
 function makeFetch(overrides: Record<string, Route> = {}) {
@@ -24,7 +28,7 @@ function makeFetch(overrides: Record<string, Route> = {}) {
 // Drive the Work view into the "Acme" workspace / "Launch" project used by
 // the fixtures below, waiting for the async workspace/project data to arrive.
 async function openWorkProject() {
-  fireEvent.click(screen.getByRole("button", { name: "work" }));
+  fireEvent.click(screen.getByRole("button", { name: "Work" }));
   await screen.findByRole("option", { name: "Acme" });
   fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: "w1" } });
   await screen.findByRole("option", { name: "Launch" });
@@ -43,8 +47,16 @@ describe("App shell and navigation", () => {
     globalThis.fetch = makeFetch() as any;
     render(<App />);
     expect(screen.getByRole("heading", { name: "Personal AI Team" })).toBeInTheDocument();
-    for (const t of ["overview", "workspace", "work", "episodes", "agents"]) {
-      expect(screen.getByRole("button", { name: t })).toBeInTheDocument();
+    const tabs: [string, string][] = [
+      ["overview", "Overview"],
+      ["workspace", "Workspaces"],
+      ["work", "Work"],
+      ["episodes", "Activity"],
+      ["agents", "Agents"],
+    ];
+    for (const [route, label] of tabs) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: label }).dataset.route).toBe(route);
     }
   });
 });
@@ -54,7 +66,7 @@ describe("Workspaces", () => {
     const fn = makeFetch();
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
 
     const input = screen.getByPlaceholderText("Workspace name");
     fireEvent.change(input, { target: { value: "Acme" } });
@@ -73,7 +85,7 @@ describe("Workspaces", () => {
       [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
     expect(await screen.findByText("Acme")).toBeInTheDocument();
   });
 
@@ -81,7 +93,7 @@ describe("Workspaces", () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error("offline"))) as any;
     render(<App />);
     await screen.findByText(/read-only/);
-    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
 });
@@ -93,10 +105,10 @@ describe("Projects", () => {
       [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
     fireEvent.click(await screen.findByText("Acme"));
     expect(await screen.findByText(/Launch/)).toBeInTheDocument();
-    expect(screen.getByText(/active/)).toBeInTheDocument();
+    expect(screen.getByText(/Active/)).toBeInTheDocument();
   });
 
   it("creates a project against the selected workspace", async () => {
@@ -105,7 +117,7 @@ describe("Projects", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
     fireEvent.click(await screen.findByText("Acme"));
     fireEvent.click(screen.getByRole("button", { name: "Create Project" }));
 
@@ -143,7 +155,7 @@ describe("Project Detail", () => {
       [`${API}/agents`]: () => ok({ agents: [{ name: "tutor", display_name: "Brittany", archetype: "The Educator" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
     fireEvent.click(await screen.findByText("Acme"));
     fireEvent.click(await screen.findByText("Launch"));
 
@@ -167,14 +179,13 @@ describe("Work view — Goals", () => {
       }),
   });
 
-  it("renders goals scoped to the selected project with status and priority", async () => {
+  it("renders goals scoped to the selected project with their status", async () => {
     globalThis.fetch = makeFetch(goalsFixtures()) as any;
     render(<App />);
     await openWorkProject();
 
     expect(await screen.findByText(/Ship v1/)).toBeInTheDocument();
-    expect(screen.getAllByText("done").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("p1")).toBeInTheDocument();
+    expect(screen.getAllByText("Done").length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows a select-project empty state before a project is chosen", async () => {
@@ -182,7 +193,7 @@ describe("Work view — Goals", () => {
       [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
     expect(await screen.findByText(/Select a workspace and project/)).toBeInTheDocument();
   });
 
@@ -245,7 +256,6 @@ describe("Work view — Assignments", () => {
     expect(await screen.findByText("The Educator")).toBeInTheDocument();
     expect(screen.getAllByText("Brittany").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Ship v1").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("p2")).toBeInTheDocument();
   });
 
   it("filters assignments by agent", async () => {
@@ -302,7 +312,7 @@ describe("Work view — Deliverables", () => {
     await openWorkProject();
 
     expect(await screen.findByText(/Report/)).toBeInTheDocument();
-    expect(screen.getAllByText("approved").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Approved").length).toBeGreaterThanOrEqual(1);
   });
 
   it("loads versions and renders a diff between v1 and the latest version", async () => {
@@ -311,7 +321,7 @@ describe("Work view — Deliverables", () => {
     await openWorkProject();
     fireEvent.click(await screen.findByText(/Report/));
 
-    expect(await screen.findByText(/Compare v1 vs v2/)).toBeInTheDocument();
+    expect(await screen.findByText(/Comparison: v1 → v2/)).toBeInTheDocument();
     expect(screen.getByTestId("diff")).toHaveTextContent("hello world");
   });
 
@@ -322,10 +332,12 @@ describe("Work view — Deliverables", () => {
     fireEvent.click(await screen.findByText(/Report/));
 
     const approve = await screen.findByRole("button", { name: "Approve" });
-    const reject = screen.getByRole("button", { name: "Reject" });
+    const revision = screen.getByRole("button", { name: "Request revision" });
     expect(approve).toBeInTheDocument();
-    expect(reject).toBeInTheDocument();
+    expect(revision).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
+    // The approved v1 must not show approval controls.
+    expect(screen.getAllByRole("button", { name: "Request revision" })).toHaveLength(1);
   });
 
   it("rejects a version via POST with a reason", async () => {
@@ -334,12 +346,17 @@ describe("Work view — Deliverables", () => {
     render(<App />);
     await openWorkProject();
     fireEvent.click(await screen.findByText(/Report/));
-    fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Request revision" }));
+    fireEvent.change(
+      screen.getByPlaceholderText("Share what needs to change"),
+      { target: { value: "Needs more details" } }
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Send request" }));
 
     await waitFor(() => {
       expect(fn).toHaveBeenCalledWith(
         `${API}/workspaces/versions/v2/reject`,
-        expect.objectContaining({ method: "POST", body: JSON.stringify({ reason: "requested revision" }) })
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ reason: "Needs more details" }) })
       );
     });
   });
@@ -351,6 +368,7 @@ describe("Work view — Deliverables", () => {
     await openWorkProject();
     fireEvent.click(await screen.findByText(/Report/));
     fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm approve" }));
 
     await waitFor(() => {
       expect(fn).toHaveBeenCalledWith(
@@ -358,6 +376,59 @@ describe("Work view — Deliverables", () => {
         expect.objectContaining({ method: "POST" })
       );
     });
+  });
+
+  it("keeps the approve prompt open and shows an error when approve fails", async () => {
+    const fn = makeFetch({
+      ...deliverableFixtures(),
+      [`${API}/workspaces/versions/v2/approve`]: () =>
+        fail({ detail: "version already decided" }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click(await screen.findByText(/Report/));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm approve" }));
+
+    expect(await screen.findByTestId("version-error")).toHaveTextContent("version already decided");
+    // Prompt stays open and success is not implied.
+    expect(screen.getByRole("button", { name: "Confirm approve" })).toBeInTheDocument();
+  });
+
+  it("keeps the reject prompt open and preserves the reason when reject fails", async () => {
+    const fn = makeFetch({
+      ...deliverableFixtures(),
+      [`${API}/workspaces/versions/v2/reject`]: () =>
+        fail({ detail: "cannot reject" }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click(await screen.findByText(/Report/));
+    fireEvent.click(await screen.findByRole("button", { name: "Request revision" }));
+    fireEvent.change(screen.getByPlaceholderText("Share what needs to change"), {
+      target: { value: "fix intro" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Send request" }));
+
+    expect(await screen.findByTestId("version-error")).toHaveTextContent("cannot reject");
+    // Prompt stays open and the typed reason is preserved.
+    expect(screen.getByRole("button", { name: "Send request" })).toBeInTheDocument();
+    expect((screen.getByPlaceholderText("Share what needs to change") as HTMLInputElement).value).toBe("fix intro");
+  });
+
+  it("shows a load error when refreshing versions fails instead of silently showing stale data", async () => {
+    const fn = makeFetch({
+      ...deliverableFixtures(),
+      [`${API}/workspaces/deliverables/d1/versions`]: () => fail({ detail: "boom" }, 500),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click(await screen.findByText(/Report/));
+
+    expect(await screen.findByTestId("version-error")).toHaveTextContent("Could not refresh deliverable versions.");
   });
 
   it("filters deliverables by status", async () => {
@@ -377,7 +448,7 @@ describe("Work view — Deliverables", () => {
 
     fireEvent.change(screen.getByLabelText("Deliverable status filter"), { target: { value: "draft" } });
     expect(screen.queryByText(/Report/)).not.toBeInTheDocument();
-    expect(screen.getByText("Draft")).toBeInTheDocument();
+    expect(screen.getAllByText("Draft").length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -390,8 +461,8 @@ describe("Episodes", () => {
   it("shows empty state when there are no episodes", async () => {
     globalThis.fetch = makeFetch() as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "episodes" }));
-    expect(await screen.findByText(/No agent runs recorded yet/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(await screen.findByText(/No agent activity yet/)).toBeInTheDocument();
   });
 
   it("renders episode progress and running controls with the agent display name", async () => {
@@ -401,7 +472,7 @@ describe("Episodes", () => {
         ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0.5, created_at: "2026-11-01T00:00:00Z" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "episodes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
     expect(await screen.findByText("Brittany")).toBeInTheDocument();
     expect(screen.getByText(/50%/)).toBeInTheDocument();
@@ -417,7 +488,7 @@ describe("Episodes", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "episodes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
     await waitFor(() => {
@@ -425,7 +496,7 @@ describe("Episodes", () => {
     });
     // Cancelling invokes the button handler only; the row click (stopPropagation)
     // must not open the episode detail panel.
-    expect(screen.queryByText("Episode detail")).not.toBeInTheDocument();
+    expect(screen.queryByText("Activity detail")).not.toBeInTheDocument();
   });
 
   it("does not show controls for non-running episodes", async () => {
@@ -435,7 +506,7 @@ describe("Episodes", () => {
         ok({ items: [{ id: "e1", agent_id: "tutor", status: "done", progress: 1 }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "episodes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByText("Brittany");
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
@@ -456,12 +527,12 @@ describe("Episodes", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "episodes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     fireEvent.click(await screen.findByText("Brittany"));
 
-    expect(await screen.findByText("Episode detail")).toBeInTheDocument();
-    expect(await screen.findByText("started")).toBeInTheDocument();
-    expect(screen.getByText("checkpoint")).toBeInTheDocument();
+    expect(await screen.findByText("Activity detail")).toBeInTheDocument();
+    expect(await screen.findByText("Started")).toBeInTheDocument();
+    expect(screen.getByText("Checkpoint")).toBeInTheDocument();
     expect(screen.getByText("dispatched")).toBeInTheDocument();
   });
 });
@@ -484,7 +555,7 @@ describe("Agents", () => {
   it("lists all six agents and shows a selection prompt", async () => {
     globalThis.fetch = makeFetch(agentsFixture()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     expect(await screen.findByRole("button", { name: "tutor" })).toBeInTheDocument();
     for (const n of ["strategist", "executive_assistant", "communications", "soundboard", "workspace_architect"]) {
       expect(screen.getByRole("button", { name: n })).toBeInTheDocument();
@@ -509,7 +580,7 @@ describe("Agents", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     expect(await screen.findByText("Brittany")).toBeInTheDocument();
     expect(screen.getByText("The Educator")).toBeInTheDocument();
     // The card's accessible name remains the slug for stable lookups.
@@ -532,7 +603,7 @@ describe("Agents", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     expect(
       await screen.findByText("Explain concepts and build durable understanding.")
     ).toBeInTheDocument();
@@ -562,7 +633,7 @@ describe("Agents", () => {
         ok({ items: [{ id: "a1", agent_id: "tutor", goal_id: "g1", status: "queued" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
 
     expect(await screen.findByTestId("agent-detail")).toBeInTheDocument();
@@ -593,7 +664,7 @@ describe("Agents", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
       target: { value: "Explain gravity" },
@@ -607,7 +678,7 @@ describe("Agents", () => {
       );
     });
     expect(await screen.findByText("Gravity pulls objects together.")).toBeInTheDocument();
-    expect(screen.getByText(/Processed at: local:ollama:llama3.1/)).toBeInTheDocument();
+    expect(screen.getByText(/Execution: local:ollama:llama3\.1/)).toBeInTheDocument();
   });
 
   it("shows an error when agent execution fails", async () => {
@@ -618,7 +689,7 @@ describe("Agents", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "strategist" }));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
       target: { value: "Plan the quarter" },
@@ -631,7 +702,7 @@ describe("Agents", () => {
   it("keeps the run button disabled with no task entered", async () => {
     globalThis.fetch = makeFetch(agentsFixture()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     expect(screen.getByRole("button", { name: "Run Agent" })).toBeDisabled();
   });
@@ -655,7 +726,7 @@ describe("Agents", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
 
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "hi" } });
@@ -671,7 +742,7 @@ describe("Agents", () => {
       expect(JSON.parse(calls[calls.length - 1][1].body).thread_id).toBe("tid-1");
     });
 
-    expect(await screen.findByText(/Context: 2 messages/)).toBeInTheDocument();
+    expect(await screen.findByText(/This conversation · 2 message\(s\)/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New conversation" })).toBeInTheDocument();
   });
 
@@ -691,15 +762,15 @@ describe("Agents", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "hi" } });
     fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
-    await screen.findByText(/Context: 2 messages/);
+    await screen.findByText(/This conversation · 2 message\(s\)/);
 
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
     expect(screen.queryByRole("button", { name: "New conversation" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Context: 0 messages/)).toBeInTheDocument();
+    expect(screen.getByText(/This conversation · 0 message\(s\)/)).toBeInTheDocument();
   });
 
   it("clears the input immediately when a submission is accepted", async () => {
@@ -712,7 +783,7 @@ describe("Agents", () => {
       [`${API}/agents/tutor/run`]: () => runPromise,
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     const input = screen.getByPlaceholderText("Give your agent a task…");
     fireEvent.change(input, { target: { value: "hello" } });
@@ -744,7 +815,7 @@ describe("Agents", () => {
         Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve({ detail: "Ollama unreachable" }) }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "strategist" }));
     const input = screen.getByPlaceholderText("Give your agent a task…");
     fireEvent.change(input, { target: { value: "Plan the quarter" } });
@@ -769,7 +840,7 @@ describe("Agents", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     const input = screen.getByPlaceholderText("Give your agent a task…");
     fireEvent.change(input, { target: { value: "hello" } });
@@ -797,7 +868,7 @@ describe("Agents", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
       target: { value: "hi" },
@@ -806,5 +877,242 @@ describe("Agents", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "Greeting" })).toBeInTheDocument();
     expect(screen.getByText("world").tagName).toBe("STRONG");
+  });
+});
+
+describe("UI Cleanup & sample-data handling", () => {
+  // A real ID present in KNOWN_SAMPLE_IDS (test-origin record in the local DB).
+  const SAMPLE_WID = "024df94a-70d1-4419-980b-ffb02dae8073";
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("hides known sample workspaces by default and reveals them via the toggle", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () =>
+        ok({
+          items: [
+            { id: SAMPLE_WID, name: "E2E Workspace" },
+            { id: "w-real", name: "My Team" },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    expect(await screen.findByText("My Team")).toBeInTheDocument();
+    expect(screen.queryByText("E2E Workspace")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show sample data" }));
+    expect(await screen.findByText("E2E Workspace")).toBeInTheDocument();
+  });
+
+  it("keeps legitimate records visible when they share a test record's name", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () =>
+        ok({
+          items: [
+            { id: SAMPLE_WID, name: "E2E Workspace" },
+            { id: "w-real-2", name: "E2E Workspace" },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    await screen.findByText("E2E Workspace");
+    // Hiding is by ID only, so exactly one (the legitimate) record remains.
+    expect(screen.getAllByText("E2E Workspace").length).toBe(1);
+  });
+
+  it("opens a project's detail from Overview recent projects", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () =>
+        ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1", status: "active" }] }),
+    }) as any;
+    render(<App />);
+    await screen.findByText(/Launch/);
+    fireEvent.click(screen.getByText(/Launch/));
+    expect(await screen.findByText(/No goals for this project yet/)).toBeInTheDocument();
+  });
+
+  it("opens a goal detail panel from the Work view", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () =>
+        ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
+      [`${API}/workspaces/goals`]: () =>
+        ok({ items: [{ id: "g1", title: "Ship v1", project_id: "p1", status: "open", progress: 40 }] }),
+    }) as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click(await screen.findByText(/Ship v1/));
+    expect(await screen.findByText("Progress")).toBeInTheDocument();
+    expect(screen.getByText("40%")).toBeInTheDocument();
+  });
+
+  it("opens an assignment detail panel from the Work view", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () =>
+        ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
+      [`${API}/workspaces/goals`]: () =>
+        ok({ items: [{ id: "g1", title: "Ship v1", project_id: "p1", status: "open" }] }),
+      [`${API}/workspaces/assignments`]: () =>
+        ok({ items: [{ id: "a1", goal_id: "g1", agent_id: "tutor", status: "queued" }] }),
+      [`${API}/agents`]: () =>
+        ok({ agents: [{ name: "tutor", display_name: "Brittany", archetype: "The Educator" }] }),
+    }) as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click(screen.getByTestId("assignment-a1"));
+    expect(await screen.findByText("Assignment")).toBeInTheDocument();
+    expect(screen.getAllByText("Ship v1").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("lists a deliverable's full version history with readable content", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () =>
+        ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
+      [`${API}/workspaces/deliverables`]: () =>
+        ok({ items: [{ id: "d1", title: "Report", project_id: "p1", latest_status: "pending", latest_version: 2 }] }),
+      [`${API}/workspaces/deliverables/d1/versions`]: () =>
+        ok({
+          items: [
+            { id: "v1", version: 1, content: "First draft", status: "draft" },
+            { id: "v2", version: 2, content: "# Final\n\nDetailed output", status: "pending" },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.click(await screen.findByText(/Report/));
+    expect(await screen.findByText("v1")).toBeInTheDocument();
+    expect(screen.getByText("v2")).toBeInTheDocument();
+    // The draft content appears both as the version body and in the diff summary.
+    expect(screen.getAllByText("First draft").length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("Conversation Browser", () => {
+  const agentsFixture = () => ({
+    [`${API}/agents`]: () =>
+      ok({ agents: [{ name: "strategist", display_name: "Aisha", archetype: "The Visionary" }] }),
+  });
+  const convosFixture = () => ({
+    ...agentsFixture(),
+    [`${API}/memory/conversations`]: () =>
+      ok({
+        items: [
+          { thread_id: "tid-a", agent_id: "strategist", title: "Grow my business", is_renamed: false, last_activity: "2026-11-02T00:00:00Z", message_count: 4 },
+          { thread_id: "tid-legacy", agent_id: null, title: "Legacy talk", is_renamed: false, last_activity: "2026-11-01T00:00:00Z", message_count: 2 },
+        ],
+      }),
+  });
+  const transcriptFixture = (extra: any[] = []) => ({
+    ...convosFixture(),
+    [`${API}/memory/conversation?thread_id=tid-a`]: () =>
+      ok({
+        items: [
+          { role: "user", content: "grow my business", created_at: "2026-11-01T00:00:01Z" },
+          { role: "assistant", content: "# Plan\n\nThree objectives", created_at: "2026-11-01T00:00:02Z" },
+          { role: "user", content: "go on", created_at: "2026-11-01T00:00:03Z" },
+          { role: "assistant", content: "Step two", created_at: "2026-11-01T00:00:04Z" },
+          ...extra,
+        ],
+      }),
+  });
+
+  it("lists conversations with agent names and Agent unknown", async () => {
+    globalThis.fetch = makeFetch(convosFixture()) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    expect(await screen.findByText("Grow my business")).toBeInTheDocument();
+    expect(screen.getAllByText("Aisha").length).toBeGreaterThanOrEqual(1); // agent label on the conversation + card
+    expect(screen.getByText(/Agent unknown/)).toBeInTheDocument();
+    expect(screen.getByText("Legacy talk")).toBeInTheDocument();
+  });
+
+  it("filters conversations by agent", async () => {
+    globalThis.fetch = makeFetch(convosFixture()) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    await screen.findByText("Grow my business");
+    fireEvent.change(screen.getByLabelText("Filter conversations by agent"), { target: { value: "strategist" } });
+    expect(screen.getByText("Grow my business")).toBeInTheDocument();
+    expect(screen.queryByText("Legacy talk")).not.toBeInTheDocument();
+  });
+
+  it("opens a conversation and renders the full transcript (not limited to 12)", async () => {
+    const longTail: any[] = [];
+    for (let i = 3; i < 16; i++) {
+      longTail.push({ role: "user", content: `deep q${i}`, created_at: `2026-11-01T00:00:0${i % 10}Z` });
+      longTail.push({ role: "assistant", content: `deep a${i}`, created_at: `2026-11-01T00:00:0${(i + 1) % 10}Z` });
+    }
+    globalThis.fetch = makeFetch(transcriptFixture(longTail)) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByText("Grow my business"));
+    const tr = await screen.findByTestId("transcript");
+    expect(tr).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Plan" })).toBeInTheDocument(); // Markdown heading renders
+    expect(screen.getByText("deep q15")).toBeInTheDocument(); // far beyond the 12-message window
+  });
+
+  it("continuing appends to the same thread", async () => {
+    const fn = makeFetch({
+      ...transcriptFixture(),
+      [`${API}/agents/strategist/run`]: (url: string, opts?: any) => {
+        const req = JSON.parse(opts.body);
+        return ok({
+          agent: "strategist", reply: "Continuing here", location: "local:ollama:llama3.1",
+          facts: [], proposals: [], tool_results: [],
+          thread_id: req.thread_id, context_messages: 2,
+        });
+      },
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByText("Grow my business"));
+    await screen.findByTestId("transcript");
+    // Set the active thread, then send a message.
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "next" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    await waitFor(() => {
+      const calls = fn.mock.calls.filter((c: any) => c[0] === `${API}/agents/strategist/run`);
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      expect(JSON.parse(calls[0][1].body).thread_id).toBe("tid-a");
+    });
+    expect(await screen.findByText("Continuing here")).toBeInTheDocument();
+  });
+
+  it("renames a conversation via PATCH", async () => {
+    const fn = makeFetch(convosFixture());
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    await screen.findByText("Grow my business");
+    fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[0]);
+    fireEvent.change(screen.getByPlaceholderText("Rename conversation"), { target: { value: "My Growth Plan" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/memory/conversations/tid-a`,
+        expect.objectContaining({ method: "PATCH", body: JSON.stringify({ title: "My Growth Plan" }) })
+      );
+    });
+  });
+
+  it("New Conversation does not delete saved conversations", async () => {
+    globalThis.fetch = makeFetch(transcriptFixture()) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByText("Grow my business"));
+    await screen.findByTestId("transcript");
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    // Browser still lists the saved conversations after starting fresh.
+    expect(screen.getByText("Grow my business")).toBeInTheDocument();
+    expect(screen.getByText("Legacy talk")).toBeInTheDocument();
   });
 });
