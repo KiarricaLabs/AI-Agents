@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from config.settings import DB_PATH
+from config.settings import DB_PATH, DATA_DIR
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tenants (
@@ -321,8 +322,22 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+# The real application database that test runs must never open or modify.
+_REAL_DB = (Path(DATA_DIR) / "pat.db").resolve()
+
+
 class Database:
     def __init__(self, path: str = DB_PATH, tenant_id: str = None):
+        # Fail closed: a unittest run must never open the real application DB.
+        # The trusted test-isolation bootstrap (tests/__init__.py) points the
+        # suite at a temp DB; if it did not run (e.g. `unittest` invoked without
+        # `-t .`), refuse here before any connection is opened.
+        if "unittest" in sys.modules and Path(path).resolve() == _REAL_DB:
+            raise RuntimeError(
+                "Refusing to open the real application database "
+                f"({_REAL_DB}) while running tests. Use an isolated database: "
+                "`python -m unittest discover -s tests -t . -v`, or set PAT_DB_PATH."
+            )
         self.path = path
         self.default_tenant = tenant_id or "local"
         self._lock = threading.Lock()

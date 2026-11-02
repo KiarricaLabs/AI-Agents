@@ -42,8 +42,8 @@ important ones are `PAT_AI_PROVIDER` (default `ollama`), `PAT_AI_MODEL`
 ## Running tests
 
 ```bash
-# Backend (unittest)
-python -m unittest discover -s tests -v
+# Backend (unittest, isolated temp DB)
+python -m unittest discover -s tests -t . -v
 
 # Live Ollama smoke test (skipped automatically when Ollama is down)
 python -m unittest tests.test_m8_live -v
@@ -51,7 +51,7 @@ python -m unittest tests.test_m8_live -v
 # Frontend component tests
 cd frontend && npx vitest run
 
-# End-to-end (requires backend + frontend already running)
+# End-to-end (isolated test DB; frontend must be running on 5173, port 8001 free)
 cd frontend && npx playwright test
 ```
 

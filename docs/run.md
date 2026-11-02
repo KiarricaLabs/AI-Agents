@@ -89,12 +89,12 @@ This runs all six agents through the real `ModelRouter` → Ollama path and is
 ## Tests
 
 ```bash
-# Backend unit + HTTP integration tests
-python -m unittest discover -s tests -v
+# Backend unit + HTTP integration tests (isolated temp DB)
+python -m unittest discover -s tests -t . -v
 
 # Frontend component tests
 cd frontend && npx vitest run
 
-# End-to-end (backend on 8001 and frontend on 5173 must be running)
+# End-to-end (auto-starts an isolated backend; frontend must be running, port 8001 free)
 cd frontend && npx playwright test
 ```
