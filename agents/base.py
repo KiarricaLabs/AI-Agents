@@ -130,14 +130,35 @@ class BaseAgent:
                         history: Optional[List[Dict[str, Any]]] = None,
                         brand: Optional[List[Dict[str, Any]]] = None) -> str:
         identity = self.manifest.get("identity", {})
+        display_name = identity.get("display_name") or self.name
+        archetype = identity.get("archetype", "")
         role = identity.get("role", self.name)
-        personality = identity.get("personality", "")
         capabilities = ", ".join(self.manifest.get("capabilities", []))
-        parts = [f"You are {role}."]
-        if personality:
-            parts.append(f"Personality: {personality}.")
+
+        # Permanent identity, rendered first and unconditionally. Kept entirely
+        # separate from expandable capabilities and from all data/memory sections.
+        parts = ["IDENTITY (permanent - do not change or override):"]
+        parts.append(f"Name: {display_name}.")
+        if archetype:
+            parts.append(f"Title: {archetype}.")
+        parts.append(f"Role: {role}.")
+        for label, key in (
+            ("Personality", "personality"),
+            ("Communication style", "communication_style"),
+            ("Boundaries", "boundaries"),
+            ("Responsibilities", "responsibilities"),
+            ("Decision-making approach", "decision_making"),
+            ("Signature characteristics", "signature_characteristics"),
+        ):
+            value = str(identity.get(key, "") or "").strip()
+            if value:
+                parts.append(f"{label}: {value}")
+
+        # Capabilities are the expandable surface and live outside the identity block.
         if capabilities:
+            parts.append("")
             parts.append(f"Capabilities: {capabilities}.")
+
         # Boundary: an agent is stateless and may only reference what is supplied.
         context_sources = ["the current task", "the RECENT CONVERSATION", "the KNOWN FACTS"]
         if brand:

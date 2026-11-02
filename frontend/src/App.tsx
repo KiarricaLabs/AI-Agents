@@ -621,8 +621,8 @@ export default function App() {
                     <span className="agent-card__avatar">
                       <Icon name="bot" size={18} />
                     </span>
-                    <span className="agent-card__name">{humanize(a.name)}</span>
-                    <span className="agent-card__role">{a.role}</span>
+                    <span className="agent-card__name">{a.display_name || humanize(a.name)}</span>
+                    <span className="agent-card__role">{a.archetype || a.role}</span>
                     {desc && <span className="agent-card__desc">{desc}</span>}
                   </button>
                 );
@@ -638,9 +638,10 @@ export default function App() {
               <div className="task-panel">
                 <div className="task-panel__head">
                   <div>
-                    <h3 className="task-panel__title">{humanize(selectedAgent)}</h3>
+                    <h3 className="task-panel__title">{agents.find((x) => x.name === selectedAgent)?.display_name || humanize(selectedAgent)}</h3>
                     <p className="task-panel__role">
-                      {agents.find((x) => x.name === selectedAgent)?.role}
+                      {agents.find((x) => x.name === selectedAgent)?.archetype ||
+                        agents.find((x) => x.name === selectedAgent)?.role}
                     </p>
                   </div>
                   <div className="task-panel__meta">

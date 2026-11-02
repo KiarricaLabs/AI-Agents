@@ -300,6 +300,30 @@ describe("Agents", () => {
     expect(screen.getByText(/Select an agent to begin/)).toBeInTheDocument();
   });
 
+  it("shows agent display name and archetype when the backend provides them", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/agents`]: () =>
+        ok({
+          agents: [
+            {
+              name: "tutor",
+              display_name: "Brittany",
+              archetype: "The Educator",
+              role: "Personal tutor",
+              personality: "patient",
+              capabilities: ["explain"],
+            },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    expect(await screen.findByText("Brittany")).toBeInTheDocument();
+    expect(screen.getByText("The Educator")).toBeInTheDocument();
+    // The card's accessible name remains the slug for stable lookups.
+    expect(screen.getByRole("button", { name: "tutor" })).toBeInTheDocument();
+  });
+
   it("submits a task and renders the reply with its execution location", async () => {
     const fn = makeFetch({
       ...agentsFixture(),

@@ -62,6 +62,8 @@ def available_agents(reg: Optional[AgentRegistry] = None) -> List[Dict[str, Any]
         identity = m.get("identity", {})
         out.append({
             "name": name,
+            "display_name": identity.get("display_name", name),
+            "archetype": identity.get("archetype", ""),
             "role": identity.get("role", name),
             "personality": identity.get("personality", ""),
             "capabilities": m.get("capabilities", []),
