@@ -60,15 +60,19 @@ def available_agents(reg: Optional[AgentRegistry] = None) -> List[Dict[str, Any]
     for name in sorted(reg.list()):
         m = reg.get(name)
         identity = m.get("identity", {})
+        model_cfg = m.get("model", {}) or {}
+        model_name = model_cfg.get("model", "") if isinstance(model_cfg, dict) else str(model_cfg or "")
         out.append({
             "name": name,
             "display_name": identity.get("display_name", name),
             "archetype": identity.get("archetype", ""),
             "role": identity.get("role", name),
             "personality": identity.get("personality", ""),
+            "responsibilities": identity.get("responsibilities", ""),
             "capabilities": m.get("capabilities", []),
             "tools": m.get("tools", []),
             "memory": m.get("memory", {}),
+            "model": model_name,
         })
     return out
 

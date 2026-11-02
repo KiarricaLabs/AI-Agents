@@ -598,6 +598,67 @@ body {
   line-height: 1.45;
 }
 
+.agent-card__subrole {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* ---------- Agent detail panel ---------- */
+.agent-detail {
+  padding: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  margin-bottom: 16px;
+}
+
+.agent-detail__head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.agent-detail__name {
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.agent-detail__archetype {
+  font-size: 13px;
+  color: var(--accent-strong);
+  font-weight: 550;
+}
+
+.agent-detail__resp {
+  margin: 4px 0 14px;
+  font-size: 13.5px;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.agent-detail__section {
+  margin-top: 14px;
+}
+
+.agent-detail__section .chips {
+  margin-top: 0;
+}
+
+.agent-detail__section .result__heading {
+  margin-bottom: 8px;
+}
+
+/* ---------- Episode detail ---------- */
+.episode-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
 /* ---------- Task workspace ---------- */
 .task-panel {
   padding: 18px;

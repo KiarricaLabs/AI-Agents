@@ -136,6 +136,9 @@ export default function App() {
   const [assignments, setAssignments] = useState<any[]>([]);
   const [versions, setVersions] = useState<any[]>([]);
   const [episodes, setEpisodes] = useState<any[]>([]);
+  const [selectedEpisode, setSelectedEpisode] = useState<string | null>(null);
+  const [episodeDetail, setEpisodeDetail] = useState<any>(null);
+  const [episodeEvents, setEpisodeEvents] = useState<any[]>([]);
   const [deliverablesList, setDeliverablesList] = useState<any[]>([]);
   const [selectedDeliverable, setSelectedDeliverable] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -346,6 +349,26 @@ export default function App() {
     if (offline) return;
     await fetch(`${API}/episodes/${eid}/resume`, { method: "POST" });
     refresh();
+  };
+
+  const loadEpisode = async (eid: string) => {
+    setSelectedEpisode(eid);
+    setEpisodeEvents([]);
+    setEpisodeDetail(null);
+    try {
+      const r = await fetch(`${API}/episodes/${eid}`);
+      const d = await r.json();
+      setEpisodeDetail(d.episode || null);
+      setEpisodeEvents(d.events || []);
+    } catch {
+      /* offline or backend unavailable */
+    }
+  };
+
+  const formatStamp = (iso?: string) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
   };
 
   // Work-view scope selection. Changing the workspace invalidates any project
@@ -886,27 +909,38 @@ export default function App() {
             <div className="panel__head">
               <div>
                 <h2 className="panel__title">Episodes</h2>
-                <p className="panel__sub">Agent execution runs and progress.</p>
+                <p className="panel__sub">Agent execution history — what ran, its status, and its progress.</p>
               </div>
             </div>
             {episodes.length === 0 ? (
-              <Empty text="No episodes." />
+              <Empty text="No agent runs recorded yet. Episodes appear here once an agent executes an instrumented run with progress checkpoints." />
             ) : (
               <ul className="list">
                 {episodes.map((e) => (
-                  <li key={e.id} className="list__item">
+                  <li
+                    key={e.id}
+                    className={`list__item list__item--clickable${selectedEpisode === e.id ? " list__item--selected" : ""}`}
+                    onClick={() => loadEpisode(e.id)}
+                  >
                     <span className="list__icon">
                       <Icon name="activity" size={16} />
                     </span>
-                    <span className="list__name">{e.agent_id}</span>
+                    <span className="list__name">{agentLabel(e.agent_id)}</span>
                     <span className={`badge badge--${e.status || "neutral"}`}>{e.status}</span>
                     <span className="badge badge--faint">{Math.round((e.progress || 0) * 100)}%</span>
+                    <span className="badge badge--faint">{formatStamp(e.created_at)}</span>
                     {!offline && e.status === "running" && (
                       <span className="list__actions">
-                        <button className="btn btn--ghost" onClick={() => cancelEpisode(e.id)}>
+                        <button
+                          className="btn btn--ghost"
+                          onClick={(ev) => { ev.stopPropagation(); cancelEpisode(e.id); }}
+                        >
                           Cancel
                         </button>
-                        <button className="btn btn--ghost" onClick={() => resumeEpisode(e.id)}>
+                        <button
+                          className="btn btn--ghost"
+                          onClick={(ev) => { ev.stopPropagation(); resumeEpisode(e.id); }}
+                        >
                           Resume
                         </button>
                       </span>
@@ -914,6 +948,41 @@ export default function App() {
                   </li>
                 ))}
               </ul>
+            )}
+
+            {selectedEpisode && (
+              <div className="versions">
+                <h3 className="versions__title">Episode detail</h3>
+                {episodeDetail ? (
+                  <>
+                    <div className="episode-meta">
+                      <span className={`badge badge--${episodeDetail.status || "neutral"}`}>{episodeDetail.status}</span>
+                      <span className="badge badge--faint">{Math.round((episodeDetail.progress || 0) * 100)}% progress</span>
+                      {episodeDetail.created_at && (
+                        <span className="badge badge--faint">started {formatStamp(episodeDetail.created_at)}</span>
+                      )}
+                    </div>
+                    {episodeEvents.length === 0 ? (
+                      <Empty text="No events recorded for this episode yet." />
+                    ) : (
+                      <ul className="list">
+                        {episodeEvents.map((ev, i) => (
+                          <li key={i} className="list__item">
+                            <span className="list__icon">
+                              <Icon name="activity" size={16} />
+                            </span>
+                            <span className="list__name">{ev.status}</span>
+                            {ev.detail && <span className="badge badge--faint">{ev.detail}</span>}
+                            <span className="badge badge--faint">{formatStamp(ev.created_at)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                ) : (
+                  <Empty text="Loading episode…" />
+                )}
+              </div>
             )}
           </section>
         )}
@@ -929,9 +998,6 @@ export default function App() {
 
             <div className="agents-grid">
               {agents.map((a) => {
-                const desc = [a.personality, a.capabilities?.length ? a.capabilities.join(", ") : ""]
-                  .filter(Boolean)
-                  .join(" · ");
                 return (
                   <button
                     key={a.name}
@@ -944,7 +1010,10 @@ export default function App() {
                     </span>
                     <span className="agent-card__name">{a.display_name || humanize(a.name)}</span>
                     <span className="agent-card__role">{a.archetype || a.role}</span>
-                    {desc && <span className="agent-card__desc">{desc}</span>}
+                    {a.archetype && a.role && a.role !== a.archetype && (
+                      <span className="agent-card__subrole">{a.role}</span>
+                    )}
+                    {a.responsibilities && <span className="agent-card__desc">{a.responsibilities}</span>}
                   </button>
                 );
               })}
@@ -954,6 +1023,58 @@ export default function App() {
             {!selectedAgent && agents.length > 0 && (
               <div className="empty">Select an agent to begin.</div>
             )}
+
+            {selectedAgent &&
+              (() => {
+                const a = agents.find((x) => x.name === selectedAgent);
+                const agentAssignments = assignments.filter((x) => x.agent_id === selectedAgent);
+                return (
+                  <div className="agent-detail" data-testid="agent-detail">
+                    <div className="agent-detail__head">
+                      <span className="agent-detail__name">{a?.display_name || humanize(selectedAgent)}</span>
+                      <span className="agent-detail__archetype">{a?.archetype || a?.role || ""}</span>
+                      {a?.model && <span className="badge badge--faint">model · {a.model}</span>}
+                    </div>
+                    {a?.responsibilities && <p className="agent-detail__resp">{a.responsibilities}</p>}
+                    {a?.capabilities?.length > 0 && (
+                      <div className="agent-detail__section">
+                        <span className="result__heading">Capabilities</span>
+                        <ul className="chips">
+                          {a.capabilities.map((c: string) => (
+                            <li key={c} className="chip">{c}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {a?.tools?.length > 0 && (
+                      <div className="agent-detail__section">
+                        <span className="result__heading">Tools</span>
+                        <ul className="chips">
+                          {a.tools.map((t: string) => (
+                            <li key={t} className="chip">{t}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <div className="agent-detail__section">
+                      <span className="result__heading">Assigned work</span>
+                      {agentAssignments.length === 0 ? (
+                        <Empty text="No goals currently assigned to this agent." />
+                      ) : (
+                        <ul className="list">
+                          {agentAssignments.map((asg) => (
+                            <li key={asg.id} className="list__item">
+                              <span className="list__icon"><Icon name="target" size={16} /></span>
+                              <span className="list__name">{titleOfGoal(asg.goal_id)}</span>
+                              <span className={`badge badge--${asg.status || "queued"}`}>{asg.status || "queued"}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
             {selectedAgent && (
               <div className="task-panel">

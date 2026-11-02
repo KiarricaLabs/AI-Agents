@@ -382,28 +382,36 @@ describe("Work view — Deliverables", () => {
 });
 
 describe("Episodes", () => {
+  const agentsFixture = () => ({
+    [`${API}/agents`]: () =>
+      ok({ agents: [{ name: "tutor", display_name: "Brittany", archetype: "The Educator" }] }),
+  });
+
   it("shows empty state when there are no episodes", async () => {
     globalThis.fetch = makeFetch() as any;
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "episodes" }));
-    expect(await screen.findByText(/No episodes/)).toBeInTheDocument();
+    expect(await screen.findByText(/No agent runs recorded yet/)).toBeInTheDocument();
   });
 
-  it("renders episode progress and running controls", async () => {
+  it("renders episode progress and running controls with the agent display name", async () => {
     globalThis.fetch = makeFetch({
+      ...agentsFixture(),
       [`${API}/episodes`]: () =>
-        ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0.5 }] }),
+        ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0.5, created_at: "2026-11-01T00:00:00Z" }] }),
     }) as any;
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "episodes" }));
 
-    expect(await screen.findByText(/tutor/)).toBeInTheDocument();
+    expect(await screen.findByText("Brittany")).toBeInTheDocument();
+    expect(screen.getByText(/50%/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
   });
 
-  it("cancels a running episode via POST", async () => {
+  it("cancels a running episode via POST without opening the detail panel", async () => {
     const fn = makeFetch({
+      ...agentsFixture(),
       [`${API}/episodes`]: () =>
         ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0.5 }] }),
     });
@@ -415,17 +423,46 @@ describe("Episodes", () => {
     await waitFor(() => {
       expect(fn).toHaveBeenCalledWith(`${API}/episodes/e1/cancel`, expect.objectContaining({ method: "POST" }));
     });
+    // Cancelling invokes the button handler only; the row click (stopPropagation)
+    // must not open the episode detail panel.
+    expect(screen.queryByText("Episode detail")).not.toBeInTheDocument();
   });
 
   it("does not show controls for non-running episodes", async () => {
     globalThis.fetch = makeFetch({
+      ...agentsFixture(),
       [`${API}/episodes`]: () =>
         ok({ items: [{ id: "e1", agent_id: "tutor", status: "done", progress: 1 }] }),
     }) as any;
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "episodes" }));
-    await screen.findByText(/tutor/);
+    await screen.findByText("Brittany");
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
+  });
+
+  it("opens episode detail with its events when a row is clicked", async () => {
+    globalThis.fetch = makeFetch({
+      ...agentsFixture(),
+      [`${API}/episodes`]: () =>
+        ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0.5, created_at: "2026-11-01T00:00:00Z" }] }),
+      [`${API}/episodes/e1`]: () =>
+        ok({
+          episode: { id: "e1", agent_id: "tutor", status: "running", progress: 0.5, created_at: "2026-11-01T00:00:00Z" },
+          events: [
+            { status: "started", detail: "dispatched", created_at: "2026-11-01T00:00:01Z" },
+            { status: "checkpoint", detail: "40%", created_at: "2026-11-01T00:00:05Z" },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "episodes" }));
+    fireEvent.click(await screen.findByText("Brittany"));
+
+    expect(await screen.findByText("Episode detail")).toBeInTheDocument();
+    expect(await screen.findByText("started")).toBeInTheDocument();
+    expect(screen.getByText("checkpoint")).toBeInTheDocument();
+    expect(screen.getByText("dispatched")).toBeInTheDocument();
   });
 });
 
@@ -477,6 +514,68 @@ describe("Agents", () => {
     expect(screen.getByText("The Educator")).toBeInTheDocument();
     // The card's accessible name remains the slug for stable lookups.
     expect(screen.getByRole("button", { name: "tutor" })).toBeInTheDocument();
+  });
+
+  it("shows responsibilities on the agent card", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/agents`]: () =>
+        ok({
+          agents: [
+            {
+              name: "tutor",
+              display_name: "Brittany",
+              archetype: "The Educator",
+              role: "Personal tutor",
+              responsibilities: "Explain concepts and build durable understanding.",
+            },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    expect(
+      await screen.findByText("Explain concepts and build durable understanding.")
+    ).toBeInTheDocument();
+  });
+
+  it("shows the agent detail panel with model, capabilities, tools, and assigned work", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/agents`]: () =>
+        ok({
+          agents: [
+            {
+              name: "tutor",
+              display_name: "Brittany",
+              archetype: "The Educator",
+              role: "Personal tutor",
+              personality: "patient",
+              responsibilities: "Explain concepts and build durable understanding.",
+              capabilities: ["explain", "quiz"],
+              tools: ["calculate"],
+              model: "llama3.1",
+            },
+          ],
+        }),
+      [`${API}/workspaces/goals`]: () =>
+        ok({ items: [{ id: "g1", title: "Master algebra", project_id: "p1" }] }),
+      [`${API}/workspaces/assignments`]: () =>
+        ok({ items: [{ id: "a1", agent_id: "tutor", goal_id: "g1", status: "queued" }] }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
+
+    expect(await screen.findByTestId("agent-detail")).toBeInTheDocument();
+    // responsibilities appear on both the card and the detail panel after selection.
+    expect(screen.getAllByText("Explain concepts and build durable understanding.").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/model · llama3\.1/)).toBeInTheDocument();
+    expect(screen.getByText("Capabilities")).toBeInTheDocument();
+    expect(screen.getByText("explain")).toBeInTheDocument();
+    expect(screen.getByText("quiz")).toBeInTheDocument();
+    expect(screen.getByText("Tools")).toBeInTheDocument();
+    expect(screen.getByText("calculate")).toBeInTheDocument();
+    expect(screen.getByText("Assigned work")).toBeInTheDocument();
+    expect(screen.getByText("Master algebra")).toBeInTheDocument();
   });
 
   it("submits a task and renders the reply with its execution location", async () => {

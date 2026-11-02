@@ -125,6 +125,22 @@ class TestApprovedIdentityProfiles(unittest.TestCase):
         self.assertEqual(by_name["workspace_architect"]["display_name"], "Alex")
         self.assertEqual(by_name["workspace_architect"]["archetype"], "The Builder")
 
+    def test_available_agents_expose_responsibilities_and_model(self):
+        by_name = {a["name"]: a for a in available_agents()}
+        self.assertEqual(set(by_name), set(ALL_SLUGS))
+        for slug in ALL_SLUGS:
+            agent = by_name[slug]
+            # responsibilities come from the manifest identity block
+            self.assertEqual(
+                agent["responsibilities"],
+                APPROVED_IDENTITIES[slug]["responsibilities"],
+                slug,
+            )
+            self.assertIsInstance(agent["responsibilities"], str)
+            self.assertTrue(agent["responsibilities"].strip(), slug)
+            # model is resolved to the manifest model name (string) for the frontend
+            self.assertEqual(agent["model"], "llama3.1", slug)
+
 
 class TestIdentityPrompt(unittest.TestCase):
     def _agent(self):
