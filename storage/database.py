@@ -72,6 +72,16 @@ CREATE TABLE IF NOT EXISTS conversation_memory (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS conversation_threads (
+    thread_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    agent_id TEXT,
+    title TEXT NOT NULL,
+    is_renamed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS agent_private_memory (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,

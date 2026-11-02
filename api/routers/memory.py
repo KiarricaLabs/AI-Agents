@@ -52,6 +52,10 @@ class ConversationReq(BaseModel):
     thread_id: Optional[str] = None
 
 
+class RenameReq(BaseModel):
+    title: str
+
+
 @router.get("/profile")
 def get_profile(request: Request):
     t, u = _identity(request)
@@ -68,6 +72,23 @@ def get_conversation(request: Request, thread_id: Optional[str] = None):
 def add_conversation(req: ConversationReq, request: Request):
     t, u = _identity(request)
     _svc(t).add_conversation(u, req.content, req.role, req.thread_id)
+    return {"ok": True}
+
+
+@router.get("/conversations")
+def list_conversations(request: Request):
+    """Global conversation browser across all agents (agent filter is client-side)."""
+    t, u = _identity(request)
+    return {"items": _svc(t).list_threads(u)}
+
+
+@router.patch("/conversations/{thread_id}")
+def rename_conversation(thread_id: str, req: RenameReq, request: Request):
+    t, u = _identity(request)
+    if not _svc(t).rename_thread(u, thread_id, req.title):
+        # Foreign or nonexistent thread: 404, and do not reveal whether another
+        # user's thread exists.
+        raise HTTPException(status_code=404, detail="conversation not found")
     return {"ok": True}
 
 

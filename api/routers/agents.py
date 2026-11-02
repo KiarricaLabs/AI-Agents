@@ -110,6 +110,13 @@ def run_agent(name: str, req: RunReq, request: Request):
     try:
         svc.add_conversation(u, task, "user", thread_id)
         svc.add_conversation(u, result.get("reply", ""), "assistant", thread_id)
+        # Persist thread metadata (agent + auto-title) without ever overwriting a
+        # manual rename. New threads are attributed to this agent; existing ones are
+        # only touched to refresh last-activity.
+        if req.thread_id:
+            svc.touch_thread(u, thread_id)
+        else:
+            svc.get_or_create_thread(u, thread_id, name, task)
     except Exception as e:
         result["history_warning"] = (
             f"reply generated but conversation history failed to save ({type(e).__name__})"

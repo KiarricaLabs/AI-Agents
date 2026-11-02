@@ -65,6 +65,96 @@ class MemoryService:
             "SELECT * FROM conversation_memory WHERE tenant_id=? AND user_id=?" + order,
             (self.tenant_id, user_id))
 
+    # --- Conversation thread metadata (persistent, agent-associated) ---
+    def get_or_create_thread(self, user_id: str, thread_id: str, agent_id: Optional[str], first_message: str):
+        """Create a thread record on first use (auto-title from the first user
+        message). Idempotent: existing rows are returned untouched so a manual
+        rename is never overwritten."""
+        rows = self.db.query(
+            "SELECT * FROM conversation_threads WHERE thread_id=? AND tenant_id=? AND user_id=?",
+            (thread_id, self.tenant_id, user_id))
+        if rows:
+            return rows[0]
+        title = (first_message or "New conversation").strip().replace("\n", " ")
+        if len(title) > 60:
+            title = title[:60].rstrip() + "…"
+        now = _now()
+        self.db.execute(
+            "INSERT INTO conversation_threads "
+            "(thread_id,tenant_id,user_id,agent_id,title,is_renamed,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,0,?,?)",
+            (thread_id, self.tenant_id, user_id, agent_id, title, now, now))
+        return self.db.query(
+            "SELECT * FROM conversation_threads WHERE thread_id=? AND tenant_id=? AND user_id=?",
+            (thread_id, self.tenant_id, user_id))[0]
+
+    def touch_thread(self, user_id: str, thread_id: str):
+        """Bump last-activity on a resumed thread without changing its title."""
+        self.db.execute(
+            "UPDATE conversation_threads SET updated_at=? "
+            "WHERE thread_id=? AND tenant_id=? AND user_id=?",
+            (_now(), thread_id, self.tenant_id, user_id))
+
+    def rename_thread(self, user_id: str, thread_id: str, title: str):
+        """Rename an owned thread. Returns True on success; False when no owned
+        thread matches (foreign or nonexistent). Never creates a thread as a side
+        effect of renaming. Ownership comes from the authenticated identity only,
+        so a foreign/nonexistent thread returns False and the API responds 404
+        without revealing whether another user's thread exists."""
+        display = (title or "").strip()[:60]
+        if not display:
+            display = "Conversation"
+        rows = self.db.query(
+            "SELECT thread_id FROM conversation_threads WHERE thread_id=? AND tenant_id=? AND user_id=?",
+            (thread_id, self.tenant_id, user_id))
+        if not rows:
+            return False
+        now = _now()
+        self.db.execute(
+            "UPDATE conversation_threads SET title=?, is_renamed=1, updated_at=? "
+            "WHERE thread_id=? AND tenant_id=? AND user_id=?",
+            (display, now, thread_id, self.tenant_id, user_id))
+        return True
+
+    def list_threads(self, user_id: str) -> List[Dict[str, Any]]:
+        """The conversation browser: every thread the user has, joined with persisted
+        metadata. Threads that predate thread metadata surface with agent_id=None
+        (displayed as 'Agent unknown') and an auto-derived title."""
+        rows = self.db.query(
+            "SELECT t.thread_id,"
+            "       ct.agent_id AS agent_id,"
+            "       ct.title    AS meta_title,"
+            "       ct.is_renamed AS is_renamed,"
+            "       COUNT(t.id) AS message_count,"
+            "       MAX(t.created_at) AS last_activity "
+            "FROM conversation_memory t "
+            "LEFT JOIN conversation_threads ct "
+            "  ON ct.thread_id = t.thread_id AND ct.tenant_id = t.tenant_id AND ct.user_id = t.user_id "
+            "WHERE t.tenant_id = ? AND t.user_id = ? AND t.thread_id IS NOT NULL "
+            "GROUP BY t.thread_id ORDER BY last_activity DESC",
+            (self.tenant_id, user_id))
+        out = []
+        for r in rows:
+            if r["meta_title"]:
+                title = r["meta_title"]
+            else:
+                sub = self.db.query(
+                    "SELECT content FROM conversation_memory WHERE tenant_id=? AND user_id=? "
+                    "AND thread_id=? AND role='user' ORDER BY created_at ASC, id ASC LIMIT 1",
+                    (self.tenant_id, user_id, r["thread_id"]))
+                title = (sub[0]["content"] if sub else "Untitled conversation").strip().replace("\n", " ")
+                if len(title) > 60:
+                    title = title[:60].rstrip() + "…"
+            out.append({
+                "thread_id": r["thread_id"],
+                "agent_id": r["agent_id"],
+                "title": title,
+                "is_renamed": bool(r["is_renamed"]),
+                "last_activity": r["last_activity"],
+                "message_count": r["message_count"],
+            })
+        return out
+
     # --- Agent-private memory ---
     def set_private(self, agent_id: str, user_id: str, key: str, value: str, kind: str = "note"):
         # upsert
