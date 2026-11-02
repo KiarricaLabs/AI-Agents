@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from core.memory import MemoryService
 from core.tools.work_propose import WORK_TOOL_MAP
+from core.errors import ModelUnavailableError, ModelEmptyOutputError
+from core.model_router import ModelResult
 
 
 # Safe human-readable fallback when the structured (JSON) response cannot be parsed.
@@ -18,6 +20,22 @@ FALLBACK_REPLY = (
 _PROPOSAL_NOT_SAVED_NOTE = (
     "I couldn't save that proposal, so nothing was added to your workspace. "
     "To try again, please confirm the parent project or goal is selected."
+)
+
+# Truthful, human-readable fallbacks when generation/retrieval fails. These are
+# system-level messages (not personality content): they never claim completed
+# work and never expose raw exceptions or internals.
+_GENERATION_FAILED_REPLY = (
+    "I couldn't reach the language model just now, so I didn't generate an "
+    "answer and nothing was saved or changed. Please try again shortly."
+)
+_EMPTY_OUTPUT_REPLY = (
+    "The model returned no usable response just now, so I didn't answer and "
+    "nothing was saved or changed. Please try again."
+)
+_MEMORY_UNAVAILABLE_NOTE = (
+    "I couldn't load your saved context this time, so I answered without it. "
+    "Nothing from your memory was used or changed."
 )
 
 # Instruction shown to the model for proposal-capable (work_intent) turns. The
@@ -61,19 +79,41 @@ class BaseAgent:
     # --- Grounding + generation ---
 
     def _ground(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Retrieve manifest-scoped memory, generate, and collect (approval-gated) proposals."""
+        """Retrieve manifest-scoped memory, generate, and collect (approval-gated) proposals.
+
+        Retrieval failures never crash the run and never invent memories: context
+        is loaded as empty and a ``memory_error`` marker is surfaced instead.
+        """
         facts: List[Dict[str, Any]] = []
         proposal_ids: List[str] = []
+        memory_error = None
         if self.memory is not None and self.user_id is not None:
             from core.memory_scope import ScopedMemory
-            scoped = ScopedMemory(self.memory, self.manifest, self.name, self.user_id, policy=self.policy)
-            facts = scoped.retrieve()
-            proposal_ids = self._collect_proposals(scoped, context)
+            # Only the actual memory retrieval is normalized. A PermissionError
+            # raised while collecting/approving memory proposals is an
+            # authorization denial and must propagate through the existing
+            # permission handling rather than being masked as a memory failure.
+            scoped = None
+            try:
+                scoped = ScopedMemory(self.memory, self.manifest, self.name, self.user_id, policy=self.policy)
+                facts = scoped.retrieve()
+            except Exception:
+                facts = []
+                memory_error = {"code": "memory_error", "retryable": True}
+            if scoped is not None and memory_error is None:
+                proposal_ids = self._collect_proposals(scoped, context)
+        brand_facts: List[Dict[str, Any]] = []
+        if memory_error is None:
+            try:
+                brand_facts = self._retrieve_brand(context)
+            except Exception:
+                brand_facts = []
+                memory_error = {"code": "memory_error", "retryable": True}
         tool_results = self._run_tools(context)
-        brand_facts = self._retrieve_brand(context)
+        gen_error = memory_error
         if (context or {}).get("work_intent") and self.tools is not None and self.router is not None:
             st = self._generate_structured(task, context, facts=facts, brand=brand_facts)
-            return {
+            out = {
                 "agent": self.name,
                 "reply": st["reply"],
                 "provider": st["provider"],
@@ -84,17 +124,27 @@ class BaseAgent:
                 "proposal_results": st["proposal_results"],
                 "tool_results": tool_results,
             }
-        result = self._generate(task, context, facts=facts, brand=brand_facts)
-        return {
-            "agent": self.name,
-            "reply": result.text,
-            "provider": result.provider,
-            "model": result.model,
-            "location": result.location,
-            "facts": facts,
-            "proposals": proposal_ids,
-            "tool_results": tool_results,
-        }
+            if st.get("generation_error"):
+                gen_error = gen_error or st["generation_error"]
+        else:
+            result = self._generate(task, context, facts=facts, brand=brand_facts)
+            out = {
+                "agent": self.name,
+                "reply": result.text,
+                "provider": result.provider,
+                "model": result.model,
+                "location": result.location,
+                "facts": facts,
+                "proposals": proposal_ids,
+                "tool_results": tool_results,
+            }
+            if getattr(result, "generation_error", None):
+                gen_error = gen_error or result.generation_error
+        if gen_error:
+            out["generation_error"] = gen_error
+            if gen_error.get("code") == "memory_error":
+                out["reply"] = (out["reply"] + "\n\n" + _MEMORY_UNAVAILABLE_NOTE).strip()
+        return out
 
     def _retrieve_brand(self, context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Retrieve approved brand facts authorized by manifest + policy."""
@@ -167,13 +217,29 @@ class BaseAgent:
         if self.router is None:
             raise RuntimeError(f"Agent '{self.name}' has no ModelRouter configured.")
         spec = self.manifest.get("model", {})
-        return self.router.complete(
-            agent_id=self.name,
-            prompt=task,
-            system=self._system_prompt(facts, history=(context or {}).get("conversation"), brand=brand),
-            model_spec=spec,
-            context=context,
-        )
+        try:
+            return self.router.complete(
+                agent_id=self.name,
+                prompt=task,
+                system=self._system_prompt(facts, history=(context or {}).get("conversation"), brand=brand),
+                model_spec=spec,
+                context=context,
+            )
+        except ModelUnavailableError:
+            return self._failure_result("model_unavailable", spec)
+        except ModelEmptyOutputError:
+            return self._failure_result("model_empty", spec)
+
+    def _failure_result(self, code: str, model_spec: Optional[Dict[str, Any]] = None) -> ModelResult:
+        """Return a truthful, non-empty failure ``ModelResult`` carrying a stable
+        ``generation_error`` marker, so an ordinary-turn generation failure is
+        never returned as a blank success and never implies completed work."""
+        spec = model_spec or {}
+        model = str(spec.get("model") or "")
+        msg = _EMPTY_OUTPUT_REPLY if code == "model_empty" else _GENERATION_FAILED_REPLY
+        res = ModelResult(msg, "ollama", model, f"local:ollama:{model}")
+        res.generation_error = {"code": code, "retryable": True}
+        return res
 
     def _generate_structured(self, task: str, context: Optional[Dict[str, Any]] = None,
                               facts: Optional[List[Dict[str, Any]]] = None,
@@ -193,6 +259,7 @@ class BaseAgent:
         proposal_results: List[Dict[str, Any]] = []
         provider, model, location = "ollama", "", ""
         raw = ""
+        generation_failed = None
         try:
             mr = self.router.complete(
                 agent_id=self.name,
@@ -203,8 +270,12 @@ class BaseAgent:
                 json_format=True,
             )
             provider, model, location, raw = mr.provider, mr.model, mr.location, mr.text
+        except ModelUnavailableError:
+            generation_failed = {"code": "model_unavailable", "retryable": True}
+        except ModelEmptyOutputError:
+            generation_failed = {"code": "model_empty", "retryable": True}
         except Exception:
-            raw = ""  # safe fallback; never crash the run
+            raw = ""  # safe fallback (e.g. malformed JSON); never crash the run
         if raw:
             try:
                 env = json.loads(raw)
@@ -227,7 +298,7 @@ class BaseAgent:
             s.get("status") != "saved" for s in proposal_results
         ):
             reply = (reply + "\n\n" + _PROPOSAL_NOT_SAVED_NOTE).strip()
-        return {
+        result = {
             "reply": reply,
             "provider": provider,
             "model": model,
@@ -235,6 +306,9 @@ class BaseAgent:
             "proposal_ids": proposal_ids,
             "proposal_results": proposal_results,
         }
+        if generation_failed:
+            result["generation_error"] = generation_failed
+        return result
 
     def _ingest_proposal_block(self, block: Any, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Validate a structured proposal block and hand it to a FIXED proposal

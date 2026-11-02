@@ -223,6 +223,12 @@ export default function App() {
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentResult, setAgentResult] = useState<any>(null);
   const [agentError, setAgentError] = useState("");
+  // --- M10 D4.2: graceful generation failure handling ---
+  const [agentGenError, setAgentGenError] = useState<any>(null);
+  const [agentRetryTask, setAgentRetryTask] = useState<string | null>(null);
+  const [agentRetryThread, setAgentRetryThread] = useState<string | null>(null);
+  // Model availability is tracked separately from whole-backend `offline`.
+  const [modelOnline, setModelOnline] = useState<boolean | null>(null);
   const [threadIds, setThreadIds] = useState<Record<string, string>>({});
   const [contextCounts, setContextCounts] = useState<Record<string, number>>({});
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
@@ -323,6 +329,11 @@ export default function App() {
         setHealth("offline");
         setOffline(true);
       });
+    // D4.2: separate model availability probe (read-only; no state mutation).
+    fetch(`${API}/agents/model-health`)
+      .then((r) => r.json())
+      .then((d) => setModelOnline(d && d.model && d.model.code === "ok"))
+      .catch(() => setModelOnline(null));
     refresh();
     fetchAgents();
     loadConvos();
@@ -394,6 +405,9 @@ export default function App() {
     setSelectedAgent(agentName);
     setAgentResult(null);
     setAgentError("");
+    setAgentGenError(null); // a prior agent's stale failure panel must not linger
+    setAgentRetryTask(null);
+    setAgentRetryThread(null);
     // Choosing an agent starts a fresh context (saved conversations are untouched).
     setOpenThreadId(null);
     setTranscript([]);
@@ -405,11 +419,34 @@ export default function App() {
     setAgentRunning(true);
     setAgentError("");
     setAgentResult(null);
+    setAgentGenError(null);
+    setAgentRetryTask(null);
+    setAgentRetryThread(null);
     const payload: any = { task: submitted };
     if (threadIds[selectedAgent]) payload.thread_id = threadIds[selectedAgent];
     // Clear the input immediately so it is ready for the next message while
     // the agent processes; it is restored below if the submission fails.
     setTask("");
+    await performRun(submitted, payload);
+  };
+
+  const retryAgentRun = async () => {
+    if (offline || agentRunning || !selectedAgent || !agentRetryTask) return;
+    const submitted = agentRetryTask;
+    const payload: any = { task: submitted, retry: true };
+    if (agentRetryThread) payload.thread_id = agentRetryThread;
+    setAgentRunning(true);
+    setAgentError("");
+    setAgentGenError(null);
+    setAgentRetryTask(null);
+    setAgentRetryThread(null);
+    await performRun(submitted, payload);
+  };
+
+  // Shared POST handler. `payload.retry` tells the backend not to persist a
+  // duplicate user message for an already-saved task. It never repeats
+  // consequential tool calls, proposals, or execution.
+  const performRun = async (submitted: string, payload: any) => {
     try {
       const r = await fetch(`${API}/agents/${selectedAgent}/run`, {
         method: "POST",
@@ -418,9 +455,30 @@ export default function App() {
       });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) {
-        setAgentError(body.detail || `request failed (${r.status})`);
+        const code = (body as any).detail || `request failed (${r.status})`;
+        // Generic friendly 5xx message: never surface raw backend exception text.
+        if (r.status >= 500) {
+          setAgentError("The agent couldn\u2019t complete the request right now. Please try again.");
+        } else if (r.status === 422) {
+          setAgentError("The response couldn\u2019t be validated by the safety checks, so nothing was used. Please try again.");
+        } else if (r.status === 403) {
+          setAgentError("That action isn\u2019t allowed. Please try again.");
+        } else {
+          // Meaningful 4xx detail (e.g. not found) is preserved.
+          setAgentError(code);
+        }
         setTask(submitted); // preserve the message on a rejected submission
+        setAgentGenError(null);
       } else {
+        // Record a structured generation failure (if any) for the failure panel
+        // and one-click retry, without losing the honest reply body below.
+        if (body.generation_error) {
+          setAgentGenError(body.generation_error);
+          setAgentRetryTask(submitted);
+          setAgentRetryThread(body.thread_id || null);
+        } else {
+          setAgentGenError(null);
+        }
         // If this run continues the currently-open saved conversation, append the
         // new turns to its transcript instead of replacing the last reply.
         const continuing = Boolean(openThreadId) && body.thread_id === openThreadId;
@@ -444,6 +502,7 @@ export default function App() {
     } catch (e: any) {
       setAgentError(e?.message || "network error");
       setTask(submitted); // preserve the message on a network failure
+      setAgentGenError(null);
     } finally {
       setAgentRunning(false);
     }
@@ -462,6 +521,9 @@ export default function App() {
     });
     setAgentResult(null);
     setAgentError("");
+    setAgentGenError(null);
+    setAgentRetryTask(null);
+    setAgentRetryThread(null);
     setTask("");
     // Start fresh: stop viewing an opened transcript (saved conversations are
     // never deleted or altered by New Conversation).
@@ -2178,9 +2240,40 @@ export default function App() {
                   )}
                 </div>
 
+                {modelOnline === false && !offline && (
+                  <div className="warning" data-testid="model-offline-banner" role="alert">
+                    The language model is currently unavailable, so replies may not generate until it recovers.
+                  </div>
+                )}
                 {agentError && <p className="error">Error: {agentError}</p>}
                 {agentResult?.history_warning && (
                   <p className="warning">Warning: {agentResult.history_warning}</p>
+                )}
+                {agentGenError && (
+                  <div className="warning" data-testid="gen-failure-panel" role="alert">
+                    <span className="result__heading">
+                      {agentGenError.code === "model_empty"
+                        ? "No response was generated this time."
+                        : agentGenError.code === "memory_error"
+                          ? "Your saved context couldn't be loaded."
+                          : "The language model is temporarily unavailable."}
+                    </span>
+                    <p className="muted">
+                      {agentGenError.code === "memory_error"
+                        ? "Your reply was prepared without your saved context, and nothing from your memory was changed."
+                        : "Nothing was saved or changed. You can retry, or type your message again."}
+                    </p>
+                    {agentGenError.retryable && (
+                      <button
+                        className="btn btn--sm btn--primary"
+                        data-testid="retry-agent"
+                        onClick={retryAgentRun}
+                        disabled={offline || agentRunning}
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 {openThreadId && transcript.length > 0 && (

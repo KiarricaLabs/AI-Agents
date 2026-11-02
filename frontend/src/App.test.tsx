@@ -19,6 +19,8 @@ function makeFetch(overrides: Record<string, Route> = {}) {
   const fn = vi.fn((url: string, opts?: any) => {
     if (url.endsWith("/health")) return ok({ ok: true });
     if (overrides[url]) return overrides[url](url, opts);
+    if (url.endsWith("/agents/model-health"))
+      return ok({ backend: { ok: true }, model: { code: "ok", provider: "ollama" } });
     // default: empty lists
     return ok({ items: [] });
   });
@@ -696,7 +698,11 @@ describe("Agents", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
 
-    expect(await screen.findByText(/Ollama unreachable/)).toBeInTheDocument();
+    // D4.2 L3: a 5xx renders a generic friendly error, never raw backend detail.
+    expect(
+      await screen.findByText(/couldn\u2019t complete the request right now/)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Ollama unreachable/)).not.toBeInTheDocument();
   });
 
   it("keeps the run button disabled with no task entered", async () => {
@@ -821,7 +827,11 @@ describe("Agents", () => {
     fireEvent.change(input, { target: { value: "Plan the quarter" } });
     fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
 
-    expect(await screen.findByText(/Ollama unreachable/)).toBeInTheDocument();
+    // D4.2 L3: friendly 5xx message shown, and the message text is preserved.
+    expect(
+      await screen.findByText(/couldn\u2019t complete the request right now/)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Ollama unreachable/)).not.toBeInTheDocument();
     expect(input).toHaveValue("Plan the quarter");
   });
 
@@ -1360,5 +1370,200 @@ describe("Approved-assignment execution (M10 D4.1)", () => {
     fireEvent.click(await screen.findByTestId("assignment-a1"));
     expect(await screen.findByTestId("not-approved-a1")).toBeInTheDocument();
     expect(screen.queryByTestId("approved-run-a1")).not.toBeInTheDocument();
+  });
+});
+
+describe("Graceful generation failure handling (M10 D4.2)", () => {
+  const agentFixture = () => ({
+    [`${API}/agents`]: () =>
+      ok({
+        agents: [{ name: "tutor", role: "Personal tutor", capabilities: ["explain"] }],
+      }),
+  });
+
+  async function selectTutor() {
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
+  }
+
+  it("shows a model-offline banner separate from backend offline", async () => {
+    globalThis.fetch = makeFetch({
+      ...agentFixture(),
+      [`${API}/agents/model-health`]: () =>
+        ok({ backend: { ok: true }, model: { code: "model_unavailable", provider: "ollama" } }),
+    }) as any;
+    render(<App />);
+    await selectTutor();
+    expect(await screen.findByTestId("model-offline-banner")).toBeInTheDocument();
+  });
+
+  it("shows a friendly failure panel with a Retry and no raw detail", async () => {
+    globalThis.fetch = makeFetch({
+      ...agentFixture(),
+      [`${API}/agents/tutor/run`]: () =>
+        ok({
+          agent: "tutor",
+          reply: "I couldn't reach the language model just now.",
+          location: "local:ollama:llama3.1",
+          thread_id: "th1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+          generation_error: { code: "model_unavailable", retryable: true },
+        }),
+    }) as any;
+    render(<App />);
+    await selectTutor();
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
+      target: { value: "help me plan" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    expect(await screen.findByTestId("gen-failure-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("retry-agent")).toBeInTheDocument();
+    // no raw backend detail is surfaced
+    expect(screen.queryByText(/Error:/)).not.toBeInTheDocument();
+  });
+
+  it("Retry resubmits the same task and thread with retry:true", async () => {
+    const fn = makeFetch({
+      ...agentFixture(),
+      [`${API}/agents/tutor/run`]: () =>
+        ok({
+          agent: "tutor",
+          reply: "still down",
+          location: "local:ollama:llama3.1",
+          thread_id: "th1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+          generation_error: { code: "model_unavailable", retryable: true },
+        }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await selectTutor();
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
+      target: { value: "plan my week" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    await screen.findByTestId("gen-failure-panel");
+    fireEvent.click(screen.getByTestId("retry-agent"));
+    await waitFor(() => {
+      const calls = fn.mock.calls.filter((c: any) => c[0] === `${API}/agents/tutor/run`);
+      expect(calls.length).toBeGreaterThanOrEqual(2);
+      const retry = calls[calls.length - 1];
+      const body = JSON.parse(retry[1].body);
+      expect(body.task).toBe("plan my week");
+      expect(body.thread_id).toBe("th1");
+      expect(body.retry).toBe(true);
+    });
+  });
+
+  it("surfaces a history-warning instead of hiding it", async () => {
+    globalThis.fetch = makeFetch({
+      ...agentFixture(),
+      [`${API}/agents/tutor/run`]: () =>
+        ok({
+          agent: "tutor",
+          reply: "done",
+          location: "local:ollama:llama3.1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+          history_warning: "reply generated but history failed to save (OperationalError)",
+        }),
+    }) as any;
+    render(<App />);
+    await selectTutor();
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    expect(
+      await screen.findByText(/reply generated but history failed to save/)
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a useful summary of partial tool results", async () => {
+    globalThis.fetch = makeFetch({
+      ...agentFixture(),
+      [`${API}/agents/tutor/run`]: () =>
+        ok({
+          agent: "tutor",
+          reply: "partly done",
+          location: "local:ollama:llama3.1",
+          facts: [],
+          proposals: [],
+          tool_results: [
+            { tool: "now", ok: true },
+            { tool: "calculate", ok: false, error: "division by zero" },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    await selectTutor();
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
+      target: { value: "compute" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    await screen.findByText("Tools used");
+    expect(screen.getByText(/calculate: error: division by zero/)).toBeInTheDocument();
+    expect(screen.getByText(/now: ok/)).toBeInTheDocument();
+  });
+
+  it("does not expose raw backend detail on a 5xx (L3)", async () => {
+    globalThis.fetch = makeFetch({
+      ...agentFixture(),
+      [`${API}/agents/tutor/run`]: () =>
+        fail({ detail: "Traceback (most recent call last): boom" }, 500),
+    }) as any;
+    render(<App />);
+    await selectTutor();
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
+      target: { value: "help" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    // generic friendly message shown; raw exception text never rendered
+    expect(
+      await screen.findByText(/couldn\u2019t complete the request right now/)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Traceback/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/boom/)).not.toBeInTheDocument();
+  });
+
+  it("clears a stale failure panel when switching agents (L2)", async () => {
+    const twoAgents = () => ({
+      [`${API}/agents`]: () =>
+        ok({
+          agents: [
+            { name: "tutor", role: "Personal tutor", capabilities: ["explain"] },
+            { name: "strategist", role: "Strategist", capabilities: ["plan"] },
+          ],
+        }),
+    });
+    globalThis.fetch = makeFetch({
+      ...twoAgents(),
+      [`${API}/agents/tutor/run`]: () =>
+        ok({
+          agent: "tutor",
+          reply: "down",
+          location: "local:ollama:llama3.1",
+          thread_id: "th1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+          generation_error: { code: "model_unavailable", retryable: true },
+        }),
+    }) as any;
+    render(<App />);
+    await selectTutor();
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
+      target: { value: "x" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    expect(await screen.findByTestId("gen-failure-panel")).toBeInTheDocument();
+    // switch to another agent -> prior failure panel is cleared
+    fireEvent.click(screen.getByRole("button", { name: "strategist" }));
+    expect(screen.queryByTestId("gen-failure-panel")).not.toBeInTheDocument();
   });
 });

@@ -25,6 +25,10 @@ class RunReq(BaseModel):
     # Explicit eligibility gate for the proposal-capable (structured) path.
     # false/omitted => ordinary conversation path; true => combined JSON-mode.
     work_intent: bool = False
+    # Human-triggered retry of the most recent failed turn. The backend uses this
+    # ONLY to avoid persisting a duplicate user message for the retried task; it
+    # does not repeat consequential tool calls, proposals, or execution.
+    retry: bool = False
 
 
 def _identity(request: Request):
@@ -61,6 +65,24 @@ def _resolve_brand_id(brand_svc: BrandService, explicit: Optional[str]):
 def list_agents():
     from core.runtime import available_agents
     return {"agents": available_agents()}
+
+
+@router.get("/model-health")
+def model_health(request: Request):
+    """Read-only model availability probe.
+
+    Distinguishes backend availability (implied by reaching this endpoint) from
+    model availability. Bounded probe time; never creates conversation history
+    or workspace state and never exposes raw internals.
+    """
+    from core.model_router import ModelRouter
+
+    info = ModelRouter().check_availability()
+    return {
+        "backend": {"ok": True, "provider": "local"},
+        "model": info,
+        "provider": info.get("provider"),
+    }
 
 
 @router.post("/{name}/run")
@@ -109,10 +131,22 @@ def run_agent(name: str, req: RunReq, request: Request):
     except Exception:
         raise HTTPException(status_code=500, detail="agent execution failed")
 
-    # Persist both turns. A write failure must not silently lose a successful reply.
+    # Persist both turns (success or failed-generation). A write failure must not
+    # silently lose a successful reply, and a failed turn still records the user
+    # message and the honest assistant response so retry loses no context.
+    reply_text = result.get("reply", "")
     try:
-        svc.add_conversation(u, task, "user", thread_id)
-        svc.add_conversation(u, result.get("reply", ""), "assistant", thread_id)
+        # Human-triggered retry: if the most recent *user* message in this thread
+        # is already the task being retried, do not persist a duplicate user row.
+        duplicate_user = False
+        if req.retry and thread_id:
+            recent = svc.list_conversation(u, thread_id)
+            users = [m for m in recent if m.get("role") == "user"]
+            if users and users[-1].get("content") == task:
+                duplicate_user = True
+        if not duplicate_user:
+            svc.add_conversation(u, task, "user", thread_id)
+        svc.add_conversation(u, reply_text, "assistant", thread_id)
         # Persist thread metadata (agent + auto-title) without ever overwriting a
         # manual rename. New threads are attributed to this agent; existing ones are
         # only touched to refresh last-activity.

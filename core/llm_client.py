@@ -35,6 +35,18 @@ class LLMClient:
             raise RuntimeError(f"Provider {self.provider} requires API key; none configured.")
         return f"[{self.provider} not implemented in M0]"
 
+    def ping(self, timeout: float = 3.0) -> bool:
+        """Lightweight, non-generative availability probe (Ollama /api/tags).
+
+        Never creates any conversation history or workspace state. Raises on
+        unreachable/unavailable Ollama (callers map to a safe status).
+        """
+        if self.provider != "ollama":
+            return False
+        req = urllib.request.Request(f"{self.base_url}/api/tags")
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+
 
 def build_client(provider=None, model=None, base_url=None, api_key=None):
     return LLMClient(provider, model, base_url, api_key)

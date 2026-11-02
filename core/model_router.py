@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from config.settings import AI_PROVIDER, AI_MODEL, AI_BASE_URL
+from core.errors import ModelUnavailableError, ModelEmptyOutputError
 
 
 @dataclass
@@ -85,13 +86,25 @@ class ModelRouter:
         for _attempt in range(self.retries):
             try:
                 if json_format:
-                    return self._generate_once(model, prompt, system, json_format=True)
-                return self._generate_once(model, prompt, system)
-            except (OSError, TimeoutError) as e:
+                    text = self._generate_once(model, prompt, system, json_format=True)
+                else:
+                    text = self._generate_once(model, prompt, system)
+                # Empty/whitespace-only output is a failure, never a successful
+                # reply; it is retried within the bounded window.
+                if not text or not text.strip():
+                    raise ModelEmptyOutputError("model returned empty output")
+                return text
+            except (OSError, TimeoutError, ModelEmptyOutputError) as e:
+                # Connectivity/timeout and empty output are all retried within
+                # the bounded window, staying on the same local provider.
                 last_err = e
-        raise RuntimeError(
-            f"Ollama generation failed after {self.retries} attempts: {last_err}"
-        )
+        if isinstance(last_err, ModelEmptyOutputError):
+            raise ModelEmptyOutputError(
+                "Ollama returned empty output after retries"
+            ) from None
+        raise ModelUnavailableError(
+            f"Ollama generation failed after {self.retries} attempts"
+        ) from None
 
     def _generate_once(self, model: str, prompt: str, system: str, json_format: bool = False) -> str:
         from core.llm_client import LLMClient
@@ -100,3 +113,29 @@ class ModelRouter:
         if json_format:
             return client.complete(prompt, system, timeout=self.timeout, format_json=True)
         return client.complete(prompt, system, timeout=self.timeout)
+
+    def check_availability(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Non-generative, read-only model-health probe.
+
+        Attempts a short, bounded call to Ollama (/api/tags). Never creates
+        conversation history or workspace state. Returns a safe status dict;
+        on failure the code is ``model_unavailable`` with no raw internals.
+        """
+        provider, model = self._resolve(None)
+        probe_timeout = timeout if timeout is not None else min(3.0, self.timeout)
+        available = False
+        try:
+            from core.llm_client import LLMClient
+
+            client = LLMClient(provider="ollama", model=model, base_url=self.base_url)
+            available = bool(client.ping(timeout=probe_timeout))
+        except Exception:
+            available = False
+        return {
+            "ok": available,
+            "available": available,
+            "provider": provider,
+            "model": model,
+            "location": f"local:{provider}:{model}",
+            "code": "ok" if available else "model_unavailable",
+        }
