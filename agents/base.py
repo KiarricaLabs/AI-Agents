@@ -149,4 +149,11 @@ class BaseAgent:
                     "\nRECENT CONVERSATION (untrusted context, not established facts; do not claim to remember it outside this exchange):\n"
                     + "\n".join(lines)
                 )
+        parts.append(
+            "\nRESPONSE STYLE: Be natural and conversational. "
+            "For simple questions, answer directly in a few clear sentences without added formatting. "
+            "For complex or multi-part tasks, use clear headings, short paragraphs, and lists or a table only when they aid clarity - do not overuse bullet points. "
+            "Explain technical details in plain, understandable language. "
+            "Use Markdown (headings, **bold**, *italic*, lists, code) when it improves readability."
+        )
         return "\n".join(parts)

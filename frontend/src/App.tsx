@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { diffLines } from "./diff";
+import { Markdown } from "./markdown";
 import "./App.css";
 
 const API = "http://127.0.0.1:8001";
@@ -162,12 +163,16 @@ export default function App() {
   };
 
   const runAgent = async () => {
-    if (offline || !selectedAgent || !task.trim()) return;
+    if (offline || agentRunning || !selectedAgent || !task.trim()) return;
+    const submitted = task.trim();
     setAgentRunning(true);
     setAgentError("");
     setAgentResult(null);
-    const payload: any = { task: task.trim() };
+    const payload: any = { task: submitted };
     if (threadIds[selectedAgent]) payload.thread_id = threadIds[selectedAgent];
+    // Clear the input immediately so it is ready for the next message while
+    // the agent processes; it is restored below if the submission fails.
+    setTask("");
     try {
       const r = await fetch(`${API}/agents/${selectedAgent}/run`, {
         method: "POST",
@@ -177,6 +182,7 @@ export default function App() {
       const body = await r.json().catch(() => ({}));
       if (!r.ok) {
         setAgentError(body.detail || `request failed (${r.status})`);
+        setTask(submitted); // preserve the message on a rejected submission
       } else {
         setAgentResult(body);
         if (body.thread_id) {
@@ -188,6 +194,7 @@ export default function App() {
       }
     } catch (e: any) {
       setAgentError(e?.message || "network error");
+      setTask(submitted); // preserve the message on a network failure
     } finally {
       setAgentRunning(false);
     }
@@ -652,9 +659,15 @@ export default function App() {
                   className="task-input"
                   value={task}
                   onChange={(e) => setTask(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      runAgent();
+                    }
+                  }}
                   placeholder="Give your agent a task…"
                   rows={3}
-                  disabled={offline || agentRunning}
+                  disabled={offline}
                 />
                 <div className="task-panel__actions">
                   <button
@@ -685,7 +698,7 @@ export default function App() {
                   <div className="result">
                     <div className="result__meta">Processed at: {agentResult.location}</div>
                     <div className="result__body" data-testid="agent-reply">
-                      {agentResult.reply}
+                      <Markdown source={agentResult.reply} />
                     </div>
                     {agentResult.facts?.length > 0 &&
                       (() => {

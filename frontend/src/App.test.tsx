@@ -423,4 +423,110 @@ describe("Agents", () => {
     expect(screen.queryByRole("button", { name: "New conversation" })).not.toBeInTheDocument();
     expect(screen.getByText(/Context: 0 messages/)).toBeInTheDocument();
   });
+
+  it("clears the input immediately when a submission is accepted", async () => {
+    let resolveRun!: (v: unknown) => void;
+    const runPromise = new Promise((res) => {
+      resolveRun = res;
+    });
+    globalThis.fetch = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/tutor/run`]: () => runPromise,
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
+    const input = screen.getByPlaceholderText("Give your agent a task…");
+    fireEvent.change(input, { target: { value: "hello" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+
+    // While the request is in flight, the input is cleared and ready for the next message.
+    await waitFor(() => expect(input).toHaveValue(""));
+
+    resolveRun({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          agent: "tutor",
+          reply: "hi",
+          location: "local:ollama:llama3.1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+        }),
+    });
+    await screen.findByTestId("agent-reply");
+  });
+
+  it("preserves the input when a submission fails", async () => {
+    globalThis.fetch = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/strategist/run`]: () =>
+        Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve({ detail: "Ollama unreachable" }) }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "strategist" }));
+    const input = screen.getByPlaceholderText("Give your agent a task…");
+    fireEvent.change(input, { target: { value: "Plan the quarter" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+
+    expect(await screen.findByText(/Ollama unreachable/)).toBeInTheDocument();
+    expect(input).toHaveValue("Plan the quarter");
+  });
+
+  it("submits on Enter (without Shift) as well as the button", async () => {
+    const fn = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/tutor/run`]: () =>
+        ok({
+          agent: "tutor",
+          reply: "ack",
+          location: "local:ollama:llama3.1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+        }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
+    const input = screen.getByPlaceholderText("Give your agent a task…");
+    fireEvent.change(input, { target: { value: "hello" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/agents/tutor/run`,
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ task: "hello" }) })
+      );
+    });
+  });
+
+  it("renders markdown in the agent reply", async () => {
+    globalThis.fetch = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/tutor/run`]: () =>
+        ok({
+          agent: "tutor",
+          reply: "# Greeting\n\nHello **world**",
+          location: "local:ollama:llama3.1",
+          facts: [],
+          proposals: [],
+          tool_results: [],
+        }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
+      target: { value: "hi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Greeting" })).toBeInTheDocument();
+    expect(screen.getByText("world").tagName).toBe("STRONG");
+  });
 });
