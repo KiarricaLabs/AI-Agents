@@ -112,6 +112,47 @@ function uniqueBy<T>(arr: T[], key: (x: T) => string): T[] {
   return out;
 }
 
+function proposalStatusLabel(s?: string | null): string {
+  const m: Record<string, string> = {
+    proposed: "Pending approval",
+    approved: "Approved",
+    rejected: "Rejected",
+    stale: "Stale",
+    failed: "Failed",
+  };
+  if (!s) return "—";
+  return m[s] || s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function OriginConversation({
+  types, wid, threadsByKey, onLoad, onOpen,
+}: {
+  types: string[];
+  wid: string;
+  threadsByKey: Record<string, any[]>;
+  onLoad: (w: string, i: string) => void;
+  onOpen: (t: any) => void;
+}) {
+  useEffect(() => {
+    if (wid) types.forEach((t) => onLoad(t, wid));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [types.join(","), wid]);
+  const all = types.flatMap((t) => threadsByKey[`${t}:${wid}`] || []).filter(Boolean);
+  const seen = new Set<string>();
+  const uniq = all.filter((x) => (seen.has(x.thread_id) ? false : (seen.add(x.thread_id), true)));
+  if (!wid || uniq.length === 0) return null;
+  return (
+    <div className="origin-block" data-testid={`origin-${wid}`}>
+      <span className="detail-panel__label">Originating conversation</span>
+      {uniq.map((t) => (
+        <button key={t.thread_id} className="origin-link" onClick={() => onOpen(t)}>
+          {t.title || t.thread_id}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Empty({ text }: { text: string }) {
   return <div className="empty">{text}</div>;
 }
@@ -187,6 +228,13 @@ export default function App() {
   const [approvingVersion, setApprovingVersion] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [versionError, setVersionError] = useState<string | null>(null);
+  // --- M10 Phase D1: approvals + bidirectional navigation (read-only) ---
+  const [feed, setFeed] = useState<any[]>([]);
+  const [proposalBusy, setProposalBusy] = useState<string | null>(null);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [threadLinks, setThreadLinks] = useState<any[]>([]);
+  const [workThreads, setWorkThreads] = useState<Record<string, any[]>>({});
+  // Work view -> originating conversation (work_type:work_id -> threads).
 
   useEffect(() => {
     try {
@@ -198,7 +246,6 @@ export default function App() {
       localStorage.setItem(SAMPLE_REVEALED_KEY, JSON.stringify(revealedIds));
     } catch {}
   }, [revealedIds]);
-
   const isSample = (id: string) => KNOWN_SAMPLE_IDS.has(id);
   const isRevealed = (id: string) => revealedIds.includes(id);
   // A record is hidden only when sample data is hidden AND it is a known sample
@@ -259,6 +306,7 @@ export default function App() {
     setTranscript([]);
     setAgentResult(null);
     setAgentError("");
+    loadThreadLinks(c.thread_id);
     try {
       const r = await fetch(
         `${API}/memory/conversation?thread_id=${encodeURIComponent(c.thread_id)}`
@@ -504,6 +552,144 @@ export default function App() {
     }
   };
 
+  // --- M10 Phase D1: approvals feed + linked-work navigation ---
+  const loadFeed = async () => {
+    try {
+      const r = await fetch(`${API}/work/feed`);
+      if (!r.ok) return;
+      const d = await r.json();
+      setFeed(d.items || []);
+    } catch { /* offline or backend unavailable */ }
+  };
+
+  const loadThreadLinks = async (threadId: string | null) => {
+    setThreadLinks([]);
+    if (!threadId) return;
+    try {
+      const r = await fetch(`${API}/work/links?thread_id=${encodeURIComponent(threadId)}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      setThreadLinks(d.items || []);
+    } catch { /* offline or backend unavailable */ }
+  };
+
+  const loadWorkThreads = async (wtype: string, wid: string) => {
+    const key = `${wtype}:${wid}`;
+    if (workThreads[key]) return; // already loaded
+    try {
+      const r = await fetch(`${API}/work/links/work/${encodeURIComponent(wtype)}/${encodeURIComponent(wid)}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      setWorkThreads((prev) => ({ ...prev, [key]: d.threads || [] }));
+    } catch { /* offline or backend unavailable */ }
+  };
+
+  const approveProposal = async (id: string) => {
+    if (offline || proposalBusy) return;
+    setProposalBusy(id);
+    setProposalError(null);
+    try {
+      const r = await fetch(`${API}/work/proposals/${id}/approve`, { method: "POST" });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setProposalError((b as any).detail || `Approve failed (${r.status}).`);
+        return; // keep pending; do not imply success
+      }
+      await loadFeed();
+      refresh();
+    } catch {
+      setProposalError("Approve failed. Please try again.");
+    } finally {
+      setProposalBusy(null);
+    }
+  };
+
+  const rejectProposal = async (id: string) => {
+    if (offline || proposalBusy) return;
+    setProposalBusy(id);
+    setProposalError(null);
+    try {
+      const r = await fetch(`${API}/work/proposals/${id}/reject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Declined by user" }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setProposalError((b as any).detail || `Reject failed (${r.status}).`);
+        return;
+      }
+      await loadFeed();
+    } catch {
+      setProposalError("Reject failed. Please try again.");
+    } finally {
+      setProposalBusy(null);
+    }
+  };
+
+  const openOriginatingThread = (t: any) => {
+    const agentId = t.agent_id || selectedAgent || "strategist";
+    if (t.agent_id) setSelectedAgent(t.agent_id);
+    setTab("agents");
+    setOpenThreadId(t.thread_id);
+    setThreadIds((prev) => ({ ...prev, [agentId]: t.thread_id }));
+    setTranscript([]);
+    (async () => {
+      try {
+        const r = await fetch(`${API}/memory/conversation?thread_id=${encodeURIComponent(t.thread_id)}`);
+        const d = await r.json();
+        setTranscript((d.items || []).map((m: any) => ({ role: m.role, content: m.content, created_at: m.created_at })));
+        loadThreadLinks(t.thread_id);
+      } catch { /* offline or backend unavailable */ }
+    })();
+  };
+
+  const focusWorkItem = (work_type: string, work_id: string) => {
+    setTab("work");
+    loadFeed();
+    setSelectedGoal(null);
+    setSelectedAssignment(null);
+    setSelectedDeliverable(null);
+    if (work_type === "project") {
+      const p = projects.find((x) => x.id === work_id);
+      if (p) { setSelectedWorkspaceId(p.workspace_id ?? null); setSelectedProjectId(work_id); }
+      return;
+    }
+    if (work_type === "goal" || work_type === "goal_update") {
+      const g = goals.find((x) => x.id === work_id);
+      if (g) {
+        const p = projects.find((x) => x.id === g.project_id);
+        setSelectedWorkspaceId(p ? p.workspace_id ?? null : null);
+        setSelectedProjectId(g.project_id);
+        setSelectedGoal(work_id);
+      }
+      return;
+    }
+    if (work_type === "assignment") {
+      const a = assignments.find((x) => x.id === work_id);
+      if (a) {
+        const g = goals.find((x) => x.id === a.goal_id);
+        const p = g ? projects.find((x) => x.id === g.project_id) : undefined;
+        setSelectedWorkspaceId(p ? p.workspace_id ?? null : null);
+        if (g) setSelectedProjectId(g.project_id);
+        setSelectedGoal(a.goal_id);
+        setSelectedAssignment(work_id);
+      }
+      return;
+    }
+    if (work_type === "deliverable" || work_type === "deliverable_version") {
+      const d = deliverablesList.find((x) => x.id === work_id);
+      const targetId = d ? d.id : work_id;
+      const dp = deliverablesList.find((x) => x.id === targetId);
+      if (dp) {
+        const p = projects.find((x) => x.id === dp.project_id);
+        setSelectedWorkspaceId(p ? p.workspace_id ?? null : null);
+        setSelectedProjectId(dp.project_id);
+        setSelectedDeliverable(targetId);
+      }
+    }
+  };
+
   const cancelEpisode = async (eid: string) => {
     if (offline) return;
     await fetch(`${API}/episodes/${eid}/cancel`, { method: "POST" });
@@ -673,7 +859,7 @@ export default function App() {
             key={n.id}
             data-route={n.id}
             className={`nav__btn${tab === n.id ? " nav__btn--active" : ""}`}
-            onClick={() => setTab(n.id)}
+            onClick={() => { setTab(n.id); if (n.id === "work") loadFeed(); }}
             aria-label={n.label}
           >
             <Icon name={n.icon} />
@@ -1026,6 +1212,59 @@ export default function App() {
               </div>
             </div>
 
+            <div className="subsection approvals-panel" data-testid="approvals-panel">
+              <div className="subsection__head">
+                <h3 className="subsection-title">Proposals &amp; approvals</h3>
+                <button className="btn btn--ghost btn--sm" onClick={loadFeed} disabled={offline}>Refresh</button>
+              </div>
+              {proposalError && <p className="error">Error: {proposalError}</p>}
+              {feed.length === 0 ? (
+                <Empty text="No proposals yet. Ask an agent to propose work, then approve it here." />
+              ) : (
+                <ul className="list approvals-list">
+                  {feed.map((p) => {
+                    const pending = p.status === "proposed";
+                    const dec = p.decision || null;
+                    const completed = p.status === "approved" && !!dec && !!dec.work_id && !!dec.label;
+                    return (
+                      <li key={p.id} className="list__item approvals-item" data-testid={`proposal-${p.id}`}>
+                        <div className="approvals-item__main">
+                          <span className={`badge badge--${p.status || "neutral"}`}>{proposalStatusLabel(p.status)}</span>
+                          <span className="approvals-item__text">{p.proposed_change}</span>
+                          {p.source_thread_id && (
+                            <button className="origin-link" title={p.source_thread_id} onClick={() => openOriginatingThread({ thread_id: p.source_thread_id, agent_id: p.agent_id }) }>
+                              #{p.source_thread_id.slice(0, 8)}
+                            </button>
+                          )}
+                        </div>
+                        {pending ? (
+                          <div className="approvals-item__actions">
+                            <button className="btn btn--sm btn--primary" onClick={() => approveProposal(p.id)} disabled={offline || proposalBusy === p.id} data-testid={`approve-${p.id}`}>Approve</button>
+                            <button className="btn btn--sm btn--ghost" onClick={() => rejectProposal(p.id)} disabled={offline || proposalBusy === p.id} data-testid={`reject-${p.id}`}>Reject</button>
+                          </div>
+                        ) : (
+                          <div className="approvals-item__meta">
+                            {p.status === "approved" && completed ? (
+                              <button className="origin-link" onClick={() => focusWorkItem(dec.work_type, dec.work_id)} data-testid={`result-${p.id}`}>
+                                {"\u2192"} {dec.label}
+                              </button>
+                            ) : p.status === "approved" ? (
+                              <span className="muted">Approved (result details unavailable)</span>
+                            ) : dec && dec.rejection_reason ? (
+                              <span className="muted">{dec.rejection_reason}</span>
+                            ) : dec && dec.decided_at ? (
+                              <span className="muted">Decided {formatStamp(dec.decided_at)}</span>
+                            ) : null}
+                            {dec && dec.decided_at && <span className="muted"> · {formatStamp(dec.decided_at)}</span>}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
             <div className="work-selector" aria-label="Project selector">
               <select
                 className="select"
@@ -1109,6 +1348,7 @@ export default function App() {
                                 <div className="detail-panel__item"><span className="detail-panel__label">Priority</span><span>{priorityText(g.priority)}</span></div>
                               </div>
                               <p className="detail-panel__meta">Created {formatStamp(g.created_at)} · {asgs.length} assignment(s)</p>
+                              <OriginConversation types={["goal", "goal_update"]} wid={g.id} threadsByKey={workThreads} onLoad={loadWorkThreads} onOpen={openOriginatingThread} />
                             </>
                           );
                         })()}
@@ -1233,6 +1473,7 @@ export default function App() {
                           <h3 className="versions__title">Deliverable versions</h3>
                           <span className="badge badge--faint">{versions.length} version(s)</span>
                         </div>
+                        <OriginConversation types={["deliverable", "deliverable_version"]} wid={selectedDeliverable} threadsByKey={workThreads} onLoad={loadWorkThreads} onOpen={openOriginatingThread} />
                         {versionError && (
                           <div className="error-banner" role="alert" data-testid="version-error">
                             {versionError}
@@ -1648,6 +1889,21 @@ export default function App() {
                         <div className="chat-bubble__body markdown"><Markdown source={m.content} /></div>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {openThreadId && threadLinks.length > 0 && (
+                  <div className="result__section linked-work" data-testid="linked-work">
+                    <span className="result__heading">Linked work</span>
+                    <ul className="chips">
+                      {threadLinks.map((l, i) => (
+                        <li key={i} className="chip">
+                          <button className="origin-link" onClick={() => focusWorkItem(l.work_type, l.work_id)}>
+                            {l.label || `${l.work_type}: ${l.work_id.slice(0, 8)}`}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 )}
 

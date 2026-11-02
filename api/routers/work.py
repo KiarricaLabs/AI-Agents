@@ -67,6 +67,31 @@ def get_proposal(proposal_id: str, request: Request):
     return p
 
 
+@router.get("/feed")
+def get_feed(request: Request):
+    """Consolidated proposal/decision feed (read-only)."""
+    t, u = _identity(request)
+    return {"items": _svc(t, u).list_feed()}
+
+
+@router.get("/links")
+def links_for_thread(request: Request, thread_id: Optional[str] = None):
+    """Conversation thread -> approved linked work (read-only)."""
+    t, u = _identity(request)
+    return {"items": _svc(t, u).links_for_thread(thread_id)}
+
+
+@router.get("/links/work/{work_type}/{work_id}")
+def links_to_thread(work_type: str, work_id: str, request: Request):
+    """Work record -> originating conversation thread(s) (read-only)."""
+    t, u = _identity(request)
+    try:
+        threads = _svc(t, u).threads_for_work(work_type, work_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="unsupported work type")
+    return {"work_type": work_type, "work_id": work_id, "threads": threads}
+
+
 class RejectBody(BaseModel):
     reason: Optional[str] = None
 

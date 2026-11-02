@@ -1486,3 +1486,25 @@ body {
   background: var(--accent-strong);
   color: #10131c;
 }
+
+/* --- M10 Phase D1: approvals panel + bidirectional navigation (additive) --- */
+.approvals-panel { margin-top: 4px; }
+.approvals-item { align-items: center; gap: 12px; flex-wrap: wrap; }
+.approvals-item__main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.approvals-item__text { font-weight: 500; }
+.approvals-item__actions { display: flex; gap: 8px; margin-left: auto; }
+.approvals-item__meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-left: auto; color: #8a8f98; font-size: 13px;
+}
+.muted { color: #8a8f98; }
+.origin-link {
+  background: none; border: 1px solid #d7dbe0; border-radius: 999px;
+  padding: 2px 10px; font-size: 12px; cursor: pointer; color: inherit;
+}
+.origin-link:hover { border-color: #8892a0; }
+.origin-block { margin-top: 10px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.linked-work { margin-top: 12px; }
+.badge--proposed { background: #eef2ff; color: #4353ff; }
+.badge--stale { background: #f3f4f6; color: #6b7280; }
+.badge--failed { background: #fee2e2; color: #b91c1c; }

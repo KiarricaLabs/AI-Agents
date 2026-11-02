@@ -1116,3 +1116,69 @@ describe("Conversation Browser", () => {
     expect(screen.getByText("Legacy talk")).toBeInTheDocument();
   });
 });
+
+describe("Approvals & work navigation (M10 D1)", () => {
+  it("shows pending vs decided proposals and limits controls to pending", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/work/feed`]: () =>
+        ok({
+          items: [
+            { id: "pend1", work_type: "project", action: "create", status: "proposed", proposed_change: "create project", decision: null },
+            { id: "rej1", work_type: "goal", action: "create", status: "rejected", proposed_change: "create goal", decision: { approver: "u1", decided_at: "2026-01-01T00:00:00Z", rejection_reason: "declined", work_type: "goal", work_id: null, label: null } },
+            { id: "app1", work_type: "goal", action: "create", status: "approved", proposed_change: "create goal", decision: { work_id: "g1", work_type: "goal", label: "Launch Goal", approver: "u1", decided_at: "2026-01-01T00:00:00Z" } },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    expect(await screen.findByTestId("approvals-panel")).toBeInTheDocument();
+    // Distinct badges
+    expect(screen.getByText("Pending approval")).toBeInTheDocument();
+    expect(screen.getByText("Rejected")).toBeInTheDocument();
+    expect(screen.getByText("Approved")).toBeInTheDocument();
+    // Controls only for pending
+    expect(screen.getByTestId("approve-pend1")).toBeInTheDocument();
+    expect(screen.getByTestId("reject-pend1")).toBeInTheDocument();
+    expect(screen.queryByTestId("approve-rej1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("approve-app1")).not.toBeInTheDocument();
+    // Decided shows result navigation + rejection reason
+    expect(screen.getByTestId("result-app1")).toBeInTheDocument();
+    expect(screen.getByText("declined")).toBeInTheDocument();
+  });
+
+  it("approves a pending proposal through the Phase C endpoint", async () => {
+    const fn = makeFetch({
+      [`${API}/work/feed`]: () =>
+        ok({ items: [{ id: "pend1", work_type: "project", action: "create", status: "proposed", proposed_change: "create project", decision: null }] }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    fireEvent.click(await screen.findByTestId("approve-pend1"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/work/proposals/pend1/approve`,
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+  });
+
+  it("shows linked work for an opened conversation", async () => {
+    const agent = ok({ agents: [{ name: "strategist", display_name: "Aisha", archetype: "The Visionary" }] });
+    const fixture = {
+      [`${API}/agents`]: () => agent,
+      [`${API}/memory/conversations`]: () =>
+        ok({ items: [{ thread_id: "tid-a", agent_id: "strategist", title: "Grow my business", is_renamed: false, message_count: 1 }] }),
+      [`${API}/memory/conversation?thread_id=tid-a`]: () =>
+        ok({ items: [{ role: "user", content: "hi", created_at: "2026-11-01T00:00:00Z" }] }),
+      [`${API}/work/links?thread_id=tid-a`]: () =>
+        ok({ items: [{ work_type: "goal", work_id: "g1", label: "Launch Goal", thread_id: "tid-a" }] }),
+    };
+    globalThis.fetch = makeFetch(fixture) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByText("Grow my business"));
+    expect(await screen.findByTestId("linked-work")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Launch Goal" })).toBeInTheDocument();
+  });
+});

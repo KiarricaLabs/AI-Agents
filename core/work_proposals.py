@@ -51,6 +51,15 @@ AGENT_SLUGS = {
     "communications", "soundboard", "workspace_architect",
 }
 
+# Work types that produce a durable work_links row and are safe to navigate to.
+# Used to whitelist link lookups; never interpolates a caller-supplied value into
+# SQL (all queries are parameterized and table/column names come only from this
+# fixed map).
+_LINK_TYPES = {
+    "project", "goal", "goal_update", "assignment",
+    "deliverable", "deliverable_version",
+}
+
 
 class ProposalNotFound(ValueError):
     pass
@@ -250,7 +259,11 @@ class WorkProposalService:
             (proposal_id, self.tenant_id, self.user_id))
         if not rows:
             return None
-        p = rows[0]
+        return self._decorate(rows[0])
+
+    def _decorate(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich a raw proposal row into the user-facing shape. Additive only;
+        preserves every stored column for response compatibility."""
         try:
             payload = json.loads(p.get("payload_json") or "{}")
         except Exception:
@@ -275,6 +288,139 @@ class WorkProposalService:
         if act == "create":
             return f"Creates a new {wt}"
         return f"Updates {wt} {tid or ''} on approval"
+
+    # ------------------------------------------------- D1 read-only helpers
+    def list_feed(self) -> List[Dict[str, Any]]:
+        """Consolidated, enriched feed across all proposal statuses with decision
+        metadata. Read-only; never writes or re-decides. Every item is enriched
+        via _decorate (same shape as GET /work/proposals/{id}) plus a ``decision``
+        object that is None while pending."""
+        rows = self.db.query(
+            "SELECT * FROM work_proposals WHERE tenant_id=? AND user_id=? "
+            "ORDER BY created_at DESC", (self.tenant_id, self.user_id))
+        out = []
+        for p in rows:
+            item = self._decorate(p)
+            item["decision"] = self._decision(p)
+            out.append(item)
+        return out
+
+    def _decision(self, p: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Decision metadata for a proposal row, or None while still pending.
+        An approved proposal only exposes resulting work if result_id is present
+        and its work record can be resolved; never fabricates a title."""
+        if p.get("status") != "proposed":
+            d = {
+                "approver": p.get("decided_by"),
+                "decided_at": p.get("decided_at"),
+                "rejection_reason": p.get("rejection_reason"),
+                "work_type": p.get("work_type"),
+            }
+            if p.get("status") == "approved" and p.get("result_id"):
+                d["work_id"] = p["result_id"]
+                d["label"] = self._resolve_label(p["work_type"], p["result_id"])
+            else:
+                d["work_id"] = p.get("result_id")
+                d["label"] = None
+            return d
+        return None
+
+    def _resolve_label(self, work_type: str, work_id: Optional[str]) -> Optional[str]:
+        """Resolve a human-readable label for a linked work record, or None if it
+        cannot be owned-and-resolved. Never invents a title."""
+        if not work_id or work_type not in _LINK_TYPES:
+            return None
+        t, u = self.tenant_id, self.user_id
+        if work_type == "project":
+            rows = self.db.query(
+                "SELECT name FROM projects WHERE id=? AND tenant_id=? AND user_id=?",
+                (work_id, t, u))
+            return rows[0]["name"] if rows else None
+        if work_type in ("goal", "goal_update"):
+            rows = self.db.query(
+                "SELECT title FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+                (work_id, t, u))
+            return rows[0]["title"] if rows else None
+        if work_type == "deliverable":
+            rows = self.db.query(
+                "SELECT title FROM deliverables WHERE id=? AND tenant_id=? AND user_id=?",
+                (work_id, t, u))
+            return rows[0]["title"] if rows else None
+        if work_type == "deliverable_version":
+            rows = self.db.query(
+                "SELECT dv.version, d.title FROM deliverable_versions dv "
+                "JOIN deliverables d ON d.id=dv.deliverable_id "
+                "WHERE dv.id=? AND dv.tenant_id=? AND d.user_id=?",
+                (work_id, t, u))
+            if rows:
+                return f"{rows[0]['title']} v{rows[0]['version']}"
+            return None
+        if work_type == "assignment":
+            rows = self.db.query(
+                "SELECT a.agent_id, g.title FROM assignments a "
+                "JOIN goals g ON g.id=a.goal_id "
+                "WHERE a.id=? AND a.tenant_id=? AND a.user_id=?",
+                (work_id, t, u))
+            if rows:
+                return f"Assignment ({rows[0]['agent_id']}) \u2192 {rows[0]['title']}"
+            return None
+        return None
+
+    def links_for_thread(self, thread_id: Optional[str]) -> List[Dict[str, Any]]:
+        """Conversation thread -> approved linked work. Scoped by tenant/user.
+        Label is resolved best-effort; never fabricated."""
+        if not thread_id:
+            return []
+        rows = self.db.query(
+            "SELECT * FROM work_links WHERE tenant_id=? AND user_id=? AND thread_id=?",
+            (self.tenant_id, self.user_id, thread_id))
+        out = []
+        for r in rows:
+            out.append({
+                "work_type": r["work_type"],
+                "work_id": r["work_id"],
+                "label": self._resolve_label(r["work_type"], r["work_id"]),
+                "proposal_id": self._proposal_for_work(r["work_type"], r["work_id"]),
+                "thread_id": r.get("thread_id"),
+                "created_at": r.get("created_at"),
+            })
+        return out
+
+    def threads_for_work(self, work_type: str, work_id: str) -> List[Dict[str, Any]]:
+        """Work record -> originating conversation threads. Whitelist-validated;
+        scoped by tenant/user. Thread title/agent only when resolvable."""
+        if work_type not in _LINK_TYPES:
+            raise ValueError("unsupported work type")
+        rows = self.db.query(
+            "SELECT thread_id FROM work_links WHERE tenant_id=? AND user_id=? "
+            "AND work_type=? AND work_id=?",
+            (self.tenant_id, self.user_id, work_type, work_id))
+        seen: List[str] = []
+        for r in rows:
+            tid = r.get("thread_id")
+            if tid and tid not in seen:
+                seen.append(tid)
+        out = []
+        for tid in seen:
+            tr = self.db.query(
+                "SELECT thread_id,title,agent_id,created_at FROM conversation_threads "
+                "WHERE thread_id=? AND tenant_id=? AND user_id=?",
+                (tid, self.tenant_id, self.user_id))
+            if tr:
+                out.append({"thread_id": tr[0]["thread_id"], "title": tr[0]["title"],
+                            "agent_id": tr[0]["agent_id"], "created_at": tr[0]["created_at"]})
+            else:
+                # Link exists but its thread record is gone: never fabricate a title.
+                out.append({"thread_id": tid, "title": None, "agent_id": None,
+                            "created_at": None})
+        return out
+
+    def _proposal_for_work(self, work_type: str, work_id: str) -> Optional[str]:
+        rows = self.db.query(
+            "SELECT id FROM work_proposals WHERE tenant_id=? AND user_id=? "
+            "AND work_type=? AND result_id=? AND status='approved' ORDER BY created_at DESC",
+            (self.tenant_id, self.user_id, work_type, work_id))
+        return rows[0]["id"] if rows else None
 
     # ------------------------------------------------------------- lifecycle
     def _set_status(self, proposal_id: str, status: str, user_id: str) -> bool:
