@@ -22,6 +22,9 @@ class RunReq(BaseModel):
     task: str
     thread_id: Optional[str] = None
     brand_id: Optional[str] = None
+    # Explicit eligibility gate for the proposal-capable (structured) path.
+    # false/omitted => ordinary conversation path; true => combined JSON-mode.
+    work_intent: bool = False
 
 
 def _identity(request: Request):
@@ -94,7 +97,7 @@ def run_agent(name: str, req: RunReq, request: Request):
 
     orch = build_runtime(_db, t, u)
     try:
-        result = orch.dispatch(name, task, context={"thread_id": thread_id, "conversation": context_history, "brand_id": brand_id})
+        result = orch.dispatch(name, task, context={"thread_id": thread_id, "conversation": context_history, "brand_id": brand_id, "work_intent": req.work_intent})
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except RuntimeError as e:

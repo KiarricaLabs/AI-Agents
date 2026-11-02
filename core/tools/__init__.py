@@ -84,8 +84,19 @@ class ToolRegistry:
             raise PermissionError(f"Tool '{tool_name}' is consequential and requires approval.")
 
         t = timeout if timeout is not None else self.default_timeout
+        # Enrich the context passed to the tool with server-side identity so a
+        # tool can enforce tenant/user ownership and the layer-3 permission check
+        # without trusting any client-supplied value. Existing tools ignore these.
+        tool_context = {
+            **(context or {}),
+            "agent_id": agent_id,
+            "manifest": manifest,
+            "tenant_id": self.tenant,
+            "db": self.db,
+            "user_id": user_id,
+        }
         try:
-            value = self._run_with_timeout(tool, args, context, t)
+            value = self._run_with_timeout(tool, args, tool_context, t)
             status = "ok"
             result: Dict[str, Any] = {"ok": True, "result": value}
         except TimeoutError:
@@ -134,4 +145,7 @@ def build_registry(db=None, tenant_id: Optional[str] = None, timeout: float = 5.
     from core.tools.local.calculate import CalculateTool
     reg.register(NowTool())
     reg.register(CalculateTool())
+    from core.tools.work_propose import ALL_PROPOSE_TOOLS
+    for tool in ALL_PROPOSE_TOOLS:
+        reg.register(tool())
     return reg

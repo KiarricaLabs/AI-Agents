@@ -45,6 +45,7 @@ class ModelRouter:
         system: str = "",
         model_spec: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
+        json_format: bool = False,
     ) -> ModelResult:
         from core.tracing import start_span, end_span
         from core import metrics
@@ -58,7 +59,7 @@ class ModelRouter:
                     f"Provider '{provider}' is not available in M8 (local-only Ollama). "
                     "No cloud routing or fallback is enabled."
                 )
-            text = self._generate_with_retry(model, prompt, system)
+            text = self._generate_with_retry(model, prompt, system, json_format=json_format)
             location = f"local:{provider}:{model}"
             result = ModelResult(text=text, provider=provider, model=model, location=location)
             span["attrs"]["location"] = location
@@ -79,10 +80,12 @@ class ModelRouter:
         model = spec.get("model") or AI_MODEL
         return provider, model
 
-    def _generate_with_retry(self, model: str, prompt: str, system: str) -> str:
+    def _generate_with_retry(self, model: str, prompt: str, system: str, json_format: bool = False) -> str:
         last_err: Optional[Exception] = None
         for _attempt in range(self.retries):
             try:
+                if json_format:
+                    return self._generate_once(model, prompt, system, json_format=True)
                 return self._generate_once(model, prompt, system)
             except (OSError, TimeoutError) as e:
                 last_err = e
@@ -90,8 +93,10 @@ class ModelRouter:
             f"Ollama generation failed after {self.retries} attempts: {last_err}"
         )
 
-    def _generate_once(self, model: str, prompt: str, system: str) -> str:
+    def _generate_once(self, model: str, prompt: str, system: str, json_format: bool = False) -> str:
         from core.llm_client import LLMClient
 
         client = LLMClient(provider="ollama", model=model, base_url=self.base_url)
+        if json_format:
+            return client.complete(prompt, system, timeout=self.timeout, format_json=True)
         return client.complete(prompt, system, timeout=self.timeout)

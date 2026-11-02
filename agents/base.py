@@ -1,7 +1,43 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
+
 from core.memory import MemoryService
+from core.tools.work_propose import WORK_TOOL_MAP
+
+
+# Safe human-readable fallback when the structured (JSON) response cannot be parsed.
+FALLBACK_REPLY = (
+    "I couldn't prepare that proposal this time, so I didn't save anything. "
+    "Could you try again with a bit more detail?"
+)
+
+# Corrective note appended when a structured proposal was attempted but not saved,
+# so the user-facing reply never implies work (a goal/project/…) was created.
+_PROPOSAL_NOT_SAVED_NOTE = (
+    "I couldn't save that proposal, so nothing was added to your workspace. "
+    "To try again, please confirm the parent project or goal is selected."
+)
+
+# Instruction shown to the model for proposal-capable (work_intent) turns. The
+# ordinary (non-JSON) path ignores this entirely.
+PROPOSAL_CONTRACT = (
+    "WORK CAPTURE (only applies when this is a proposal-capable turn). "
+    "Return a single JSON object with exactly two keys: 'reply' (your normal, "
+    "human-facing response) and 'proposal_v1' (an object or null). "
+    "Set 'proposal_v1' to null unless the user explicitly asked you to capture a "
+    "concrete, actionable goal/project/assignment/deliverable AND you can supply a "
+    "complete, valid proposal. "
+    "A proposal object has: 'work_type' (one of project, goal, goal_update, "
+    "assignment, deliverable, deliverable_version), 'action' (create or update), "
+    "'target_id' (required for goal_update and deliverable_version), 'payload' (an "
+    "object with the exact parent/dependency ids and the new fields), 'reason' "
+    "(string), and 'expected_result' (string). "
+    "Never invent parent ids and never include sensitive/credential fields. "
+    "Never claim work was approved, created, or completed. "
+    "Ordinary conversation must have 'proposal_v1' set to null."
+)
 
 
 class BaseAgent:
@@ -35,6 +71,19 @@ class BaseAgent:
             proposal_ids = self._collect_proposals(scoped, context)
         tool_results = self._run_tools(context)
         brand_facts = self._retrieve_brand(context)
+        if (context or {}).get("work_intent") and self.tools is not None and self.router is not None:
+            st = self._generate_structured(task, context, facts=facts, brand=brand_facts)
+            return {
+                "agent": self.name,
+                "reply": st["reply"],
+                "provider": st["provider"],
+                "model": st["model"],
+                "location": st["location"],
+                "facts": facts,
+                "proposals": st["proposal_ids"] or proposal_ids,
+                "proposal_results": st["proposal_results"],
+                "tool_results": tool_results,
+            }
         result = self._generate(task, context, facts=facts, brand=brand_facts)
         return {
             "agent": self.name,
@@ -126,6 +175,114 @@ class BaseAgent:
             context=context,
         )
 
+    def _generate_structured(self, task: str, context: Optional[Dict[str, Any]] = None,
+                              facts: Optional[List[Dict[str, Any]]] = None,
+                              brand: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Proposal-capable single JSON-mode response.
+
+        Reads ONLY the dedicated structured field of the current model response
+        (`proposal_v1`). It never scans user input, conversation history, prior
+        assistant messages, or ordinary prose. A malformed response resolves to
+        a safe fallback reply and no proposal.
+        """
+        if self.router is None:
+            raise RuntimeError(f"Agent '{self.name}' has no ModelRouter configured.")
+        spec = self.manifest.get("model", {})
+        reply = FALLBACK_REPLY
+        proposal_ids: List[str] = []
+        proposal_results: List[Dict[str, Any]] = []
+        provider, model, location = "ollama", "", ""
+        raw = ""
+        try:
+            mr = self.router.complete(
+                agent_id=self.name,
+                prompt=task,
+                system=self._system_prompt(facts, history=(context or {}).get("conversation"), brand=brand),
+                model_spec=spec,
+                context=context,
+                json_format=True,
+            )
+            provider, model, location, raw = mr.provider, mr.model, mr.location, mr.text
+        except Exception:
+            raw = ""  # safe fallback; never crash the run
+        if raw:
+            try:
+                env = json.loads(raw)
+            except Exception:
+                env = None
+            if isinstance(env, dict):
+                r = env.get("reply")
+                if isinstance(r, str) and r.strip():
+                    reply = r.strip()
+                block = env.get("proposal_v1")
+                blocks = block if isinstance(block, list) else ([block] if block is not None else [])
+                for b in blocks:
+                    status = self._ingest_proposal_block(b, context)
+                    proposal_results.append(status)
+                    if status.get("status") == "saved" and status.get("proposal_id"):
+                        proposal_ids.append(status["proposal_id"])
+        # Source of truth is the proposal result, not the model's wording: if any
+        # attempt was not saved, the reply must not be allowed to imply success.
+        if proposal_results and any(
+            s.get("status") != "saved" for s in proposal_results
+        ):
+            reply = (reply + "\n\n" + _PROPOSAL_NOT_SAVED_NOTE).strip()
+        return {
+            "reply": reply,
+            "provider": provider,
+            "model": model,
+            "location": location,
+            "proposal_ids": proposal_ids,
+            "proposal_results": proposal_results,
+        }
+
+    def _ingest_proposal_block(self, block: Any, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Validate a structured proposal block and hand it to a FIXED proposal
+        tool via the ToolRegistry. Never executes an arbitrary tool name."""
+        if not isinstance(block, dict):
+            return {"status": "failed", "error": "proposal block is malformed"}
+        work_type = str(block.get("work_type") or "").strip()
+        action = str(block.get("action") or "").strip()
+        payload = block.get("payload")
+        if not work_type or not action or not isinstance(payload, dict) or not payload:
+            return {"status": "clarification", "error": "incomplete proposal block"}
+        tool_name = WORK_TOOL_MAP.get((work_type, action))
+        if not tool_name:
+            return {"status": "clarification",
+                    "error": f"unsupported proposal type: {work_type}/{action}"}
+        thread_id = (context or {}).get("thread_id") or ""
+        args = {
+            "thread_id": thread_id,
+            "payload": payload,
+            "reason": block.get("reason"),
+            "context": block.get("context"),
+            "target_id": block.get("target_id"),
+            "confidence": block.get("confidence", 0.5),
+        }
+        if self.tools is None:
+            return {"status": "failed", "error": "tool runtime unavailable"}
+        try:
+            r = self.tools.invoke(
+                agent_id=self.name,
+                tool_name=tool_name,
+                args=args,
+                manifest=self.manifest,
+                policy=self.policy,
+                user_id=self.user_id,
+                approved=False,
+                context=context,
+            )
+        except PermissionError as e:
+            return {"status": "denied", "error": str(e)}
+        except ValueError as e:
+            return {"status": "failed", "error": str(e)}
+        except Exception as e:
+            return {"status": "error", "error": type(e).__name__}
+        if not r.get("ok"):
+            return {"status": "failed", "error": r.get("error")}
+        res = r.get("result") or {}
+        return {"status": "saved", "proposal_id": res.get("proposal_id")}
+
     def _system_prompt(self, facts: Optional[List[Dict[str, Any]]] = None,
                         history: Optional[List[Dict[str, Any]]] = None,
                         brand: Optional[List[Dict[str, Any]]] = None) -> str:
@@ -204,4 +361,6 @@ class BaseAgent:
             "Explain technical details in plain, understandable language. "
             "Use Markdown (headings, **bold**, *italic*, lists, code) when it improves readability."
         )
+        parts.append("")
+        parts.append(PROPOSAL_CONTRACT)
         return "\n".join(parts)
