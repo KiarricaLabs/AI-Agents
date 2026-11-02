@@ -21,6 +21,16 @@ function makeFetch(overrides: Record<string, Route> = {}) {
   return fn;
 }
 
+// Drive the Work view into the "Acme" workspace / "Launch" project used by
+// the fixtures below, waiting for the async workspace/project data to arrive.
+async function openWorkProject() {
+  fireEvent.click(screen.getByRole("button", { name: "work" }));
+  await screen.findByRole("option", { name: "Acme" });
+  fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: "w1" } });
+  await screen.findByRole("option", { name: "Launch" });
+  fireEvent.change(screen.getByLabelText("Project"), { target: { value: "p1" } });
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
@@ -33,7 +43,7 @@ describe("App shell and navigation", () => {
     globalThis.fetch = makeFetch() as any;
     render(<App />);
     expect(screen.getByRole("heading", { name: "Personal AI Team" })).toBeInTheDocument();
-    for (const t of ["overview", "workspace", "goals", "assignments", "deliverables", "episodes", "agents"]) {
+    for (const t of ["overview", "workspace", "work", "episodes", "agents"]) {
       expect(screen.getByRole("button", { name: t })).toBeInTheDocument();
     }
   });
@@ -143,28 +153,67 @@ describe("Project Detail", () => {
   });
 });
 
-describe("Goals", () => {
-  it("renders goals with priority", async () => {
-    globalThis.fetch = makeFetch({
-      [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", title: "Ship v1", priority: 1 }] }),
-    }) as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "goals" }));
-    expect(await screen.findByText(/Ship v1/)).toBeInTheDocument();
-    expect(screen.getByText(/p1/)).toBeInTheDocument();
+describe("Work view — Goals", () => {
+  const goalsFixtures = () => ({
+    [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+    [`${API}/workspaces/projects`]: () =>
+      ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
+    [`${API}/workspaces/goals`]: () =>
+      ok({
+        items: [
+          { id: "g1", title: "Ship v1", project_id: "p1", status: "open", priority: 1 },
+          { id: "g2", title: "Ship v2", project_id: "p1", status: "done", priority: 2 },
+        ],
+      }),
   });
 
-  it("creates a goal against the first project", async () => {
+  it("renders goals scoped to the selected project with status and priority", async () => {
+    globalThis.fetch = makeFetch(goalsFixtures()) as any;
+    render(<App />);
+    await openWorkProject();
+
+    expect(await screen.findByText(/Ship v1/)).toBeInTheDocument();
+    expect(screen.getAllByText("done").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("p1")).toBeInTheDocument();
+  });
+
+  it("shows a select-project empty state before a project is chosen", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "work" }));
+    expect(await screen.findByText(/Select a workspace and project/)).toBeInTheDocument();
+  });
+
+  it("filters goals by status and text search", async () => {
+    globalThis.fetch = makeFetch(goalsFixtures()) as any;
+    render(<App />);
+    await openWorkProject();
+    await screen.findByText(/Ship v1/);
+
+    fireEvent.change(screen.getByPlaceholderText("Search goals…"), { target: { value: "v2" } });
+    expect(screen.queryByText(/Ship v1/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Ship v2/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search goals…"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Goal status filter"), { target: { value: "done" } });
+    expect(screen.queryByText(/Ship v1/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Ship v2/)).toBeInTheDocument();
+  });
+
+  it("creates a goal against the selected project", async () => {
     const fn = makeFetch({
-      [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch" }] }),
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () =>
+        ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "goals" }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Create Goal" })).toBeEnabled()
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Create Goal" }));
+    await openWorkProject();
+    const btn = await screen.findByRole("button", { name: "Create Goal" });
+    expect(btn).toBeEnabled();
+    fireEvent.click(btn);
 
     await waitFor(() => {
       expect(fn).toHaveBeenCalledWith(
@@ -175,22 +224,69 @@ describe("Goals", () => {
   });
 });
 
-describe("Assignments", () => {
-  it("renders assignments with agent and priority", async () => {
+describe("Work view — Assignments", () => {
+  const assignmentFixtures = () => ({
+    [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+    [`${API}/workspaces/projects`]: () =>
+      ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
+    [`${API}/workspaces/goals`]: () =>
+      ok({ items: [{ id: "g1", title: "Ship v1", project_id: "p1", status: "open", priority: 1 }] }),
+    [`${API}/workspaces/assignments`]: () =>
+      ok({ items: [{ id: "a1", goal_id: "g1", agent_id: "tutor", status: "queued", priority: 2 }] }),
+    [`${API}/agents`]: () =>
+      ok({ agents: [{ name: "tutor", display_name: "Brittany", archetype: "The Educator" }] }),
+  });
+
+  it("renders assignments with agent name, archetype, and linked goal", async () => {
+    globalThis.fetch = makeFetch(assignmentFixtures()) as any;
+    render(<App />);
+    await openWorkProject();
+
+    expect(await screen.findByText("The Educator")).toBeInTheDocument();
+    expect(screen.getAllByText("Brittany").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Ship v1").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("p2")).toBeInTheDocument();
+  });
+
+  it("filters assignments by agent", async () => {
     globalThis.fetch = makeFetch({
-      [`${API}/workspaces/assignments`]: () => ok({ items: [{ id: "a1", agent_id: "tutor", priority: 2 }] }),
+      ...assignmentFixtures(),
+      [`${API}/workspaces/assignments`]: () =>
+        ok({
+          items: [
+            { id: "a1", goal_id: "g1", agent_id: "tutor", status: "queued", priority: 1 },
+            { id: "a2", goal_id: "g1", agent_id: "strategist", status: "queued", priority: 2 },
+          ],
+        }),
+      [`${API}/agents`]: () =>
+        ok({
+          agents: [
+            { name: "tutor", display_name: "Brittany", archetype: "The Educator" },
+            { name: "strategist", display_name: "Aisha", archetype: "The Visionary" },
+          ],
+        }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "assignments" }));
-    expect(await screen.findByText(/tutor/)).toBeInTheDocument();
-    expect(screen.getByText(/p2/)).toBeInTheDocument();
+    await openWorkProject();
+    await screen.findByText("The Educator");
+
+    fireEvent.change(screen.getByLabelText("Assignment agent filter"), { target: { value: "strategist" } });
+    expect(screen.queryByText("The Educator")).not.toBeInTheDocument();
+    expect(screen.getByText("The Visionary")).toBeInTheDocument();
   });
 });
 
-describe("Deliverables", () => {
-  const versionsFixture = () => ({
+describe("Work view — Deliverables", () => {
+  const deliverableFixtures = () => ({
+    [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+    [`${API}/workspaces/projects`]: () =>
+      ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
     [`${API}/workspaces/deliverables`]: () =>
-      ok({ items: [{ id: "d1", title: "Report" }] }),
+      ok({
+        items: [
+          { id: "d1", title: "Report", project_id: "p1", latest_status: "approved", latest_version: 2 },
+        ],
+      }),
     [`${API}/workspaces/deliverables/d1/versions`]: () =>
       ok({
         items: [
@@ -200,31 +296,31 @@ describe("Deliverables", () => {
       }),
   });
 
-  it("lists deliverables by id", async () => {
-    globalThis.fetch = makeFetch(versionsFixture()) as any;
+  it("lists deliverables with their latest-version status", async () => {
+    globalThis.fetch = makeFetch(deliverableFixtures()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "deliverables" }));
+    await openWorkProject();
+
     expect(await screen.findByText(/Report/)).toBeInTheDocument();
+    expect(screen.getAllByText("approved").length).toBeGreaterThanOrEqual(1);
   });
 
   it("loads versions and renders a diff between v1 and the latest version", async () => {
-    globalThis.fetch = makeFetch(versionsFixture()) as any;
+    globalThis.fetch = makeFetch(deliverableFixtures()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "deliverables" }));
+    await openWorkProject();
     fireEvent.click(await screen.findByText(/Report/));
 
     expect(await screen.findByText(/Compare v1 vs v2/)).toBeInTheDocument();
-    // changed lines are prefixed with "~ "; the diff container shows both versions' changed content
     expect(screen.getByTestId("diff")).toHaveTextContent("hello world");
   });
 
   it("shows approve/reject controls only for non-approved versions", async () => {
-    globalThis.fetch = makeFetch(versionsFixture()) as any;
+    globalThis.fetch = makeFetch(deliverableFixtures()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "deliverables" }));
+    await openWorkProject();
     fireEvent.click(await screen.findByText(/Report/));
 
-    // v1 is approved -> no buttons; v2 is pending -> one Approve + one Reject
     const approve = await screen.findByRole("button", { name: "Approve" });
     const reject = screen.getByRole("button", { name: "Reject" });
     expect(approve).toBeInTheDocument();
@@ -233,10 +329,10 @@ describe("Deliverables", () => {
   });
 
   it("rejects a version via POST with a reason", async () => {
-    const fn = makeFetch(versionsFixture());
+    const fn = makeFetch(deliverableFixtures());
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "deliverables" }));
+    await openWorkProject();
     fireEvent.click(await screen.findByText(/Report/));
     fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
 
@@ -249,10 +345,10 @@ describe("Deliverables", () => {
   });
 
   it("approves a version via POST", async () => {
-    const fn = makeFetch(versionsFixture());
+    const fn = makeFetch(deliverableFixtures());
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "deliverables" }));
+    await openWorkProject();
     fireEvent.click(await screen.findByText(/Report/));
     fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
 
@@ -262,6 +358,26 @@ describe("Deliverables", () => {
         expect.objectContaining({ method: "POST" })
       );
     });
+  });
+
+  it("filters deliverables by status", async () => {
+    globalThis.fetch = makeFetch({
+      ...deliverableFixtures(),
+      [`${API}/workspaces/deliverables`]: () =>
+        ok({
+          items: [
+            { id: "d1", title: "Report", project_id: "p1", latest_status: "approved", latest_version: 2 },
+            { id: "d2", title: "Draft", project_id: "p1", latest_status: "draft", latest_version: 1 },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    await openWorkProject();
+    await screen.findByText(/Report/);
+
+    fireEvent.change(screen.getByLabelText("Deliverable status filter"), { target: { value: "draft" } });
+    expect(screen.queryByText(/Report/)).not.toBeInTheDocument();
+    expect(screen.getByText("Draft")).toBeInTheDocument();
   });
 });
 

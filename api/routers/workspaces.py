@@ -99,10 +99,23 @@ def create_deliverable(req: CreateDeliverable, request: Request):
 @router.get("/deliverables")
 def list_deliverables(project_id: Optional[str] = None, request: Request = None):
     t, u = _identity(request)
+    # Additive enrichment: expose the latest version's status and number on each
+    # deliverable so the UI can display and filter by approval state without an
+    # N+1 fetch of every version. No schema change; existing columns untouched.
+    base = (
+        "SELECT d.*,"
+        " (SELECT v.status FROM deliverable_versions v"
+        "  WHERE v.tenant_id = d.tenant_id AND v.deliverable_id = d.id"
+        "  ORDER BY v.version DESC LIMIT 1) AS latest_status,"
+        " (SELECT v.version FROM deliverable_versions v"
+        "  WHERE v.tenant_id = d.tenant_id AND v.deliverable_id = d.id"
+        "  ORDER BY v.version DESC LIMIT 1) AS latest_version"
+        " FROM deliverables d"
+    )
     if project_id:
-        rows = _db.query("SELECT * FROM deliverables WHERE tenant_id=? AND project_id=?", (t, project_id))
+        rows = _db.query(base + " WHERE d.tenant_id=? AND d.project_id=?", (t, project_id))
     else:
-        rows = _db.query("SELECT * FROM deliverables WHERE tenant_id=?", (t,))
+        rows = _db.query(base + " WHERE d.tenant_id=?", (t,))
     return {"items": rows}
 
 @router.post("/deliverables/{did}/versions")

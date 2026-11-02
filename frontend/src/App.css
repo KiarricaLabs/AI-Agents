@@ -1058,6 +1058,55 @@ body {
   border-color: var(--border);
 }
 
+/* ---------- Work view selector / filters ---------- */
+.select {
+  padding: 10px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.select--small {
+  padding: 8px 11px;
+  font-size: 13px;
+}
+
+.work-selector {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.work-toolbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.work-search {
+  flex: 1 1 200px;
+  min-width: 160px;
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 640px) {
   .app {
@@ -1086,5 +1135,14 @@ body {
 
   .list__item {
     flex-wrap: wrap;
+  }
+
+  .work-selector {
+    flex-direction: column;
+  }
+
+  .work-selector .select,
+  .work-toolbar .select {
+    width: 100%;
   }
 }

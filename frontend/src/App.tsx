@@ -8,18 +8,14 @@ const API = "http://127.0.0.1:8001";
 type Tab =
   | "overview"
   | "workspace"
-  | "goals"
-  | "assignments"
-  | "deliverables"
+  | "work"
   | "episodes"
   | "agents";
 
 const NAV: { id: Tab; icon: string }[] = [
   { id: "overview", icon: "home" },
   { id: "workspace", icon: "grid" },
-  { id: "goals", icon: "target" },
-  { id: "assignments", icon: "checklist" },
-  { id: "deliverables", icon: "file" },
+  { id: "work", icon: "briefcase" },
   { id: "episodes", icon: "activity" },
   { id: "agents", icon: "bot" },
 ];
@@ -154,6 +150,13 @@ export default function App() {
   const [contextCounts, setContextCounts] = useState<Record<string, number>>({});
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  // Independent filters + search for each Work-view subsection.
+  const [goalStatusFilter, setGoalStatusFilter] = useState("");
+  const [goalSearch, setGoalSearch] = useState("");
+  const [assignmentAgentFilter, setAssignmentAgentFilter] = useState("");
+  const [assignmentSearch, setAssignmentSearch] = useState("");
+  const [deliverableStatusFilter, setDeliverableStatusFilter] = useState("");
+  const [deliverableSearch, setDeliverableSearch] = useState("");
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -281,21 +284,23 @@ export default function App() {
   };
 
   const createGoal = async () => {
-    if (offline || projects.length === 0) return;
+    const pid = selectedProjectId || projects[0]?.id;
+    if (offline || !pid) return;
     await fetch(`${API}/workspaces/goals`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: projects[0].id, title: "New Goal", priority: 1 }),
+      body: JSON.stringify({ project_id: pid, title: "New Goal", priority: 1 }),
     });
     refresh();
   };
 
   const createDeliverable = async () => {
-    if (offline || projects.length === 0) return;
+    const pid = selectedProjectId || projects[0]?.id;
+    if (offline || !pid) return;
     const r = await fetch(`${API}/workspaces/deliverables`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: projects[0].id, title: "New Deliverable" }),
+      body: JSON.stringify({ project_id: pid, title: "New Deliverable" }),
     });
     const d = await r.json();
     if (d.id) {
@@ -343,6 +348,24 @@ export default function App() {
     refresh();
   };
 
+  // Work-view scope selection. Changing the workspace invalidates any project
+  // that belonged to the previous workspace and clears stale deliverable state.
+  const selectWorkspaceForWork = (wid: string) => {
+    setSelectedWorkspaceId(wid || null);
+    setSelectedProjectId(null);
+    setSelectedDeliverable(null);
+    setGoalStatusFilter("");
+    setGoalSearch("");
+    setAssignmentAgentFilter("");
+    setAssignmentSearch("");
+    setDeliverableStatusFilter("");
+    setDeliverableSearch("");
+  };
+  const selectProjectForWork = (pid: string) => {
+    setSelectedProjectId(pid || null);
+    setSelectedDeliverable(null);
+  };
+
   const projectsIn = (wid: string) => projects.filter((p) => p.workspace_id === wid);
   const goalsIn = (pid: string) => goals.filter((g) => g.project_id === pid);
   const deliverablesIn = (pid: string) => deliverablesList.filter((d) => d.project_id === pid);
@@ -354,12 +377,41 @@ export default function App() {
     const a = agents.find((x) => x.name === slug);
     return a ? a.display_name || humanize(a.name) : humanize(slug);
   };
+  const agentArchetype = (slug: string) => agents.find((x) => x.name === slug)?.archetype || "";
   const titleOfGoal = (gid: string) => goals.find((g) => g.id === gid)?.title || gid;
   const workspaceName = (wid: string) => workspaces.find((w) => w.id === wid)?.name || "Unknown workspace";
   const openGoals = goals.filter((g) => g.status !== "done" && g.status !== "cancelled");
   const recentProjects = [...projects]
     .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
     .slice(0, 5);
+
+  // Work view: scope records to the selected project, then apply per-section filters.
+  const workGoals = selectedProjectId ? goalsIn(selectedProjectId) : [];
+  const workAssignments = selectedProjectId ? assignmentsIn(selectedProjectId) : [];
+  const workDeliverables = selectedProjectId ? deliverablesIn(selectedProjectId) : [];
+
+  const filteredGoals = workGoals.filter(
+    (g) =>
+      (!goalStatusFilter || g.status === goalStatusFilter) &&
+      (!goalSearch || (g.title || "").toLowerCase().includes(goalSearch.trim().toLowerCase()))
+  );
+  const goalStatusOptions = Array.from(new Set(workGoals.map((g) => g.status).filter(Boolean)));
+
+  const filteredAssignments = workAssignments.filter(
+    (a) =>
+      (!assignmentAgentFilter || a.agent_id === assignmentAgentFilter) &&
+      (!assignmentSearch || (titleOfGoal(a.goal_id) || "").toLowerCase().includes(assignmentSearch.trim().toLowerCase()))
+  );
+  const assignmentAgentOptions = Array.from(new Set(workAssignments.map((a) => a.agent_id)));
+
+  const filteredDeliverables = workDeliverables.filter(
+    (d) =>
+      (!deliverableStatusFilter || (d.latest_status || "") === deliverableStatusFilter) &&
+      (!deliverableSearch || (d.title || "").toLowerCase().includes(deliverableSearch.trim().toLowerCase()))
+  );
+  const deliverableStatusOptions = Array.from(
+    new Set(workDeliverables.map((d) => d.latest_status).filter(Boolean))
+  );
 
   const status: "checking" | "online" | "offline" =
     health === "offline" ? "offline" : health === "checking..." ? "checking" : "online";
@@ -637,131 +689,194 @@ export default function App() {
           </section>
         )}
 
-        {tab === "goals" && (
+        {tab === "work" && (
           <section className="panel">
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Goals</h2>
-                <p className="panel__sub">Objectives for a project.</p>
-              </div>
-              <button className="btn btn--primary" onClick={createGoal} disabled={offline || projects.length === 0}>
-                Create Goal
-              </button>
-            </div>
-            {goals.length === 0 ? (
-              <Empty text="No goals yet." />
-            ) : (
-              <ul className="list">
-                {goals.map((g) => (
-                  <li key={g.id} className="list__item">
-                    <span className="list__icon">
-                      <Icon name="target" size={16} />
-                    </span>
-                    <span className="list__name">{g.title}</span>
-                    <span className="badge badge--neutral">p{g.priority}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        )}
-
-        {tab === "assignments" && (
-          <section className="panel">
-            <div className="panel__head">
-              <div>
-                <h2 className="panel__title">Assignments</h2>
-                <p className="panel__sub">Agent task allocations.</p>
+                <h2 className="panel__title">Work</h2>
+                <p className="panel__sub">Goals, assignments, and deliverables scoped to a project.</p>
               </div>
             </div>
-            {assignments.length === 0 ? (
-              <Empty text="No assignments yet." />
-            ) : (
-              <ul className="list">
-                {assignments.map((a) => (
-                  <li key={a.id} className="list__item">
-                    <span className="list__icon">
-                      <Icon name="checklist" size={16} />
-                    </span>
-                    <span className="list__name">{a.agent_id}</span>
-                    <span className="badge badge--neutral">p{a.priority}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        )}
 
-        {tab === "deliverables" && (
-          <section className="panel">
-            <div className="panel__head">
-              <div>
-                <h2 className="panel__title">Deliverables</h2>
-                <p className="panel__sub">Versioned work with approval workflow.</p>
-              </div>
-              <button className="btn btn--primary" onClick={createDeliverable} disabled={offline || projects.length === 0}>
-                Create Deliverable
-              </button>
+            <div className="work-selector" aria-label="Project selector">
+              <select
+                className="select"
+                value={selectedWorkspaceId || ""}
+                onChange={(e) => selectWorkspaceForWork(e.target.value)}
+                disabled={offline}
+                aria-label="Workspace"
+              >
+                <option value="">Select a workspace…</option>
+                {workspaces.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </select>
+              <select
+                className="select"
+                value={selectedProjectId || ""}
+                onChange={(e) => selectProjectForWork(e.target.value)}
+                disabled={offline || !selectedWorkspaceId}
+                aria-label="Project"
+              >
+                <option value="">Select a project…</option>
+                {projectsIn(selectedWorkspaceId || "").map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
             </div>
-            {deliverablesList.length === 0 ? (
-              <Empty text="No deliverables yet." />
-            ) : (
-              <ul className="list">
-                {deliverablesList.map((d) => (
-                  <li
-                    key={d.id}
-                    className={`list__item list__item--clickable${selectedDeliverable === d.id ? " list__item--selected" : ""}`}
-                    onClick={() => loadVersions(d.id)}
-                  >
-                    <span className="list__icon">
-                      <Icon name="file" size={16} />
-                    </span>
-                    <span className="list__name">{d.title}</span>
-                    <span className="badge badge--faint">#{d.id.slice(0, 6)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
 
-            {selectedDeliverable && (
-              <div className="versions">
-                <h3 className="versions__title">Versions</h3>
-                {versions.length === 0 ? (
-                  <Empty text="No versions yet." />
-                ) : (
-                  <ul className="versions__list">
-                    {versions.map((v) => (
-                      <li key={v.id} className="version">
-                        <div className="version__meta">
-                          <span className={`badge badge--${v.status || "neutral"}`}>v{v.version}</span>
-                          <span className={`badge badge--${v.status || "neutral"}`}>{v.status}</span>
-                        </div>
-                        <div className="version__content">{v.content}</div>
-                        {!offline && v.status !== "approved" && (
-                          <div className="version__actions">
-                            <button className="btn btn--ghost" onClick={() => approveVersion(v.id)}>
-                              Approve
-                            </button>
-                            <button className="btn btn--danger-ghost" onClick={() => rejectVersion(v.id)}>
-                              Reject
-                            </button>
-                          </div>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {versions.length >= 2 && (
-                  <div className="diff" data-testid="diff">
-                    <h4 className="diff__title">
-                      Compare v1 vs v{versions[versions.length - 1].version}
-                    </h4>
-                    <pre className="diff__body">
-                      {diffLines(versions[0].content, versions[versions.length - 1].content).changed.join("\n")}
-                    </pre>
+            {!selectedProjectId ? (
+              <Empty text="Select a workspace and project to see its goals, assignments, and deliverables." />
+            ) : (
+              <>
+                <div className="subsection">
+                  <div className="subsection__head">
+                    <h3 className="subsection-title">Goals</h3>
+                    <button className="btn btn--primary" onClick={createGoal} disabled={offline}>
+                      Create Goal
+                    </button>
+                  </div>
+                  <div className="work-toolbar">
+                    <select className="select select--small" value={goalStatusFilter} onChange={(e) => setGoalStatusFilter(e.target.value)} aria-label="Goal status filter">
+                      <option value="">All statuses</option>
+                      {goalStatusOptions.map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                    <input className="input work-search" value={goalSearch} onChange={(e) => setGoalSearch(e.target.value)} placeholder="Search goals…" />
+                  </div>
+                  {workGoals.length === 0 ? (
+                    <Empty text="No goals for this project yet — create one to start tracking progress." />
+                  ) : filteredGoals.length === 0 ? (
+                    <Empty text="No goals match your filters or search." />
+                  ) : (
+                    <ul className="list">
+                      {filteredGoals.map((g) => (
+                        <li key={g.id} className="list__item">
+                          <span className="list__icon"><Icon name="target" size={16} /></span>
+                          <span className="list__name">{g.title}</span>
+                          <span className={`badge badge--${g.status || "open"}`}>{g.status || "open"}</span>
+                          <span className="badge badge--neutral">p{g.priority}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="subsection">
+                  <div className="subsection__head">
+                    <h3 className="subsection-title">Assignments</h3>
+                  </div>
+                  <div className="work-toolbar">
+                    <select className="select select--small" value={assignmentAgentFilter} onChange={(e) => setAssignmentAgentFilter(e.target.value)} aria-label="Assignment agent filter">
+                      <option value="">All agents</option>
+                      {assignmentAgentOptions.map((slug) => (
+                        <option key={slug} value={slug}>{agentLabel(slug)}</option>
+                      ))}
+                    </select>
+                    <input className="input work-search" value={assignmentSearch} onChange={(e) => setAssignmentSearch(e.target.value)} placeholder="Search by goal…" />
+                  </div>
+                  {workAssignments.length === 0 ? (
+                    <Empty text="No agents assigned to this project's goals yet." />
+                  ) : filteredAssignments.length === 0 ? (
+                    <Empty text="No assignments match your filters or search." />
+                  ) : (
+                    <ul className="list">
+                      {filteredAssignments.map((a) => (
+                        <li key={a.id} className="list__item">
+                          <span className="list__icon"><Icon name="checklist" size={16} /></span>
+                          <span className="list__name">{agentLabel(a.agent_id)}</span>
+                          {agentArchetype(a.agent_id) && <span className="badge badge--faint">{agentArchetype(a.agent_id)}</span>}
+                          <span className="badge badge--faint">{titleOfGoal(a.goal_id)}</span>
+                          <span className={`badge badge--${a.status || "queued"}`}>{a.status || "queued"}</span>
+                          <span className="badge badge--neutral">p{a.priority}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="subsection">
+                  <div className="subsection__head">
+                    <h3 className="subsection-title">Deliverables</h3>
+                    <button className="btn btn--primary" onClick={createDeliverable} disabled={offline}>
+                      Create Deliverable
+                    </button>
+                  </div>
+                  <div className="work-toolbar">
+                    <select className="select select--small" value={deliverableStatusFilter} onChange={(e) => setDeliverableStatusFilter(e.target.value)} aria-label="Deliverable status filter">
+                      <option value="">All statuses</option>
+                      {deliverableStatusOptions.map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                    <input className="input work-search" value={deliverableSearch} onChange={(e) => setDeliverableSearch(e.target.value)} placeholder="Search deliverables…" />
+                  </div>
+                  {workDeliverables.length === 0 ? (
+                    <Empty text="No deliverables produced for this project yet." />
+                  ) : filteredDeliverables.length === 0 ? (
+                    <Empty text="No deliverables match your filters or search." />
+                  ) : (
+                    <ul className="list">
+                      {filteredDeliverables.map((d) => (
+                        <li
+                          key={d.id}
+                          className={`list__item list__item--clickable${selectedDeliverable === d.id ? " list__item--selected" : ""}`}
+                          onClick={() => loadVersions(d.id)}
+                        >
+                          <span className="list__icon"><Icon name="file" size={16} /></span>
+                          <span className="list__name">{d.title}</span>
+                          <span className={`badge ${d.latest_status ? `badge--${d.latest_status}` : "badge--neutral"}`}>
+                            {d.latest_status || "no versions"}
+                          </span>
+                          <span className="badge badge--faint">#{d.id.slice(0, 6)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {selectedDeliverable && (
+                  <div className="versions">
+                    <h3 className="versions__title">Versions</h3>
+                    {versions.length === 0 ? (
+                      <Empty text="No versions yet." />
+                    ) : (
+                      <ul className="versions__list">
+                        {versions.map((v) => (
+                          <li key={v.id} className="version">
+                            <div className="version__meta">
+                              <span className={`badge badge--${v.status || "neutral"}`}>v{v.version}</span>
+                              <span className={`badge badge--${v.status || "neutral"}`}>{v.status}</span>
+                            </div>
+                            <div className="version__content">{v.content}</div>
+                            {!offline && v.status !== "approved" && (
+                              <div className="version__actions">
+                                <button className="btn btn--ghost" onClick={() => approveVersion(v.id)}>
+                                  Approve
+                                </button>
+                                <button className="btn btn--danger-ghost" onClick={() => rejectVersion(v.id)}>
+                                  Reject
+                                </button>
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {versions.length >= 2 && (
+                      <div className="diff" data-testid="diff">
+                        <h4 className="diff__title">
+                          Compare v1 vs v{versions[versions.length - 1].version}
+                        </h4>
+                        <pre className="diff__body">
+                          {diffLines(versions[0].content, versions[versions.length - 1].content).changed.join("\n")}
+                        </pre>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
+              </>
             )}
           </section>
         )}
