@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 
 test("create workspace via UI", async ({ page, request }) => {
   await page.goto("/");
+  await page.getByRole("button", { name: "workspace" }).click();
   await page.getByPlaceholder("Workspace name").fill("E2E Workspace");
   await page.getByRole("button", { name: "Create" }).click();
   // verify persisted on backend

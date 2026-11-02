@@ -33,7 +33,7 @@ describe("App shell and navigation", () => {
     globalThis.fetch = makeFetch() as any;
     render(<App />);
     expect(screen.getByRole("heading", { name: "Personal AI Team" })).toBeInTheDocument();
-    for (const t of ["workspaces", "projects", "goals", "assignments", "deliverables", "episodes"]) {
+    for (const t of ["overview", "workspace", "goals", "assignments", "deliverables", "episodes", "agents"]) {
       expect(screen.getByRole("button", { name: t })).toBeInTheDocument();
     }
   });
@@ -44,6 +44,7 @@ describe("Workspaces", () => {
     const fn = makeFetch();
     globalThis.fetch = fn as any;
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
 
     const input = screen.getByPlaceholderText("Workspace name");
     fireEvent.change(input, { target: { value: "Acme" } });
@@ -62,6 +63,7 @@ describe("Workspaces", () => {
       [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
     }) as any;
     render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
     expect(await screen.findByText("Acme")).toBeInTheDocument();
   });
 
@@ -69,30 +71,32 @@ describe("Workspaces", () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error("offline"))) as any;
     render(<App />);
     await screen.findByText(/read-only/);
+    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
 });
 
 describe("Projects", () => {
-  it("renders projects with status", async () => {
+  it("renders projects with status within a selected workspace", async () => {
     globalThis.fetch = makeFetch({
-      [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active" }] }),
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    fireEvent.click(await screen.findByText("Acme"));
     expect(await screen.findByText(/Launch/)).toBeInTheDocument();
     expect(screen.getByText(/active/)).toBeInTheDocument();
   });
 
-  it("creates a project against the first workspace", async () => {
+  it("creates a project against the selected workspace", async () => {
     const fn = makeFetch({
       [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    // wait for workspaces to load before switching tabs
-    await screen.findByText("Acme");
-    fireEvent.click(screen.getByRole("button", { name: "projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    fireEvent.click(await screen.findByText("Acme"));
     fireEvent.click(screen.getByRole("button", { name: "Create Project" }));
 
     await waitFor(() => {
@@ -101,6 +105,41 @@ describe("Projects", () => {
         expect.objectContaining({ method: "POST", body: JSON.stringify({ workspace_id: "w1", name: "New Project" }) })
       );
     });
+  });
+});
+
+describe("Overview", () => {
+  it("renders dashboard stats and recent projects", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () =>
+        ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1", created_at: "2026-01-01T00:00:00Z" }] }),
+    }) as any;
+    render(<App />);
+    expect(await screen.findByText(/summary of your AI team/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Open goals").length).toBeGreaterThan(0);
+    expect(screen.getByText("Launch")).toBeInTheDocument();
+  });
+});
+
+describe("Project Detail", () => {
+  it("reveals goals, assignments, and deliverables for a selected project", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1" }] }),
+      [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", title: "Ship v1", project_id: "p1", status: "open", priority: 1 }] }),
+      [`${API}/workspaces/assignments`]: () => ok({ items: [{ id: "a1", goal_id: "g1", agent_id: "tutor", status: "queued", priority: 1 }] }),
+      [`${API}/workspaces/deliverables`]: () => ok({ items: [{ id: "d1", title: "Report", project_id: "p1" }] }),
+      [`${API}/agents`]: () => ok({ agents: [{ name: "tutor", display_name: "Brittany", archetype: "The Educator" }] }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    fireEvent.click(await screen.findByText("Acme"));
+    fireEvent.click(await screen.findByText("Launch"));
+
+    expect((await screen.findAllByText("Ship v1")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Brittany")).toBeInTheDocument();
+    expect(screen.getByText("Report")).toBeInTheDocument();
   });
 });
 
@@ -121,10 +160,10 @@ describe("Goals", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    // wait for projects to load before clicking create
-    fireEvent.click(screen.getByRole("button", { name: "projects" }));
-    await screen.findByText(/Launch/);
     fireEvent.click(screen.getByRole("button", { name: "goals" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Create Goal" })).toBeEnabled()
+    );
     fireEvent.click(screen.getByRole("button", { name: "Create Goal" }));
 
     await waitFor(() => {

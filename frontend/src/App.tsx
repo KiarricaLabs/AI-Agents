@@ -6,8 +6,8 @@ import "./App.css";
 const API = "http://127.0.0.1:8001";
 
 type Tab =
-  | "workspaces"
-  | "projects"
+  | "overview"
+  | "workspace"
   | "goals"
   | "assignments"
   | "deliverables"
@@ -15,8 +15,8 @@ type Tab =
   | "agents";
 
 const NAV: { id: Tab; icon: string }[] = [
-  { id: "workspaces", icon: "grid" },
-  { id: "projects", icon: "briefcase" },
+  { id: "overview", icon: "home" },
+  { id: "workspace", icon: "grid" },
   { id: "goals", icon: "target" },
   { id: "assignments", icon: "checklist" },
   { id: "deliverables", icon: "file" },
@@ -26,6 +26,13 @@ const NAV: { id: Tab; icon: string }[] = [
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const children: Record<string, ReactNode> = {
+    home: (
+      <>
+        <path d="M3 11l9-7 9 7" />
+        <path d="M5 10v10h14V10" />
+        <path d="M9 20v-6h6v6" />
+      </>
+    ),
     grid: (
       <>
         <rect x="3" y="3" width="8" height="8" rx="1.6" />
@@ -112,8 +119,20 @@ function Empty({ text }: { text: string }) {
   return <div className="empty">{text}</div>;
 }
 
+function Stat({ icon, label, value }: { icon: string; label: string; value: number }) {
+  return (
+    <div className="stat">
+      <span className="stat__icon">
+        <Icon name={icon} size={18} />
+      </span>
+      <span className="stat__value">{value}</span>
+      <span className="stat__label">{label}</span>
+    </div>
+  );
+}
+
 export default function App() {
-  const [tab, setTab] = useState<Tab>("workspaces");
+  const [tab, setTab] = useState<Tab>("overview");
   const [health, setHealth] = useState("checking...");
   const [workspaces, setWorkspaces] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
@@ -133,6 +152,8 @@ export default function App() {
   const [agentError, setAgentError] = useState("");
   const [threadIds, setThreadIds] = useState<Record<string, string>>({});
   const [contextCounts, setContextCounts] = useState<Record<string, number>>({});
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -249,11 +270,12 @@ export default function App() {
   };
 
   const createProject = async () => {
-    if (offline || workspaces.length === 0) return;
+    const wid = selectedWorkspaceId || workspaces[0]?.id;
+    if (offline || !wid) return;
     await fetch(`${API}/workspaces/projects`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workspace_id: workspaces[0].id, name: "New Project" }),
+      body: JSON.stringify({ workspace_id: wid, name: "New Project" }),
     });
     refresh();
   };
@@ -321,6 +343,24 @@ export default function App() {
     refresh();
   };
 
+  const projectsIn = (wid: string) => projects.filter((p) => p.workspace_id === wid);
+  const goalsIn = (pid: string) => goals.filter((g) => g.project_id === pid);
+  const deliverablesIn = (pid: string) => deliverablesList.filter((d) => d.project_id === pid);
+  const assignmentsIn = (pid: string) => {
+    const goalIds = new Set(goalsIn(pid).map((g) => g.id));
+    return assignments.filter((a) => goalIds.has(a.goal_id));
+  };
+  const agentLabel = (slug: string) => {
+    const a = agents.find((x) => x.name === slug);
+    return a ? a.display_name || humanize(a.name) : humanize(slug);
+  };
+  const titleOfGoal = (gid: string) => goals.find((g) => g.id === gid)?.title || gid;
+  const workspaceName = (wid: string) => workspaces.find((w) => w.id === wid)?.name || "Unknown workspace";
+  const openGoals = goals.filter((g) => g.status !== "done" && g.status !== "cancelled");
+  const recentProjects = [...projects]
+    .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
+    .slice(0, 5);
+
   const status: "checking" | "online" | "offline" =
     health === "offline" ? "offline" : health === "checking..." ? "checking" : "online";
 
@@ -365,14 +405,104 @@ export default function App() {
       </nav>
 
       <main className="content">
-        {tab === "workspaces" && (
+        {tab === "overview" && (
+          <section className="panel">
+            <div className="panel__head">
+              <div>
+                <h2 className="panel__title">Overview</h2>
+                <p className="panel__sub">A summary of your AI team workspace and activity.</p>
+              </div>
+            </div>
+
+            <div className="stats">
+              <Stat icon="grid" label="Workspaces" value={workspaces.length} />
+              <Stat icon="briefcase" label="Projects" value={projects.length} />
+              <Stat icon="target" label="Open goals" value={openGoals.length} />
+              <Stat icon="checklist" label="Assignments" value={assignments.length} />
+              <Stat icon="file" label="Deliverables" value={deliverablesList.length} />
+            </div>
+
+            {workspaces.length === 0 ? (
+              <Empty text="No workspaces yet. Open the Workspace section to create your first workspace and start organizing projects." />
+            ) : (
+              <div className="overview-grid">
+                <div className="overview-col">
+                  <h3 className="section-title">Recent projects</h3>
+                  {recentProjects.length === 0 ? (
+                    <Empty text="No projects yet — create one inside a workspace." />
+                  ) : (
+                    <ul className="list">
+                      {recentProjects.map((p) => (
+                        <li key={p.id} className="list__item">
+                          <span className="list__icon"><Icon name="briefcase" size={16} /></span>
+                          <span className="list__name">{p.name}</span>
+                          <span className="badge badge--faint">{workspaceName(p.workspace_id)}</span>
+                          <span className={`badge badge--${p.status || "neutral"}`}>{p.status}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="overview-col">
+                  <h3 className="section-title">Open goals</h3>
+                  {openGoals.length === 0 ? (
+                    <Empty text="No open goals yet." />
+                  ) : (
+                    <ul className="list">
+                      {openGoals.map((g) => (
+                        <li key={g.id} className="list__item">
+                          <span className="list__icon"><Icon name="target" size={16} /></span>
+                          <span className="list__name">{g.title}</span>
+                          <span className={`badge badge--${g.status || "open"}`}>{g.status}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {tab === "workspace" && (
           <section className="panel">
             <div className="panel__head">
               <div>
                 <h2 className="panel__title">Workspaces</h2>
-                <p className="panel__sub">Isolated spaces for teams and projects.</p>
+                <p className="panel__sub">Working environments, each containing projects and their work.</p>
               </div>
             </div>
+
+            {(selectedWorkspaceId || selectedProjectId) && (
+              <nav className="crumb" aria-label="Breadcrumb">
+                <button
+                  className="crumb__link"
+                  onClick={() => {
+                    setSelectedWorkspaceId(null);
+                    setSelectedProjectId(null);
+                  }}
+                >
+                  All workspaces
+                </button>
+                {selectedWorkspaceId && (
+                  <>
+                    <span className="crumb__sep">/</span>
+                    <button className="crumb__link" onClick={() => setSelectedProjectId(null)}>
+                      {workspaces.find((w) => w.id === selectedWorkspaceId)?.name || "Workspace"}
+                    </button>
+                  </>
+                )}
+                {selectedProjectId && (
+                  <>
+                    <span className="crumb__sep">/</span>
+                    <span className="crumb__current">
+                      {projects.find((p) => p.id === selectedProjectId)?.name || "Project"}
+                    </span>
+                  </>
+                )}
+              </nav>
+            )}
+
             <div className="inline-form">
               <input
                 className="input"
@@ -385,49 +515,125 @@ export default function App() {
                 Create
               </button>
             </div>
-            {workspaces.length === 0 ? (
-              <Empty text="No workspaces yet." />
-            ) : (
-              <ul className="list">
-                {workspaces.map((w) => (
-                  <li key={w.id} className="list__item">
-                    <span className="list__icon">
-                      <Icon name="grid" size={16} />
-                    </span>
-                    <span className="list__name">{w.name}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        )}
 
-        {tab === "projects" && (
-          <section className="panel">
-            <div className="panel__head">
-              <div>
-                <h2 className="panel__title">Projects</h2>
-                <p className="panel__sub">Track work within a workspace.</p>
+            {!selectedWorkspaceId &&
+              (workspaces.length === 0 ? (
+                <Empty text="No workspaces yet — create one above to get started." />
+              ) : (
+                <ul className="list">
+                  {workspaces.map((w) => (
+                    <li
+                      key={w.id}
+                      className="list__item list__item--clickable"
+                      onClick={() => {
+                        setSelectedWorkspaceId(w.id);
+                        setSelectedProjectId(null);
+                      }}
+                    >
+                      <span className="list__icon"><Icon name="grid" size={16} /></span>
+                      <span className="list__name">{w.name}</span>
+                      <span className="badge badge--neutral">{projectsIn(w.id).length} projects</span>
+                    </li>
+                  ))}
+                </ul>
+              ))}
+
+            {selectedWorkspaceId && !selectedProjectId && (
+              <div className="subsection">
+                <div className="subsection__head">
+                  <h3 className="section-title">Projects</h3>
+                  <button className="btn btn--primary" onClick={createProject} disabled={offline}>
+                    Create Project
+                  </button>
+                </div>
+                {projectsIn(selectedWorkspaceId).length === 0 ? (
+                  <Empty text="No projects in this workspace yet — create one to start tracking goals and work." />
+                ) : (
+                  <ul className="list">
+                    {projectsIn(selectedWorkspaceId).map((p) => (
+                      <li
+                        key={p.id}
+                        className="list__item list__item--clickable"
+                        onClick={() => setSelectedProjectId(p.id)}
+                      >
+                        <span className="list__icon"><Icon name="briefcase" size={16} /></span>
+                        <span className="list__name">{p.name}</span>
+                        <span className="badge badge--neutral">{goalsIn(p.id).length} goals</span>
+                        <span className={`badge badge--${p.status || "neutral"}`}>{p.status}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
-              <button className="btn btn--primary" onClick={createProject} disabled={offline || workspaces.length === 0}>
-                Create Project
-              </button>
-            </div>
-            {projects.length === 0 ? (
-              <Empty text="No projects yet." />
-            ) : (
-              <ul className="list">
-                {projects.map((p) => (
-                  <li key={p.id} className="list__item">
-                    <span className="list__icon">
-                      <Icon name="briefcase" size={16} />
-                    </span>
-                    <span className="list__name">{p.name}</span>
-                    <span className={`badge badge--${p.status || "neutral"}`}>{p.status}</span>
-                  </li>
-                ))}
-              </ul>
             )}
+
+            {selectedProjectId &&
+              (() => {
+                const p = projects.find((x) => x.id === selectedProjectId);
+                const pGoals = goalsIn(selectedProjectId);
+                const pAssignments = assignmentsIn(selectedProjectId);
+                const pDeliverables = deliverablesIn(selectedProjectId);
+                return (
+                  <div className="project-detail">
+                    <div className="project-detail__head">
+                      <div>
+                        <h3 className="section-title">{p?.name || "Project"}</h3>
+                        <p className="panel__sub">
+                          {pGoals.length} goals · {pAssignments.length} assignments · {pDeliverables.length} deliverables
+                        </p>
+                      </div>
+                      <span className={`badge badge--${p?.status || "neutral"}`}>{p?.status || "—"}</span>
+                    </div>
+
+                    <h4 className="subsection-title">Goals</h4>
+                    {pGoals.length === 0 ? (
+                      <Empty text="No goals for this project yet." />
+                    ) : (
+                      <ul className="list">
+                        {pGoals.map((g) => (
+                          <li key={g.id} className="list__item">
+                            <span className="list__icon"><Icon name="target" size={16} /></span>
+                            <span className="list__name">{g.title}</span>
+                            <span className={`badge badge--${g.status || "open"}`}>{g.status}</span>
+                            <span className="badge badge--neutral">p{g.priority}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    <h4 className="subsection-title">Assignments</h4>
+                    {pAssignments.length === 0 ? (
+                      <Empty text="No agents assigned to this project's goals yet." />
+                    ) : (
+                      <ul className="list">
+                        {pAssignments.map((a) => (
+                          <li key={a.id} className="list__item">
+                            <span className="list__icon"><Icon name="checklist" size={16} /></span>
+                            <span className="list__name">{agentLabel(a.agent_id)}</span>
+                            <span className="badge badge--faint">{titleOfGoal(a.goal_id)}</span>
+                            <span className={`badge badge--${a.status || "queued"}`}>{a.status || "queued"}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    <h4 className="subsection-title">Deliverables</h4>
+                    {pDeliverables.length === 0 ? (
+                      <Empty text="No deliverables produced for this project yet." />
+                    ) : (
+                      <ul className="list">
+                        {pDeliverables.map((d) => (
+                          <li key={d.id} className="list__item">
+                            <span className="list__icon"><Icon name="file" size={16} /></span>
+                            <span className="list__name">{d.title}</span>
+                            <span className="badge badge--faint">#{d.id.slice(0, 6)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })()}
           </section>
         )}
 
