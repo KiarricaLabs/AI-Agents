@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
 import { createHmac } from "crypto";
+import { E2E_AUTH_SECRET } from "./test-secret";
 
 const API = "http://127.0.0.1:8001";
-const SECRET = "change-me-in-prod";
+const SECRET = E2E_AUTH_SECRET;
 
 function token(user: string, tenant: string, role = "admin"): string {
   const payload = { sub: user, tenant, role, exp: Math.floor(Date.now() / 1000) + 3600, jti: Math.random().toString() };

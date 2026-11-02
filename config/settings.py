@@ -15,6 +15,10 @@ AI_API_KEY = os.getenv("PAT_AI_API_KEY", "")
 MASTER_KEY = os.getenv("PAT_MASTER_KEY", "")  # Fernet key; required for credentials
 DEFAULT_TENANT = os.getenv("PAT_DEFAULT_TENANT", "local")
 
+# Token-signing secret (raw, unvalidated). See core.auth.resolve_signing_secret()
+# for fail-closed resolution, local-mode fallback, and validation rules.
+AUTH_SECRET = os.getenv("PAT_AUTH_SECRET", "")
+
 # Local development identity (trusted, server-side, config-supplied).
 # When enabled and no valid token is presented, requests run as this identity.
 # Set PAT_LOCAL_MODE=0 (or "false") to require authenticated tokens (fail-closed).

@@ -13,6 +13,7 @@ data/*.db-wal
 # Environment & secrets
 .env
 .env.*
+!.env.example
 *.local
 
 # Frontend build/test artifacts (node_modules & dist covered by frontend/.gitignore)

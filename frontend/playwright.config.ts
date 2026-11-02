@@ -1,6 +1,7 @@
 import { defineConfig } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { E2E_AUTH_SECRET } from "./e2e/test-secret";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,7 +31,7 @@ export default defineConfig({
     {
       // Isolated backend. reuseExistingServer is false so a real (non-test)
       // backend can never be reused for E2E; port 8001 must be free.
-      command: `PAT_DB_PATH='${E2E_DB}' PAT_LOCAL_MODE=1 '${PYTHON}' -m uvicorn api.app:app --host 127.0.0.1 --port 8001`,
+      command: `PAT_DB_PATH='${E2E_DB}' PAT_LOCAL_MODE=1 PAT_AUTH_SECRET='${E2E_AUTH_SECRET}' '${PYTHON}' -m uvicorn api.app:app --host 127.0.0.1 --port 8001`,
       url: "http://127.0.0.1:8001/health",
       reuseExistingServer: false,
       cwd: ROOT,

@@ -62,3 +62,10 @@ def _resolve_test_db() -> str:
 
 
 _resolve_test_db()
+
+# Dedicated test signing secret. Tests sign and verify tokens with this value so
+# they never rely on the local-mode development fallback or on any real secret.
+# ``setdefault`` honours an explicit PAT_AUTH_SECRET if a developer set one (for
+# cross-process parity); otherwise the suite uses this clearly-labelled test key.
+_TEST_AUTH_SECRET = "test-only-auth-secret-a1b2c3d4e5f60718293a4b5c6d7e8f90"
+os.environ.setdefault("PAT_AUTH_SECRET", _TEST_AUTH_SECRET)

@@ -7,8 +7,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 from api.routers import memory, workspaces, episodes, agents, brand  # noqa: E402
 from config.settings import DEFAULT_TENANT, LOCAL_MODE, LOCAL_USER  # noqa: E402
-from core.auth import verify_token  # noqa: E402
+from core.auth import verify_token, validate_auth_secret  # noqa: E402
 from core.ratelimit import RateLimiter  # noqa: E402
+
+# Fail closed at startup: refuse to boot with a missing/insecure token-signing
+# secret in non-local mode. Local mode uses a labelled dev fallback (see core.auth).
+validate_auth_secret()
 
 _rl = RateLimiter(max_calls=100000, window=60)
 
