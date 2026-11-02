@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from config.settings import BASE_DIR
 from agents.registry import AgentRegistry
 from core.memory import MemoryService
+from core.brand import BrandService
 from core.model_router import ModelRouter
 from core.orchestrator import Orchestrator
 from core.policy import PolicyEngine
@@ -48,6 +49,8 @@ def build_local_policy(reg: AgentRegistry) -> PolicyEngine:
             rules.append({"subject": name, "action": "goal", "resource": "propose", "effect": "allow"})
         if "goals:all" in perms:
             rules.append({"subject": name, "action": "goal", "resource": "read_all", "effect": "allow"})
+        if "brand:read" in perms:
+            rules.append({"subject": name, "action": "brand", "resource": "read", "effect": "allow"})
     return PolicyEngine.from_dict({"rules": rules})
 
 
@@ -72,6 +75,7 @@ def build_runtime(db, tenant_id: str, user_id: str, policy=None) -> Orchestrator
     """Return a fully wired Orchestrator for tenant/user, using real services."""
     reg = load_registry()
     memory = MemoryService(db=db, tenant_id=tenant_id)
+    brand = BrandService(db=db, tenant_id=tenant_id)
     router = ModelRouter()                       # Ollama only (local)
     tools = build_registry(db=db, tenant_id=tenant_id)
     return Orchestrator(
@@ -79,6 +83,7 @@ def build_runtime(db, tenant_id: str, user_id: str, policy=None) -> Orchestrator
         policy=policy if policy is not None else build_local_policy(reg),
         router=router,
         memory=memory,
+        brand=brand,
         user_id=user_id,
         tools=tools,
     )

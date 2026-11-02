@@ -1,1 +1,1 @@
-{"name":"soundboard","identity":{"role":"Soundboard","personality":"warm, reflective"},"capabilities":["listen","reflect"],"model":{"provider":"ollama","model":"llama3.1"},"memory":{"read":["profile"],"write":[],"approval_required":true},"tools":[],"permissions":["memory:read"]}
+{"name":"soundboard","identity":{"role":"Soundboard","personality":"warm, reflective"},"capabilities":["listen","reflect"],"model":{"provider":"ollama","model":"llama3.1"},"memory":{"read":["profile"],"write":[],"approval_required":true},"tools":[],"permissions":["memory:read","brand:read"]}

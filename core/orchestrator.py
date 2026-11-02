@@ -5,13 +5,14 @@ from core.model_router import ModelRouter
 
 class Orchestrator:
     def __init__(self, registry: AgentRegistry, policy=None, router=None, memory=None,
-                 user_id=None, tools=None):
+                 user_id=None, tools=None, brand=None):
         self.policy = policy
         self.registry = registry
         self.router = router if router is not None else ModelRouter()
         self.memory = memory
         self.user_id = user_id
         self.tools = tools
+        self.brand = brand
 
     def dispatch(self, agent_name: str, task: str, context: Optional[Dict[str, Any]] = None):
         from core.tracing import start_span, end_span
@@ -39,7 +40,7 @@ class Orchestrator:
         if not cls:
             raise ValueError(f"No implementation for {agent_name}")
         agent = cls(memory=self.memory, router=self.router, manifest=manifest,
-                    user_id=self.user_id, tools=self.tools, policy=self.policy)
+                    user_id=self.user_id, tools=self.tools, policy=self.policy, brand=self.brand)
         result = agent.run(task, context)
         from core.validation import validate_output
         ok, err = validate_output(agent_name, result)
