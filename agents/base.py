@@ -309,11 +309,35 @@ class BaseAgent:
         except Exception:
             raw = ""  # safe fallback (e.g. malformed JSON); never crash the run
         if raw:
-            try:
-                env = json.loads(raw)
-            except Exception:
-                env = None
-            if isinstance(env, dict):
+            env = None
+            candidates = (raw, )
+            # Defensive cleanup: strip surrounding whitespace/trailing non-JSON
+            # and tolerate a ```json ... ``` code fence some models add.
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.strip("`").strip()
+                if cleaned.lower().startswith("json\n"):
+                    cleaned = cleaned[5:].strip()
+            for cand in (cleaned, raw):
+                try:
+                    env = json.loads(cand)
+                    if env is not None:
+                        break
+                except Exception:
+                    env = None
+            # Accept either a single envelope dict OR a bare top-level list of
+            # proposal blocks (some models return a bare array). A list is treated
+            # as a brainstorm of proposals with a synthesized reply.
+            if isinstance(env, list):
+                reply = reply if reply != FALLBACK_REPLY else \
+                    f"I brainstormed {len(env)} idea(s) below, filed as proposals."
+                blocks = env
+                for b in blocks:
+                    status = self._ingest_proposal_block(b, context)
+                    proposal_results.append(status)
+                    if status.get("status") == "saved" and status.get("proposal_id"):
+                        proposal_ids.append(status["proposal_id"])
+            elif isinstance(env, dict):
                 r = env.get("reply")
                 if isinstance(r, str) and r.strip():
                     reply = r.strip()

@@ -183,5 +183,40 @@ class TestGroundedParentInjection(IdeasBase):
         self.assertEqual(self._count("goals"), 0)
 
 
+class TestRobustStructuredParsing(IdeasBase):
+    def _ctx(self, **over):
+        ctx = {
+            "thread_id": "t1", "work_intent": True,
+            "project_id": self.pid, "workspace_id": self.wid, "project_name": "P", "workspace_name": "W",
+        }
+        ctx.update(over)
+        return ctx
+
+    def test_top_level_array_envelope_is_ingested(self):
+        # Some models return a bare top-level array of proposal blocks instead of
+        # an envelope object; treat them as a brainstorm and file each.
+        env = [self._goal_block(), self._goal_block(payload={"title": "Second", "priority": 1})]
+        a = self._agent("strategist", json.dumps(env))
+        a._ground("ideas", context=self._ctx())
+        rows = self.db.query("SELECT project_id, status FROM work_proposals")
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(r["project_id"] == self.pid and r["status"] == "proposed" for r in rows))
+
+    def test_markdown_fenced_json_is_parsed(self):
+        wrapped = "```json\n" + json.dumps(
+            {"reply": "ok", "proposal_v1": self._goal_block()}) + "\n```"
+        a = self._agent("strategist", wrapped)
+        a._ground("ideas", context=self._ctx())
+        rows = self.db.query("SELECT project_id FROM work_proposals")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["project_id"], self.pid)
+
+    def test_invalid_json_is_safe_fallback_no_records(self):
+        a = self._agent("strategist", "this is not json at all")
+        r = a._ground("ideas", context=self._ctx())
+        self.assertEqual(self._count("work_proposals"), 0)
+        self.assertEqual(r.get("proposal_results"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
