@@ -1085,9 +1085,11 @@ body {
 }
 .subsection__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .success { margin: 0 0 8px; font-size: 13px; color: #15803d; }
-.goal-actions { margin-left: auto; display: inline-flex; }
+.goal-actions { margin-left: auto; display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .list__item .goal-actions { flex: none; }
 .list__item .success { flex-basis: 100%; margin-top: 4px; }
+.assign-panel { flex-basis: 100%; display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; }
+.assign-panel select { padding: 6px 8px; border: 1px solid var(--border, #cbd5e1); border-radius: 8px; font-size: 13px; color: var(--text, #0f172a); background: var(--card, #fff); }
 
 .subsection-title {
   margin: 20px 0 10px;

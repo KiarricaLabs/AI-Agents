@@ -333,6 +333,11 @@ export default function App() {
   // Step 4: human-triggered "suggest next step" anchored to an approved goal.
   const [nextStepBusy, setNextStepBusy] = useState<string | null>(null);
   const [nextStepResult, setNextStepResult] = useState<{ goalId: string; msg: string } | null>(null);
+  // Step 5: safe team orchestration — human-confirmed assignment proposal.
+  const [assignOpenGoal, setAssignOpenGoal] = useState<string | null>(null);
+  const [assignOwner, setAssignOwner] = useState<string>("");
+  const [assignBusy, setAssignBusy] = useState<string | null>(null);
+  const [assignMsg, setAssignMsg] = useState<{ goalId: string; msg: string } | null>(null);
 
   useEffect(() => {
     try {
@@ -654,6 +659,45 @@ export default function App() {
       setNextStepResult({ goalId: goal.id, msg: "Could not run. Please try again." });
     } finally {
       setNextStepBusy(null);
+    }
+  };
+
+  // Step 5: human-confirmed delegation. The user explicitly chooses which
+  // teammate should own this goal's work; the system files an ASSIGNMENT
+  // proposal (never an automatic assignment). Approving it in Work creates the
+  // assignment on the goal, which the D4.1 flow can then execute with evidence.
+  const proposeAssignment = async (goal: any) => {
+    if (offline || assignBusy || !assignOwner) return;
+    const payload: any = { goal_id: goal?.id, agent_id: assignOwner, priority: 0 };
+    setAssignBusy(goal.id);
+    setAssignMsg(null);
+    try {
+      const r = await fetch(`${API}/work/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          work_type: "assignment",
+          action: "create",
+          payload,
+          agent_id: "strategist",
+        }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setAssignMsg({ goalId: goal.id, msg: (b as any).detail || `Could not propose (${r.status}).` });
+        return;
+      }
+      setAssignMsg({
+        goalId: goal.id,
+        msg: "Assignment proposal filed — approve it in Work · Approvals to assign the teammate.",
+      });
+      setAssignOpenGoal(null);
+      setAssignOwner("");
+      await loadFeed();
+    } catch {
+      setAssignMsg({ goalId: goal.id, msg: "Could not propose. Please try again." });
+    } finally {
+      setAssignBusy(null);
     }
   };
 
@@ -1739,10 +1783,59 @@ export default function App() {
                               >
                                 {nextStepBusy === g.id ? "Thinking…" : "✨ Suggest next step"}
                               </button>
+                              <button
+                                className="btn btn--ghost btn--sm"
+                                data-testid={`assign-open-${g.id}`}
+                                disabled={offline || assignBusy !== null || assignBusy === g.id}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAssignMsg(null);
+                                  setAssignOpenGoal(assignOpenGoal === g.id ? null : g.id);
+                                }}
+                                title="Assign this goal's work to a teammate (as an approval-gated proposal)"
+                              >
+                                👥 Assign to teammate
+                              </button>
                             </span>
+                            {assignOpenGoal === g.id && (
+                              <span
+                                className="assign-panel"
+                                data-testid={`assign-panel-${g.id}`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <select
+                                  value={assignOwner}
+                                  data-testid={`assign-owner-${g.id}`}
+                                  onChange={(e) => setAssignOwner(e.target.value)}
+                                >
+                                  <option value="">Pick a teammate…</option>
+                                  {agents.map((a) => (
+                                    <option key={a.name} value={a.name}>
+                                      {a.display_name || humanize(a.name)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  className="btn btn--sm btn--primary"
+                                  data-testid={`assign-submit-${g.id}`}
+                                  disabled={assignBusy !== null || !assignOwner}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    proposeAssignment(g);
+                                  }}
+                                >
+                                  {assignBusy === g.id ? "Filing…" : "Propose assignment"}
+                                </button>
+                              </span>
+                            )}
                             {nextStepResult && nextStepResult.goalId === g.id && (
                               <p className="success" role="status" data-testid={`nextstep-msg-${g.id}`}>
                                 {nextStepResult.msg}
+                              </p>
+                            )}
+                            {assignMsg && assignMsg.goalId === g.id && (
+                              <p className="success" role="status" data-testid={`assign-msg-${g.id}`}>
+                                {assignMsg.msg}
                               </p>
                             )}
                           </li>

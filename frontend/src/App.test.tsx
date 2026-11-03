@@ -1278,6 +1278,41 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
     expect(msg.textContent || "").toMatch(/Proposed 1 next-step/);
   });
 
+  it("files an approval-gated assignment proposal to a teammate", async () => {
+    const fn = makeFetch({
+      [`${API}/agents`]: () =>
+        ok({ agents: [
+          { name: "strategist", display_name: "Aisha", archetype: "Strategist" },
+          { name: "communications", display_name: "Brandon", archetype: "Communications" },
+        ] }),
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1" }] }),
+      [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", project_id: "p1", title: "Launch Goal", status: "open" }] }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(await screen.findByText("Acme"));
+    fireEvent.click(screen.getByText("Launch"));
+    fireEvent.click(await screen.findByTestId("assign-open-g1"));
+    fireEvent.change(screen.getByTestId("assign-owner-g1"), { target: { value: "communications" } });
+    fireEvent.click(screen.getByTestId("assign-submit-g1"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/work/proposals`,
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            work_type: "assignment", action: "create",
+            payload: { goal_id: "g1", agent_id: "communications", priority: 0 },
+            agent_id: "strategist",
+          }),
+        })
+      );
+    });
+    expect(await screen.findByTestId("assign-msg-g1")).toBeInTheDocument();
+  });
+
   it("does not offer proposal capture when generation failed", async () => {
     const fn = makeFetch({
       ...agentsFixture(),
