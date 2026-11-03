@@ -1083,6 +1083,8 @@ body {
   gap: 12px;
   margin-bottom: 10px;
 }
+.subsection__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.success { margin: 0 0 8px; font-size: 13px; color: #15803d; }
 
 .subsection-title {
   margin: 20px 0 10px;

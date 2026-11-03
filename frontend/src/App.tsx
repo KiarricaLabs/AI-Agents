@@ -283,6 +283,10 @@ export default function App() {
   // --- M10 Phase D1: approvals + bidirectional navigation (read-only) ---
   const [feed, setFeed] = useState<any[]>([]);
   const [proposalBusy, setProposalBusy] = useState<string | null>(null);
+  // Step 2: batch approval of all pending proposals (each still approved via the
+  // same authoritative endpoint; nothing is auto-created without human action).
+  const [allApproving, setAllApproving] = useState(false);
+  const [allApproveMsg, setAllApproveMsg] = useState<string | null>(null);
   const [proposalError, setProposalError] = useState<string | null>(null);
   // --- Deterministic proposal composer (all work types, no model dependency) ---
   const [pfType, setPfType] = useState<string>("goal");
@@ -878,6 +882,36 @@ export default function App() {
     } finally {
       setProposalBusy(null);
     }
+  };
+
+  // Step 2: approve every currently-pending proposal in one human gesture. Each
+  // proposal still passes through the same authoritative approve endpoint and is
+  // created only after this explicit action; results are summarized honestly.
+  const approveAllPending = async () => {
+    const pending = (feed || []).filter((p) => p && p.status === "proposed");
+    if (offline || allApproving || !pending.length) return;
+    setAllApproving(true);
+    setAllApproveMsg(null);
+    setProposalError(null);
+    let ok = 0;
+    const failures: string[] = [];
+    for (const p of pending) {
+      try {
+        const r = await fetch(`${API}/work/proposals/${p.id}/approve`, { method: "POST" });
+        if (r.ok) ok += 1;
+        else failures.push(p.id);
+      } catch {
+        failures.push(p.id);
+      }
+    }
+    setAllApproving(false);
+    await loadFeed();
+    refresh();
+    setAllApproveMsg(
+      failures.length === 0
+        ? `Approved ${ok} proposal(s). Approved records now appear in their workspace.`
+        : `Approved ${ok}, failed ${failures.length}.`
+    );
   };
 
   const pfBuildPayload = (): any => {
@@ -1812,9 +1846,27 @@ export default function App() {
             <div className="subsection approvals-panel" data-testid="approvals-panel">
               <div className="subsection__head">
                 <h3 className="subsection-title">Proposals &amp; approvals</h3>
-                <button className="btn btn--ghost btn--sm" onClick={loadFeed} disabled={offline}>Refresh</button>
+                <div className="subsection__actions">
+                  {(() => {
+                    const pendingCount = (feed || []).filter((p) => p && p.status === "proposed").length;
+                    const pending = pendingCount > 0 && !offline;
+                    return pending ? (
+                      <button
+                        className="btn btn--sm btn--primary"
+                        data-testid="approve-all-pending"
+                        disabled={allApproving}
+                        onClick={approveAllPending}
+                        title={`Approve all ${pendingCount} pending proposal(s) in one step`}
+                      >
+                        {allApproving ? "Approving…" : `Approve all pending (${pendingCount})`}
+                      </button>
+                    ) : null;
+                  })()}
+                  <button className="btn btn--ghost btn--sm" onClick={loadFeed} disabled={offline}>Refresh</button>
+                </div>
               </div>
               {proposalError && <p className="error">Error: {proposalError}</p>}
+              {allApproveMsg && <p className="success" role="status">{allApproveMsg}</p>}
               {feed.length === 0 ? (
                 <Empty text="No proposals yet. Ask an agent to propose work, then approve it here." />
               ) : (

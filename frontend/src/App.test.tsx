@@ -1311,6 +1311,37 @@ describe("Approvals & work navigation (M10 D1)", () => {
     });
   });
 
+  it("approves all pending proposals in one gesture", async () => {
+    const fn = makeFetch({
+      [`${API}/work/feed`]: () =>
+        ok({
+          items: [
+            { id: "pend1", work_type: "goal", action: "create", status: "proposed", proposed_change: "create goal A", decision: null },
+            { id: "pend2", work_type: "goal", action: "create", status: "proposed", proposed_change: "create goal B", decision: null },
+            { id: "done1", work_type: "goal", action: "create", status: "approved", proposed_change: "create goal C", decision: { work_id: "g1", work_type: "goal", label: "Goal C", approver: "u1", decided_at: "2026-01-01T00:00:00Z" } },
+          ],
+        }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    fireEvent.click(await screen.findByTestId("approve-all-pending"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/work/proposals/pend1/approve`,
+        expect.objectContaining({ method: "POST" })
+      );
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/work/proposals/pend2/approve`,
+        expect.objectContaining({ method: "POST" })
+      );
+      // Approved item is never re-approved by the batch action.
+      const doneCalls = fn.mock.calls.filter((c: any) => c[0] === `${API}/work/proposals/done1/approve`);
+      expect(doneCalls.length).toBe(0);
+    });
+    expect(await screen.findByText(/Approved 2 proposal/)).toBeInTheDocument();
+  });
+
   it("shows linked work for an opened conversation", async () => {
     const agent = ok({ agents: [{ name: "strategist", display_name: "Aisha", archetype: "The Visionary" }] });
     const fixture = {
