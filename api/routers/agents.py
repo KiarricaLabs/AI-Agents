@@ -25,6 +25,12 @@ class RunReq(BaseModel):
     # Explicit eligibility gate for the proposal-capable (structured) path.
     # false/omitted => ordinary conversation path; true => combined JSON-mode.
     work_intent: bool = False
+    # Optional selected workspace/project grounding (Step 1). Names are display
+    # hints; ids are validated/injected server-side. Absent => no grounding.
+    project_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+    project_name: Optional[str] = None
+    workspace_name: Optional[str] = None
     # Human-triggered retry of the most recent failed turn. The backend uses this
     # ONLY to avoid persisting a duplicate user message for the retried task; it
     # does not repeat consequential tool calls, proposals, or execution.
@@ -119,7 +125,16 @@ def run_agent(name: str, req: RunReq, request: Request):
 
     orch = build_runtime(_db, t, u)
     try:
-        result = orch.dispatch(name, task, context={"thread_id": thread_id, "conversation": context_history, "brand_id": brand_id, "work_intent": req.work_intent})
+        result = orch.dispatch(name, task, context={
+            "thread_id": thread_id,
+            "conversation": context_history,
+            "brand_id": brand_id,
+            "work_intent": req.work_intent,
+            "project_id": req.project_id,
+            "workspace_id": req.workspace_id,
+            "project_name": req.project_name,
+            "workspace_name": req.workspace_name,
+        })
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except RuntimeError as e:

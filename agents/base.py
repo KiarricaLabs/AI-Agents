@@ -260,10 +260,29 @@ class BaseAgent:
         provider, model, location = "ollama", "", ""
         raw = ""
         generation_failed = None
+        # Ground the brainstorm on the caller-selected workspace/project so ideas
+        # are relevant and land in the right parent. Names are display-only;
+        # parent ids are injected server-side into proposals, never trusted from
+        # the model. Absent context simply means no grounding (unchanged path).
+        prompt = task
+        ctx_b = context or {}
+        _scopes = []
+        if ctx_b.get("workspace_name"):
+            _scopes.append(f"the workspace named \u201c{ctx_b['workspace_name']}\u201d")
+        if ctx_b.get("project_name"):
+            _scopes.append(f"the project named \u201c{ctx_b['project_name']}\u201d")
+        if _scopes and (ctx_b.get("workspace_id") or ctx_b.get("project_id")):
+            prompt = (
+                task
+                + "\n\n[SELECTED WORKSPACE CONTEXT (server-supplied and trusted)] "
+                + "You may attach new proposals to "
+                + ", ".join(_scopes)
+                + ". Do not invent other parent ids; use these when proposing."
+            )
         try:
             mr = self.router.complete(
                 agent_id=self.name,
-                prompt=task,
+                prompt=prompt,
                 system=self._system_prompt(facts, history=(context or {}).get("conversation"), brand=brand),
                 model_spec=spec,
                 context=context,
@@ -320,6 +339,19 @@ class BaseAgent:
         payload = block.get("payload")
         if not work_type or not action or not isinstance(payload, dict) or not payload:
             return {"status": "clarification", "error": "incomplete proposal block"}
+        # Grounded parent injection (server-side, authoritative): when the caller
+        # supplied the selected workspace/project, fill a missing parent for the
+        # proposal types that require one. Ownership is still re-validated in-tool
+        # by the fixed proposal handler, so a bogus value can never authorize a
+        # record; this only helps valid ideas land in the right parent.
+        ctx = context or {}
+        _cws = str(ctx.get("workspace_id") or "").strip()
+        _cpr = str(ctx.get("project_id") or "").strip()
+        if action == "create":
+            if work_type == "project" and _cws and not (payload.get("workspace_id") or "").strip():
+                payload["workspace_id"] = _cws
+            elif work_type in ("goal", "deliverable") and _cpr and not (payload.get("project_id") or "").strip():
+                payload["project_id"] = _cpr
         tool_name = WORK_TOOL_MAP.get((work_type, action))
         if not tool_name:
             return {"status": "clarification",

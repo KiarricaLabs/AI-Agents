@@ -1204,6 +1204,45 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
     });
   });
 
+  it("suggests ideas as parented proposals via the brainstorm action", async () => {
+    const fn = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/strategist/run`]: (url: string, opts?: any) => {
+        const body = JSON.parse(opts.body);
+        return ok({
+          agent: "strategist", reply: "Three ideas below.",
+          location: "local:ollama:llama3.1", facts: [], tool_results: [],
+          proposals: ["ip1", "ip2", "ip3"],
+          proposal_results: [
+            { status: "saved", proposal_id: "ip1" },
+            { status: "saved", proposal_id: "ip2" },
+            { status: "saved", proposal_id: "ip3" },
+          ],
+          thread_id: "t-1", context_messages: 1,
+          received: body,
+        });
+      },
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByText("Aisha"));
+    fireEvent.click(screen.getByTestId("suggest-ideas"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find(
+        (c: any) => c[0] === `${API}/agents/strategist/run`
+      );
+      expect(call).toBeTruthy();
+      const body = JSON.parse(call[1].body);
+      expect(body.work_intent).toBe(true);
+      expect(body.project_id).toBe("p1");
+      expect(body.workspace_id).toBe("w1");
+      expect(body.task).toMatch(/propose|ideas/i);
+    });
+    expect(await screen.findByText(/idea\(s\) filed as proposals/)).toBeInTheDocument();
+    expect(screen.getByTestId("ideas-to-approve")).toBeInTheDocument();
+  });
+
   it("does not offer proposal capture when generation failed", async () => {
     const fn = makeFetch({
       ...agentsFixture(),

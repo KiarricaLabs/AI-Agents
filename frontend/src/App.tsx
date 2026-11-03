@@ -324,6 +324,8 @@ export default function App() {
   const [draftGoal, setDraftGoal] = useState("");
   const [draftMsg, setDraftMsg] = useState<string | null>(null);
   const [draftBusy, setDraftBusy] = useState(false);
+  // Step 1: agent brainstorm mode — propose multiple parented ideas for approval.
+  const [suggesting, setSuggesting] = useState(false);
 
   useEffect(() => {
     try {
@@ -535,6 +537,59 @@ export default function App() {
     } finally {
       setWsBusy(false);
     }
+  };
+
+  // Step 1: have the currently selected agent brainstorm concrete, parented
+  // ideas and file each as an approval-gated proposal in one turn. Uses the
+  // existing structured (work_intent) path with grounded workspace/project
+  // context; the backend injects/validates parent ids server-side. Nothing is
+  // created without human approval in the Work tab.
+  const suggestIdeas = async () => {
+    if (offline || agentRunning || !selectedAgent) return;
+    const pid = selectedProjectId || projects[0]?.id;
+    const wid = selectedWorkspaceId || workspaces[0]?.id;
+    const proj = projects.find((p) => p.id === pid);
+    const ws = workspaces.find((w) => w.id === wid);
+    const scope = proj
+      ? `for the current project “${proj.name}”`
+      : ws
+        ? `for the current workspace “${ws.name}”`
+        : "";
+    const submitted = (
+      `Propose 3-4 concrete, actionable improvement ideas${scope ? ` ${scope}` : ""} that move the work forward. ` +
+      `Return a single JSON object with two keys: \u201creply\u201d (a short human summary of the ideas) and ` +
+      `\u201cproposal_v1\u201d as an ARRAY of proposal objects, one per idea. Each proposal object has ` +
+      `work_type, action \u201ccreate\u201d, payload with a clear short \u201ctitle\u201d, and a one-line \u201creason\u201d. ` +
+      `Choose only proposal work types you are permitted to create. Use the provided workspace/project ` +
+      `for parent ids; do not invent other ids. If you have no constructive ideas, return proposal_v1 as null.`
+    ).trim();
+    const payload: any = {
+      task: submitted,
+      work_intent: true,
+    };
+    if (threadIds[selectedAgent]) payload.thread_id = threadIds[selectedAgent];
+    if (pid) payload.project_id = pid;
+    if (wid) payload.workspace_id = wid;
+    if (proj?.name) payload.project_name = proj.name;
+    if (ws?.name) payload.workspace_name = ws.name;
+    setSuggesting(true);
+    setAgentRunning(true);
+    setAgentError("");
+    setAgentResult(null);
+    setAgentGenError(null);
+    setAgentRetryTask(null);
+    setAgentRetryThread(null);
+    setWsPrompt(null);
+    setWsProposed(false);
+    setWsError("");
+    setWsBusy(false);
+    setDraftOpen(false);
+    setDraftTitle("");
+    setDraftGoal("");
+    setDraftMsg(null);
+    await performRun(submitted, payload);
+    setSuggesting(false);
+    await loadFeed();
   };
 
   // Shared POST handler. `payload.retry` tells the backend not to persist a
@@ -2551,6 +2606,19 @@ export default function App() {
                       "Run Agent"
                     )}
                   </button>
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    data-testid="suggest-ideas"
+                    onClick={suggestIdeas}
+                    disabled={offline || agentRunning || suggesting}
+                    title="Have this agent propose 3\u20134 concrete ideas as proposals you approve in Work"
+                  >
+                    {suggesting ? (
+                      <><span className="spinner" aria-hidden="true" /> Brainstorming…</>
+                    ) : (
+                      "✨ Suggest ideas (propose for my approval)"
+                    )}
+                  </button>
                   {agentRunning && (
                     <span className="task-panel__status">Generating response locally…</span>
                   )}
@@ -2750,8 +2818,17 @@ export default function App() {
                     {agentResult.proposals?.length > 0 && (
                       <div className="result__section">
                         <span className="result__heading">
-                          {agentResult.proposals.length} item(s) need your approval to be remembered.
+                          {agentResult.proposal_results?.length > 1
+                            ? `${agentResult.proposal_results.length} idea(s) filed as proposals \u2014 approve them below.`
+                            : `${agentResult.proposals.length} proposal(s) filed for your approval.`}
                         </span>
+                        <button
+                          className="btn btn--sm btn--ghost"
+                          data-testid="ideas-to-approve"
+                          onClick={() => setTab("work")}
+                        >
+                          Review in Work \u00b7 Approvals
+                        </button>
                       </div>
                     )}
                     {agentResult.tool_results?.length > 0 && (
