@@ -35,12 +35,24 @@ class RunReq(BaseModel):
     # ONLY to avoid persisting a duplicate user message for the retried task; it
     # does not repeat consequential tool calls, proposals, or execution.
     retry: bool = False
+    # Optional read-only tool calls to execute during the run (e.g. calculate,
+    # now). Only whitelisted, non-consequential tools are allowed; anything else
+    # is silently dropped so a client can never trigger proposal/execution tools
+    # through this path. Manifest + policy authorization are still enforced.
+    tool_calls: Optional[list] = None
 
 
 class PlanReq(BaseModel):
     objective: str
     project_id: Optional[str] = None
     workspace_id: Optional[str] = None
+
+
+# Read-only tools a client may request via ``tool_calls`` on a run. Anything not
+# in this set is dropped, so this path can never trigger proposal/execution or
+# other consequential tools. ``web_search``/``email``/``calendar`` have no
+# implementation and are therefore intentionally absent.
+_READONLY_TOOLS = {"calculate", "now"}
 
 
 def _identity(request: Request):
@@ -149,6 +161,23 @@ def run_agent(name: str, req: RunReq, request: Request):
                 for g in goals
             ]
 
+    # Read-only tool calls: normalize to dicts and drop anything not whitelisted
+    # (whitelist + manifest + policy + in-tool checks all gate execution).
+    requested_tools = req.tool_calls or []
+    tool_calls: list = []
+    if isinstance(requested_tools, list):
+        for call in requested_tools:
+            if not isinstance(call, dict):
+                continue
+            tool_name = str(call.get("tool") or "").strip()
+            if tool_name not in _READONLY_TOOLS:
+                continue
+            tool_calls.append({
+                "tool": tool_name,
+                "args": call.get("args") if isinstance(call.get("args"), dict) else {},
+                "approved": True,  # read-only tools need no human approval
+            })
+
     orch = build_runtime(_db, t, u)
     try:
         result = orch.dispatch(name, task, context={
@@ -161,6 +190,7 @@ def run_agent(name: str, req: RunReq, request: Request):
             "project_name": req.project_name,
             "workspace_name": req.workspace_name,
             "project_context": project_context,
+            "tool_calls": tool_calls,
         })
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))

@@ -512,6 +512,28 @@ export default function App() {
     await performRun(submitted, payload);
   };
 
+  // D4.3 read-only tool wiring: run the safe ``calculate`` tool on the typed
+  // expression. The backend whitelists + manifest/policy gates it read-only;
+  // the result is surfaced via the existing tool_results panel.
+  const runCalculate = async () => {
+    if (offline || agentRunning || !selectedAgent || !task.trim()) return;
+    const expr = task.trim();
+    const submitted = `Using the calculate tool, evaluate this expression and report the result: ${expr}`;
+    setAgentRunning(true);
+    setAgentError("");
+    setAgentResult(null);
+    setAgentGenError(null);
+    setAgentRetryTask(null);
+    setAgentRetryThread(null);
+    const payload: any = {
+      task: submitted,
+      tool_calls: [{ tool: "calculate", args: { expression: expr }, approved: true }],
+    };
+    if (threadIds[selectedAgent]) payload.thread_id = threadIds[selectedAgent];
+    setTask("");
+    await performRun(submitted, payload);
+  };
+
   const retryAgentRun = async () => {
     if (offline || agentRunning || !selectedAgent || !agentRetryTask) return;
     const submitted = agentRetryTask;
@@ -3230,6 +3252,15 @@ export default function App() {
                       "✨ Suggest ideas (propose for my approval)"
                     )}
                   </button>
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    data-testid="run-calculate"
+                    onClick={runCalculate}
+                    disabled={offline || agentRunning || suggesting || !task.trim()}
+                    title="Evaluate the typed expression with the read-only calculate tool"
+                  >
+                    🧮 Calculate
+                  </button>
                   {agentRunning && (
                     <span className="task-panel__status">Generating response locally…</span>
                   )}
@@ -3447,8 +3478,8 @@ export default function App() {
                         <span className="result__heading">Tools used</span>
                         <ul className="chips">
                           {agentResult.tool_results.map((t: any, i: number) => (
-                            <li key={i} className="chip">
-                              {t.tool}: {t.ok ? "ok" : `error: ${t.error}`}
+                            <li key={i} className="chip" data-testid={`tool-result-${i}`}>
+                              {t.tool}: {t.ok ? (t.result !== undefined ? String(t.result) : "ok") : `error: ${t.error}`}
                             </li>
                           ))}
                         </ul>

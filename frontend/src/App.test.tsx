@@ -1500,6 +1500,39 @@ describe("D4.3-A2 plan approval bridge", () => {
   });
 });
 
+describe("D4.3 read-only tool wiring", () => {
+  it("runs the calculate tool and surfaces the result", async () => {
+    const fn = makeFetch({
+      [`${API}/agents`]: () => ok({ agents: [{ name: "strategist", display_name: "Aisha", archetype: "Strategist" }] }),
+      [`${API}/agents/strategist/run`]: (url: string, opts?: any) => {
+        const body = JSON.parse(opts.body);
+        return ok({
+          agent: "strategist", reply: "Here is the result:", facts: [], proposals: [],
+          tool_results: [{ tool: "calculate", ok: true, result: 391 }],
+          thread_id: "t-1", context_messages: 1, sent: body,
+        });
+      },
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByText("Aisha"));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "17*23" } });
+    fireEvent.click(screen.getByTestId("run-calculate"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find((c: any) => c[0] === `${API}/agents/strategist/run`);
+      expect(call).toBeTruthy();
+      const body = JSON.parse(call[1].body);
+      expect(body.tool_calls).toEqual([
+        { tool: "calculate", args: { expression: "17*23" }, approved: true },
+      ]);
+    });
+    const chip = await screen.findByTestId("tool-result-0");
+    expect(chip.textContent).toContain("calculate");
+    expect(chip.textContent).toContain("391");
+  });
+});
+
 describe("D4.3-B coordinated status", () => {
   it("shows awaiting-approval, in-progress, and team workload", async () => {
     const fn = makeFetch({
