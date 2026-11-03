@@ -397,6 +397,7 @@ export default function App() {
     refresh();
     fetchAgents();
     loadConvos();
+    loadFeed(); // prefetch approvals so the Overview's coordinated status is accurate
   }, []);
 
   const fetchAgents = async () => {
@@ -1751,6 +1752,60 @@ export default function App() {
               <Stat icon="checklist" label="Assignments" value={visibleOnly(assignments).length} />
               <Stat icon="file" label="Deliverables" value={visibleOnly(deliverablesList).length} />
             </div>
+
+            {/* D4.3-B: coordinated status — one assistant view of what awaits you. */}
+            {(() => {
+              const pendingApprovals = (feed || []).filter((p) => p && p.status === "proposed").length;
+              const runningEps = (episodes || []).filter((e) => e && e.status === "running").length;
+              const doneEps = (episodes || []).filter((e) => e && e.status === "done").length;
+              const ownedBy: Record<string, number> = {};
+              (assignments || []).forEach((a: any) => {
+                ownedBy[a.agent_id || "?"] = (ownedBy[a.agent_id || "?"] || 0) + 1;
+              });
+              return (
+                <div className="coord-status" data-testid="coord-status">
+                  <div className="coord-status__head">
+                    <h3 className="section-title">Your AI team right now</h3>
+                    <span className="muted">Nothing runs automatically — every action below waits on you.</span>
+                  </div>
+                  <div className="coord-status__rows">
+                    <div className="coord-status__item">
+                      <span className="coord-status__label">Awaiting your approval</span>
+                      <span className="coord-status__value" data-testid="coord-pending">{pendingApprovals}</span>
+                      {pendingApprovals > 0 && (
+                        <button className="btn btn--sm btn--ghost" data-testid="coord-goto-work" onClick={() => { setTab("work"); loadFeed(); }}>
+                          Review proposals
+                        </button>
+                      )}
+                    </div>
+                    <div className="coord-status__item">
+                      <span className="coord-status__label">Work in progress (needs your evidence)</span>
+                      <span className="coord-status__value" data-testid="coord-running">{runningEps}</span>
+                      {runningEps > 0 && (
+                        <button className="btn btn--sm btn--ghost" onClick={() => setTab("episodes")}>
+                          View activity
+                        </button>
+                      )}
+                    </div>
+                    <div className="coord-status__item">
+                      <span className="coord-status__label">Completed episodes</span>
+                      <span className="coord-status__value" data-testid="coord-done">{doneEps}</span>
+                    </div>
+                    <div className="coord-status__item coord-status__team">
+                      <span className="coord-status__label">Team workload (assignments by owner)</span>
+                      <div className="coord-status__chips">
+                        {Object.keys(ownedBy).length === 0 && <span className="muted">No assignments yet.</span>}
+                        {Object.entries(ownedBy).map(([slug, n]) => (
+                          <span key={slug} className="chip" data-testid={`coord-owner-${slug}`}>
+                            {agentDisplay(slug)} · {n}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {visibleWorkspaces.length === 0 ? (
               <Empty text="No workspaces yet. Open the Workspaces section to create your first workspace and start organizing projects." />

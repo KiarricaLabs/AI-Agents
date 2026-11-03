@@ -1483,6 +1483,39 @@ describe("D4.3-A2 plan approval bridge", () => {
   });
 });
 
+describe("D4.3-B coordinated status", () => {
+  it("shows awaiting-approval, in-progress, and team workload", async () => {
+    const fn = makeFetch({
+      [`${API}/agents`]: () => ok({ agents: [
+        { name: "strategist", display_name: "Aisha", archetype: "Strategist" },
+        { name: "communications", display_name: "Brandon", archetype: "Communications" },
+      ] }),
+      [`${API}/work/feed`]: () => ok({ items: [
+        { id: "p1", work_type: "goal", action: "create", status: "proposed", proposed_change: "create goal", decision: null },
+      ] }),
+      [`${API}/episodes`]: () => ok({ items: [
+        { id: "e1", status: "running", title: "Onboarding" },
+        { id: "e2", status: "done", title: "Done one" },
+      ] }),
+      [`${API}/workspaces/assignments`]: () => ok({ items: [
+        { id: "a1", agent_id: "communications", goal_id: "g1" },
+        { id: "a2", agent_id: "communications", goal_id: "g1" },
+        { id: "a3", agent_id: "strategist", goal_id: "g1" },
+      ] }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    const panel = await screen.findByTestId("coord-status");
+    expect(panel).toBeInTheDocument();
+    expect(screen.getByTestId("coord-pending").textContent).toBe("1");
+    expect(screen.getByTestId("coord-running").textContent).toBe("1");
+    expect(screen.getByTestId("coord-done").textContent).toBe("1");
+    // Team workload groups assignments by owner.
+    expect(screen.getByTestId("coord-owner-communications").textContent).toContain("Brandon");
+    expect(screen.getByTestId("coord-owner-strategist").textContent).toContain("Aisha");
+  });
+});
+
 describe("Approvals & work navigation (M10 D1)", () => {
   it("shows pending vs decided proposals and limits controls to pending", async () => {
     globalThis.fetch = makeFetch({
