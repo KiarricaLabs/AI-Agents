@@ -1085,6 +1085,9 @@ body {
 }
 .subsection__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .success { margin: 0 0 8px; font-size: 13px; color: #15803d; }
+.goal-actions { margin-left: auto; display: inline-flex; }
+.list__item .goal-actions { flex: none; }
+.list__item .success { flex-basis: 100%; margin-top: 4px; }
 
 .subsection-title {
   margin: 20px 0 10px;

@@ -330,6 +330,9 @@ export default function App() {
   const [draftBusy, setDraftBusy] = useState(false);
   // Step 1: agent brainstorm mode — propose multiple parented ideas for approval.
   const [suggesting, setSuggesting] = useState(false);
+  // Step 4: human-triggered "suggest next step" anchored to an approved goal.
+  const [nextStepBusy, setNextStepBusy] = useState<string | null>(null);
+  const [nextStepResult, setNextStepResult] = useState<{ goalId: string; msg: string } | null>(null);
 
   useEffect(() => {
     try {
@@ -594,6 +597,64 @@ export default function App() {
     await performRun(submitted, payload);
     setSuggesting(false);
     await loadFeed();
+  };
+
+  // Step 4: human-triggered "suggest next step" for a goal. Runs the structured
+  // brainstorm on the selected project's grounded context (Step 3) and anchors
+  // the ask to this specific goal. Any idea becomes a proposal for approval only;
+  // nothing is auto-created or auto-approved.
+  const suggestNextStep = async (goal: any) => {
+    if (offline || nextStepBusy) return;
+    const pid = goal?.project_id;
+    const proj = projects.find((x) => x.id === pid);
+    const wid = proj?.workspace_id || selectedWorkspaceId || workspaces[0]?.id;
+    if (!pid) {
+      setNextStepResult({ goalId: goal?.id, msg: "This goal has no project to ground on." });
+      return;
+    }
+    const task = (
+      `The current project is “${proj?.name || "this project"}”. It already contains this goal: ` +
+      `“${goal.title}” (status: ${goal.status || "open"}). Propose the single most valuable and concrete ` +
+      `NEXT step to move it forward. Return a single JSON object with a “reply” (a one-line explanation) ` +
+      `and “proposal_v1” (an object or array) describing that next step as a proposal. Choose only work ` +
+      `types you are permitted to create. Use the provided project for parent ids; do not invent other ` +
+      `ids. If you have no constructive next step, return proposal_v1 as null.`
+    ).trim();
+    const payload: any = { task, work_intent: true, project_id: pid };
+    if (wid) payload.workspace_id = wid;
+    if (proj?.name) payload.project_name = proj.name;
+    const ws = workspaces.find((x) => x.id === wid);
+    if (ws?.name) payload.workspace_name = ws.name;
+    setNextStepBusy(goal.id);
+    setNextStepResult(null);
+    try {
+      const r = await fetch(`${API}/agents/strategist/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setNextStepResult({ goalId: goal.id, msg: (b as any).detail || `Could not run (${r.status}).` });
+        return;
+      }
+      const saved = ((b as any).proposal_results || [])
+        .filter((s: any) => s && s.status === "saved").length;
+      const proposed = ((b as any).proposals || []).length || saved;
+      setNextStepResult({
+        goalId: goal.id,
+        msg: proposed
+          ? `Proposed ${saved || proposed} next-step idea(s) for review — approve them in Work · Approvals.`
+          : (b as any).generation_error
+            ? "Generation unavailable right now. Try again in a moment."
+            : "The agent had no constructive next step this time.",
+      });
+      await loadFeed();
+    } catch {
+      setNextStepResult({ goalId: goal.id, msg: "Could not run. Please try again." });
+    } finally {
+      setNextStepBusy(null);
+    }
   };
 
   // Shared POST handler. `payload.retry` tells the backend not to persist a
@@ -1665,6 +1726,25 @@ export default function App() {
                             <span className="list__icon"><Icon name="target" size={16} /></span>
                             <span className="list__name">{g.title}</span>
                             <span className={`badge badge--${g.status || "open"}`}>{statusLabel(g.status)}</span>
+                            <span className="goal-actions">
+                              <button
+                                className="btn btn--ghost btn--sm"
+                                data-testid={`suggest-next-${g.id}`}
+                                disabled={offline || nextStepBusy !== null || nextStepBusy === g.id}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  suggestNextStep(g);
+                                }}
+                                title="Have Aisha propose the next step for this goal (as a proposal you approve)"
+                              >
+                                {nextStepBusy === g.id ? "Thinking…" : "✨ Suggest next step"}
+                              </button>
+                            </span>
+                            {nextStepResult && nextStepResult.goalId === g.id && (
+                              <p className="success" role="status" data-testid={`nextstep-msg-${g.id}`}>
+                                {nextStepResult.msg}
+                              </p>
+                            )}
                           </li>
                         ))}
                       </ul>

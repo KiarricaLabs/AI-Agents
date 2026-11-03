@@ -1243,6 +1243,41 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
     expect(screen.getByTestId("ideas-to-approve")).toBeInTheDocument();
   });
 
+  it("suggests a next step for a goal via the strategies run", async () => {
+    const fn = makeFetch({
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1" }] }),
+      [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", project_id: "p1", title: "Launch Goal", status: "open" }] }),
+      [`${API}/agents/strategist/run`]: (url: string, opts?: any) => {
+        const body = JSON.parse(opts.body);
+        return ok({
+          agent: "strategist", reply: "Next step proposed.", facts: [], tool_results: [],
+          proposals: ["np1"],
+          proposal_results: [{ status: "saved", proposal_id: "np1" }],
+          thread_id: "t-1", context_messages: 1, received: body,
+        });
+      },
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    // The goal list with "Suggest next step" lives in the Workspaces tab under
+    // a selected workspace -> project.
+    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(await screen.findByText("Acme"));
+    fireEvent.click(screen.getByText("Launch"));
+    fireEvent.click(await screen.findByTestId("suggest-next-g1"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find((c: any) => c[0] === `${API}/agents/strategist/run`);
+      expect(call).toBeTruthy();
+      const body = JSON.parse(call[1].body);
+      expect(body.work_intent).toBe(true);
+      expect(body.project_id).toBe("p1");
+      expect(body.task).toMatch(/NEXT step/i);
+    });
+    const msg = await screen.findByTestId("nextstep-msg-g1");
+    expect(msg.textContent || "").toMatch(/Proposed 1 next-step/);
+  });
+
   it("does not offer proposal capture when generation failed", async () => {
     const fn = makeFetch({
       ...agentsFixture(),
