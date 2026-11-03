@@ -279,6 +279,19 @@ class BaseAgent:
                 + ", ".join(_scopes)
                 + ". Do not invent other parent ids; use these when proposing."
             )
+        # Step 3: show the project's existing goals so the agent avoids duplicates
+        # and proposes complementary/next-step ideas. Display-only grounding; it
+        # never creates records or bypasses the in-tool authorization checks.
+        _pctx = ctx_b.get("project_context") or {}
+        _existing = _pctx.get("goals") or []
+        if _existing and _scopes:
+            _titles = [f"- {g.get('title', '?')} ({g.get('status') or 'open'})" for g in _existing]
+            prompt = (
+                prompt
+                + "\n\nEXISTING GOALS IN THIS PROJECT (already established; do not duplicate them):\n"
+                + "\n".join(_titles)
+                + "\nYour proposed ideas should be complementary, clearly distinct from, or a concrete next step beyond these."
+            )
         try:
             mr = self.router.complete(
                 agent_id=self.name,

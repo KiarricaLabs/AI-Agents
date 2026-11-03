@@ -123,6 +123,26 @@ def run_agent(name: str, req: RunReq, request: Request):
     # the caller to select a brand before running.
     brand_id = _resolve_brand_id(BrandService(db=_db, tenant_id=t), req.brand_id)
 
+    # Step 3: authoritative grounding on the selected project's existing goals.
+    # GoalService.list is tenant/user-scoped, so a foreign project simply yields
+    # no grounding (no cross-user leak); the values are display-only and never
+    # bypass the in-tool ownership/policy checks that actually create records.
+    project_context: dict = {}
+    if req.project_id:
+        from core.workspace import GoalService
+
+        pid = req.project_id
+        owned = _db.query(
+            "SELECT id FROM projects WHERE id=? AND tenant_id=? AND user_id=?",
+            (pid, t, u))
+        if owned:
+            goals = GoalService(db=_db, tenant_id=t).list(pid) or []
+            project_context["goals"] = [
+                {"id": g.get("id"), "title": g.get("title"),
+                 "status": g.get("status") or "open"}
+                for g in goals
+            ]
+
     orch = build_runtime(_db, t, u)
     try:
         result = orch.dispatch(name, task, context={
@@ -134,6 +154,7 @@ def run_agent(name: str, req: RunReq, request: Request):
             "workspace_id": req.workspace_id,
             "project_name": req.project_name,
             "workspace_name": req.workspace_name,
+            "project_context": project_context,
         })
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))

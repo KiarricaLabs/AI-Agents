@@ -88,6 +88,45 @@ class IdeasBase(unittest.TestCase):
         return b
 
 
+class _CaptureRouter(_FakeRouter):
+    def __init__(self):
+        super().__init__("{}")
+        self.prompt = ""
+
+    def complete(self, **kwargs):
+        self.prompt = kwargs.get("prompt", "")
+        return _FakeEnvelope(self._text)
+
+
+class TestProjectGrounding(IdeasBase):
+    def _cap_agent(self, slug="strategist"):
+        cap = _CaptureRouter()
+        a = BaseAgent(memory=None, router=cap,
+                      manifest=self.reg.get(slug), user_id="u1",
+                      tools=self.tools, policy=self.policy, brand=None)
+        a.name = slug
+        return cap, a
+
+    def test_existing_goals_injected_into_prompt(self):
+        from core.workspace import GoalService
+        gid = GoalService(self.db, TENANT, "u1").create(self.pid, "Ship onboarding funnel", 1)
+        cap, a = self._cap_agent()
+        a._ground("propose next goals", context={
+            "thread_id": "t1", "work_intent": True,
+            "project_id": self.pid, "workspace_id": self.wid,
+            "project_name": "Website Launch", "workspace_name": "Personal",
+            "project_context": {"goals": [
+                {"id": gid, "title": "Ship onboarding funnel", "status": "open"}]},
+        })
+        self.assertIn("Ship onboarding funnel", cap.prompt)
+        self.assertIn("EXISTING GOALS IN THIS PROJECT", cap.prompt)
+
+    def test_no_grounding_note_without_selected_project(self):
+        cap, a = self._cap_agent()
+        a._ground("propose", context={"thread_id": "t1", "work_intent": True})
+        self.assertNotIn("EXISTING GOALS IN THIS PROJECT", cap.prompt)
+
+
 class TestGroundedParentInjection(IdeasBase):
     def test_goal_missing_project_injected_from_context(self):
         a = self._agent("strategist", json.dumps(
