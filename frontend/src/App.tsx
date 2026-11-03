@@ -774,6 +774,13 @@ export default function App() {
     return agents.map((a) => a.name);
   };
 
+  // Work types the A2 bridge can turn into proposals via /work/proposals.
+  // goal_update / deliverable_version (and any non-create action) are shown as
+  // unsupported rather than erroring at approve time.
+  const planTypeSupported = (step: any) =>
+    (step.action || "create") === "create" &&
+    ["workspace", "project", "goal", "deliverable", "assignment"].includes(step.work_type);
+
   // Build the exact /work/proposals payload for a finalized step, or null when the
   // step cannot yet be bridged (e.g. assignment with no target goal, or an update
   // type outside A2's create-only bridge). The shared endpoint re-validates
@@ -2442,28 +2449,36 @@ export default function App() {
                             </select>
                           </label>
                           <div className="plan-step__actions">
-                            {!(s.approved || s.rejected) && (
-                              <button
-                                className="btn btn--sm btn--primary"
-                                data-testid={`plan-approve-${i}`}
-                                disabled={planFiling !== null && planFiling !== i || !!s.error}
-                                onClick={() => approvePlanStep(i)}
-                              >
-                                {planFiling === i ? "Filing…" : "Approve"}
-                              </button>
+                            {planTypeSupported(s) ? (
+                              <>
+                                {!(s.approved || s.rejected) && (
+                                  <button
+                                    className="btn btn--sm btn--primary"
+                                    data-testid={`plan-approve-${i}`}
+                                    disabled={planFiling !== null && planFiling !== i || !!s.error}
+                                    onClick={() => approvePlanStep(i)}
+                                  >
+                                    {planFiling === i ? "Filing…" : "Approve"}
+                                  </button>
+                                )}
+                                {s.approved && <span className="badge badge--approved" data-testid={`plan-done-${i}`}>Approved</span>}
+                                {!s.approved && !s.rejected && (
+                                  <button
+                                    className="btn btn--sm btn--ghost"
+                                    data-testid={`plan-reject-${i}`}
+                                    disabled={planFiling !== null}
+                                    onClick={() => rejectPlanStep(i)}
+                                  >
+                                    Reject
+                                  </button>
+                                )}
+                                {s.rejected && <span className="badge badge--rejected">Rejected</span>}
+                              </>
+                            ) : (
+                              <span className="muted" data-testid={`plan-unsupported-${i}`}>
+                                Not supported in this bridge yet.
+                              </span>
                             )}
-                            {s.approved && <span className="badge badge--approved" data-testid={`plan-done-${i}`}>Approved</span>}
-                            {!s.approved && !s.rejected && (
-                              <button
-                                className="btn btn--sm btn--ghost"
-                                data-testid={`plan-reject-${i}`}
-                                disabled={planFiling !== null}
-                                onClick={() => rejectPlanStep(i)}
-                              >
-                                Reject
-                              </button>
-                            )}
-                            {s.rejected && <span className="badge badge--rejected">Rejected</span>}
                             <button
                               className="btn btn--sm btn--ghost"
                               data-testid={`plan-remove-${i}`}

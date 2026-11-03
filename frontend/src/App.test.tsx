@@ -1481,6 +1481,23 @@ describe("D4.3-A2 plan approval bridge", () => {
       expect(body.payload.agent_id).toBe("executive_assistant");
     });
   });
+
+  it("marks unsupported step types instead of offering Approve", async () => {
+    const fn = makeFetch({
+      ...a2Fixture,
+      [`${API}/agents/plan`]: () => ok({
+        objective: "x", coordinator: "strategist", reply: "",
+        steps: [{ work_type: "goal_update", action: "update", title: "Tweak a goal", project_id: "p1" }],
+      }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openPlan();
+    // Unsupported step: no Approve control, a clear label, and no proposal POST.
+    expect(screen.getByTestId("plan-unsupported-0")).toBeInTheDocument();
+    expect(screen.queryByTestId("plan-approve-0")).not.toBeInTheDocument();
+    expect(fn.mock.calls.filter((c: any) => c[0] === `${API}/work/proposals`).length).toBe(0);
+  });
 });
 
 describe("D4.3-B coordinated status", () => {
