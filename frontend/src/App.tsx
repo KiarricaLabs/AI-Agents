@@ -7,6 +7,10 @@ import "./App.css";
 
 const API = "http://127.0.0.1:8001";
 
+// Matches an explicit workspace-creation request so the chat offers a reliable
+// "propose workspace" path (the model may not emit a valid proposal itself).
+const WS_INTENT_RE = /(?:create|make|set up|start|add|open|new|build|establish)[\s\S]{0,40}workspace/i;
+
 // Browser-only, presentation-level storage keys for the sample-data control.
 const SAMPLE_VISIBLE_KEY = "pat.sampleData.visible";
 const SAMPLE_REVEALED_KEY = "pat.sampleData.revealed";
@@ -229,6 +233,12 @@ export default function App() {
   const [agentRetryThread, setAgentRetryThread] = useState<string | null>(null);
   // Model availability is tracked separately from whole-backend `offline`.
   const [modelOnline, setModelOnline] = useState<boolean | null>(null);
+  // Reliable workspace-creation fallback: offer to propose the workspace for
+  // approval when the agent didn't emit a proposal itself.
+  const [wsPrompt, setWsPrompt] = useState<{ task: string; threadId: string | null } | null>(null);
+  const [wsProposed, setWsProposed] = useState(false);
+  const [wsError, setWsError] = useState("");
+  const [wsBusy, setWsBusy] = useState(false);
   const [threadIds, setThreadIds] = useState<Record<string, string>>({});
   const [contextCounts, setContextCounts] = useState<Record<string, number>>({});
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
@@ -270,6 +280,21 @@ export default function App() {
   const [feed, setFeed] = useState<any[]>([]);
   const [proposalBusy, setProposalBusy] = useState<string | null>(null);
   const [proposalError, setProposalError] = useState<string | null>(null);
+  // --- Deterministic proposal composer (all work types, no model dependency) ---
+  const [pfType, setPfType] = useState<string>("goal");
+  const [pfName, setPfName] = useState("");
+  const [pfPriority, setPfPriority] = useState("1");
+  const [pfWorkspace, setPfWorkspace] = useState("");
+  const [pfProject, setPfProject] = useState("");
+  const [pfGoal, setPfGoal] = useState("");
+  const [pfDeliverable, setPfDeliverable] = useState("");
+  const [pfAgent, setPfAgent] = useState("strategist");
+  // Attribution: which agent "authored" the proposal (defaults to Alex).
+  const [pfAuthor, setPfAuthor] = useState("workspace_architect");
+  const [pfStatus, setPfStatus] = useState("");
+  const [pfProgress, setPfProgress] = useState("");
+  const [pfMsg, setPfMsg] = useState("");
+  const [pfBusy, setPfBusy] = useState(false);
   const [threadLinks, setThreadLinks] = useState<any[]>([]);
   const [workThreads, setWorkThreads] = useState<Record<string, any[]>>({});
   // Work view -> originating conversation (work_type:work_id -> threads).
@@ -408,6 +433,9 @@ export default function App() {
     setAgentGenError(null); // a prior agent's stale failure panel must not linger
     setAgentRetryTask(null);
     setAgentRetryThread(null);
+    setWsPrompt(null);
+    setWsProposed(false);
+    setWsError("");
     // Choosing an agent starts a fresh context (saved conversations are untouched).
     setOpenThreadId(null);
     setTranscript([]);
@@ -422,8 +450,18 @@ export default function App() {
     setAgentGenError(null);
     setAgentRetryTask(null);
     setAgentRetryThread(null);
+    setWsPrompt(null);
+    setWsProposed(false);
+    setWsError("");
+    setWsBusy(false);
     const payload: any = { task: submitted };
     if (threadIds[selectedAgent]) payload.thread_id = threadIds[selectedAgent];
+    // D4.2/Option-A: route explicit workspace-creation requests through the
+    // structured proposal path so the agent can only ever *propose* a workspace
+    // (never create one from prose). The human approves it in the Work tab.
+    if (WS_INTENT_RE.test(submitted)) {
+      payload.work_intent = true;
+    }
     // Clear the input immediately so it is ready for the next message while
     // the agent processes; it is restored below if the submission fails.
     setTask("");
@@ -441,6 +479,43 @@ export default function App() {
     setAgentRetryTask(null);
     setAgentRetryThread(null);
     await performRun(submitted, payload);
+  };
+
+  const extractWorkspaceName = (text: string): string => {
+    const clean = text.trim().replace(/[“”"']/g, "");
+    const m1 = clean.match(/workspace\s+(?:called|named)?\s*([A-Za-z0-9][A-Za-z0-9 _\-&()]*)$/i);
+    if (m1 && m1[1].trim()) return m1[1].trim();
+    const m2 = clean.match(/(?:called|named)\s+([A-Za-z0-9][A-Za-z0-9 _\-&()]*)/i);
+    if (m2 && m2[1].trim()) return m2[1].trim();
+    return "Untitled Workspace";
+  };
+
+  // Deterministic Option-A path: create a workspace *proposal* for the user to
+  // approve (no dependency on the AI model emitting valid JSON). Only a proposal
+  // is stored; a real workspace is created only after human approval.
+  const proposeWorkspace = async () => {
+    if (!wsPrompt || wsBusy || offline) return;
+    const name = extractWorkspaceName(wsPrompt.task);
+    setWsBusy(true);
+    setWsError("");
+    try {
+      const r = await fetch(`${API}/work/proposals/workspace`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, thread_id: wsPrompt.threadId }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setWsError((b as any).detail || `Could not create the proposal (${r.status}).`);
+        return;
+      }
+      setWsProposed(true);
+      setWsPrompt(null);
+    } catch {
+      setWsError("Could not create the proposal. Please try again.");
+    } finally {
+      setWsBusy(false);
+    }
   };
 
   // Shared POST handler. `payload.retry` tells the backend not to persist a
@@ -478,6 +553,15 @@ export default function App() {
           setAgentRetryThread(body.thread_id || null);
         } else {
           setAgentGenError(null);
+        }
+        // Reliable Option-A fallback: if this was a workspace-creation request
+        // and the agent did NOT actually save a proposal, offer to propose the
+        // workspace for approval deterministically (independent of model JSON).
+        if (WS_INTENT_RE.test(submitted) && !((body.proposals as any[]) || []).length) {
+          setWsPrompt({ task: submitted, threadId: body.thread_id || null });
+          setWsProposed(false);
+        } else {
+          setWsPrompt(null);
         }
         // If this run continues the currently-open saved conversation, append the
         // new turns to its transcript instead of replacing the last reply.
@@ -524,6 +608,9 @@ export default function App() {
     setAgentGenError(null);
     setAgentRetryTask(null);
     setAgentRetryThread(null);
+    setWsPrompt(null);
+    setWsProposed(false);
+    setWsError("");
     setTask("");
     // Start fresh: stop viewing an opened transcript (saved conversations are
     // never deleted or altered by New Conversation).
@@ -710,6 +797,61 @@ export default function App() {
       setProposalError("Approve failed. Please try again.");
     } finally {
       setProposalBusy(null);
+    }
+  };
+
+  const pfBuildPayload = (): any => {
+    const name = pfName.trim();
+    switch (pfType) {
+      case "workspace": return { name };
+      case "project": return { workspace_id: pfWorkspace, name };
+      case "goal": return { project_id: pfProject, title: name, priority: Number(pfPriority) || 0 };
+      case "assignment": return { goal_id: pfGoal, agent_id: pfAgent };
+      case "deliverable": return { project_id: pfProject, title: name };
+      case "deliverable_version": return { content: name };
+      case "goal_update": {
+        const p: any = {};
+        if (name) p.title = name;
+        if (pfStatus) p.status = pfStatus;
+        if (pfProgress !== "") p.progress = Number(pfProgress);
+        return p;
+      }
+      default: return {};
+    }
+  };
+
+  // Create a deterministic proposal (no AI-model dependency). Only a proposal is
+  // stored; a human approves it in Approvals, which then creates the real record.
+  const proposeWork = async () => {
+    if (offline || pfBusy) return;
+    if (pfType === "project" && !pfWorkspace) return setPfMsg("Choose a parent workspace.");
+    if ((pfType === "goal" || pfType === "deliverable") && !pfProject) return setPfMsg("Choose a parent project.");
+    if (pfType === "assignment" && !pfGoal) return setPfMsg("Choose a target goal.");
+    if (pfType === "goal_update" && !pfGoal) return setPfMsg("Choose a target goal.");
+    if (pfType === "deliverable_version" && !pfDeliverable) return setPfMsg("Choose a target deliverable.");
+    setPfBusy(true);
+    setPfMsg("");
+    const payload = pfBuildPayload();
+    const target_id = pfType === "goal_update" ? pfGoal : pfType === "deliverable_version" ? pfDeliverable : undefined;
+    const action = pfType === "goal_update" ? "update" : "create";
+    try {
+      const r = await fetch(`${API}/work/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ work_type: pfType, action, payload, target_id, agent_id: pfAuthor }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setPfMsg((b as any).detail || `Could not create the proposal (${r.status}).`);
+        return;
+      }
+      setPfMsg("Proposal created — approve it below, then it appears in the sections.");
+      setPfName("");
+      await loadFeed();
+    } catch {
+      setPfMsg("Could not create the proposal. Please try again.");
+    } finally {
+      setPfBusy(false);
     }
   };
 
@@ -1452,6 +1594,78 @@ export default function App() {
                 <h2 className="panel__title">Work</h2>
                 <p className="panel__sub">Goals, assignments, and deliverables scoped to a project.</p>
               </div>
+            </div>
+
+            {/* Deterministic proposal composer for all work types. */}
+            <div className="subsection" data-testid="proposal-composer">
+              <div className="subsection__head">
+                <h3 className="subsection-title">New proposal</h3>
+              </div>
+              <div className="work-toolbar" style={{ gap: 8, flexWrap: "wrap" }}>
+                <select className="select" value={pfType} onChange={(e) => setPfType(e.target.value)} aria-label="Proposal type" data-testid="pf-type">
+                  <option value="workspace">Workspace</option>
+                  <option value="project">Project</option>
+                  <option value="goal">Goal</option>
+                  <option value="goal_update">Goal update</option>
+                  <option value="assignment">Assignment</option>
+                  <option value="deliverable">Deliverable</option>
+                  <option value="deliverable_version">Deliverable version</option>
+                </select>
+                <select className="select" value={pfAuthor} onChange={(e) => setPfAuthor(e.target.value)} aria-label="Attributed to" data-testid="pf-author">
+                  {agents.map((a: any) => <option key={a.name} value={a.name}>{a.display_name || a.name}</option>)}
+                </select>
+                {pfType === "project" && (
+                  <select className="select" value={pfWorkspace} onChange={(e) => setPfWorkspace(e.target.value)} aria-label="Parent workspace" data-testid="pf-workspace">
+                    <option value="">Parent workspace…</option>
+                    {visibleWorkspaces.map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                  </select>
+                )}
+                {(pfType === "goal" || pfType === "deliverable") && (
+                  <select className="select" value={pfProject} onChange={(e) => setPfProject(e.target.value)} aria-label="Parent project" data-testid="pf-project">
+                    <option value="">Parent project…</option>
+                    {projects.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                )}
+                {pfType === "deliverable_version" && (
+                  <select className="select" value={pfDeliverable} onChange={(e) => setPfDeliverable(e.target.value)} aria-label="Target deliverable" data-testid="pf-deliverable">
+                    <option value="">Target deliverable…</option>
+                    {deliverablesList.map((d: any) => <option key={d.id} value={d.id}>{d.title}</option>)}
+                  </select>
+                )}
+                {(pfType === "assignment" || pfType === "goal_update") && (
+                  <select className="select" value={pfGoal} onChange={(e) => setPfGoal(e.target.value)} aria-label="Target goal" data-testid="pf-goal">
+                    <option value="">Target goal…</option>
+                    {goals.map((g: any) => <option key={g.id} value={g.id}>{g.title}</option>)}
+                  </select>
+                )}
+                {pfType === "assignment" && (
+                  <select className="select" value={pfAgent} onChange={(e) => setPfAgent(e.target.value)} aria-label="Agent" data-testid="pf-agent">
+                    {agents.map((a: any) => <option key={a.name} value={a.name}>{a.display_name || a.name}</option>)}
+                  </select>
+                )}
+                {pfType === "goal" && (
+                  <select className="select" value={pfPriority} onChange={(e) => setPfPriority(e.target.value)} aria-label="Priority" data-testid="pf-priority">
+                    {["0","1","2","3"].map((v) => <option key={v} value={v}>Priority {v}</option>)}
+                  </select>
+                )}
+                {pfType === "goal_update" && (
+                  <>
+                    <select className="select" value={pfStatus} onChange={(e) => setPfStatus(e.target.value)} aria-label="Status" data-testid="pf-status">
+                      <option value="">(keep status)</option>
+                      <option value="in_progress">in_progress</option>
+                      <option value="done">done</option>
+                    </select>
+                    <input className="input" type="number" min="0" max="100" placeholder="Progress 0–100 (optional)" value={pfProgress} onChange={(e) => setPfProgress(e.target.value)} data-testid="pf-progress" />
+                  </>
+                )}
+                {pfType !== "assignment" && (
+                  <input className="input" placeholder={pfType === "goal_update" ? "New title (optional)…" : (pfType === "deliverable_version" ? "Content / summary…" : "Name / title…")} value={pfName} onChange={(e) => setPfName(e.target.value)} data-testid="pf-name" />
+                )}
+                <button className="btn btn--sm btn--primary" onClick={proposeWork} disabled={offline || pfBusy} data-testid="pf-submit">
+                  {pfBusy ? "Creating…" : "Propose for approval"}
+                </button>
+              </div>
+              {pfMsg && <p className="muted" data-testid="pf-msg">{pfMsg}</p>}
             </div>
 
             <div className="subsection approvals-panel" data-testid="approvals-panel">
@@ -2274,6 +2488,34 @@ export default function App() {
                       </button>
                     )}
                   </div>
+                )}
+                {wsProposed ? (
+                  <div className="warning" data-testid="ws-proposed-panel" role="alert">
+                    <span className="result__heading">Workspace proposal created</span>
+                    <p className="muted">
+                      Review and approve it in the{" "}
+                      <button className="origin-link" onClick={() => setTab("work")}>Work · Approvals</button>{" "}
+                      to actually create the workspace.
+                    </p>
+                  </div>
+                ) : (
+                  wsPrompt && (
+                    <div className="warning" data-testid="ws-propose-panel" role="alert">
+                      <span className="result__heading">Create as a proposal for approval?</span>
+                      <p className="muted">
+                        "{extractWorkspaceName(wsPrompt.task)}" — nothing is created until you approve it.
+                      </p>
+                      {wsError && <p className="muted" data-testid="ws-error">Error: {wsError}</p>}
+                      <button
+                        className="btn btn--sm btn--primary"
+                        data-testid="propose-workspace"
+                        onClick={proposeWorkspace}
+                        disabled={wsBusy || offline}
+                      >
+                        {wsBusy ? "Proposing…" : "Propose workspace for approval"}
+                      </button>
+                    </div>
+                  )
                 )}
 
                 {openThreadId && transcript.length > 0 && (

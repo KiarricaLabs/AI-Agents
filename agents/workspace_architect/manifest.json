@@ -31,14 +31,16 @@
   },
   "tools": [
     "work_propose_project",
-    "work_propose_deliverable"
+    "work_propose_deliverable",
+    "work_propose_workspace"
   ],
   "permissions": [
     "memory:read",
     "memory:propose",
     "brand:read",
     "work:propose:project",
-    "work:propose:deliverable"
+    "work:propose:deliverable",
+    "work:propose:workspace"
   ],
   "delegates_to": [
     "strategist"

@@ -139,7 +139,10 @@ class WorkProposalService:
         tid = target_id or payload.get("target_id") or None
 
         if work_type == "workspace":
-            if action == "update":
+            if action == "create":
+                if not str(payload.get("name") or "").strip():
+                    raise ValueError("workspace name is required")
+            else:  # update
                 workspace_id = self._need(tid, "target_id (workspace)")
                 self._owned_check("workspaces", workspace_id)
         elif work_type == "project":
@@ -558,7 +561,10 @@ class WorkProposalService:
                 f"SELECT id FROM {table} WHERE id=? AND tenant_id=? AND user_id=?",
                 (rid, self.tenant_id, self.user_id)))
 
-        if wt == "project" and act == "create":
+        if wt == "workspace" and act == "create":
+            if not str(payload.get("name") or "").strip():
+                raise StaleProposal("workspace name is required")
+        elif wt == "project" and act == "create":
             if not owned("workspaces", payload.get("workspace_id")):
                 raise StaleProposal("workspace no longer available or owned")
         elif wt == "goal" and act == "create":
@@ -596,6 +602,14 @@ class WorkProposalService:
         tid = p.get("target_id") or payload.get("target_id")
         uid = str(uuid.uuid4())
 
+        if wt == "workspace":
+            wid = str(uuid.uuid4())
+            c.execute(
+                "INSERT INTO workspaces (id,tenant_id,user_id,name,created_at) "
+                "VALUES (?,?,?,?,?)",
+                (wid, self.tenant_id, self.user_id,
+                 str(payload.get("name") or "").strip(), now))
+            return wid
         if wt == "project":
             pid = str(uuid.uuid4())
             c.execute(

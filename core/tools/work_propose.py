@@ -153,6 +153,7 @@ def _T(work_type: str, action: str, permission: str, description: str):
 # in the class). Only these are registered; the harness can never run an
 # arbitrary tool name.
 ALL_PROPOSE_TOOLS = [
+    _T("workspace", "create", "work:propose:workspace", "Propose a new workspace."),
     _T("project", "create", "work:propose:project", "Propose a new project inside an existing workspace."),
     _T("goal", "create", "work:propose:goal", "Propose a new goal inside an existing project."),
     _T("goal_update", "update", "work:propose:goal_update", "Propose an update to an existing goal."),
@@ -163,6 +164,7 @@ ALL_PROPOSE_TOOLS = [
 
 # Fixed mapping the harness uses: (work_type, action) -> tool name.
 WORK_TOOL_MAP: Dict[tuple, str] = {
+    ("workspace", "create"): "work_propose_workspace",
     ("project", "create"): "work_propose_project",
     ("goal", "create"): "work_propose_goal",
     ("goal_update", "update"): "work_propose_goal_update",

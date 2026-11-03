@@ -1,26 +1,30 @@
 :root {
-  --bg: #060609;
-  --bg-grad: radial-gradient(1200px 600px at 50% -120px, #1a1c2b 0%, #0c0e14 55%);
-  --surface: #141722;
-  --surface-2: #191d2b;
-  --surface-3: #1f2434;
-  --border: #242a3a;
-  --border-strong: #2f3650;
-  --text: #e8ecf4;
-  --text-muted: #9aa4ba;
-  --text-faint: #6b7488;
-  --accent: #8b7cf6;
-  --accent-strong: #a99bff;
-  --accent-soft: rgba(139, 124, 246, 0.14);
-  --green: #34d399;
-  --green-soft: rgba(52, 211, 153, 0.12);
-  --amber: #fbbf24;
-  --amber-soft: rgba(251, 191, 36, 0.12);
-  --red: #f87171;
-  --red-soft: rgba(248, 113, 113, 0.12);
+  /* Dreamy pastel-sky theme (matches the requested lavender/pink -> peach sky). */
+  --bg: #e8e3ff;
+  --bg-grad:
+    radial-gradient(85% 62% at 12% -8%, #ffe0ec 0%, rgba(255, 224, 236, 0) 58%),
+    radial-gradient(72% 60% at 100% 96%, #ffd9bb 0%, rgba(255, 217, 187, 0) 58%),
+    linear-gradient(180deg, #f6eefe 0%, #e3e6ff 52%, #d9d6fa 100%);
+  --surface: #ffffff;
+  --surface-2: #f7f3ff;
+  --surface-3: #efeafc;
+  --border: #e3dcf6;
+  --border-strong: #cfc5ee;
+  --text: #201d34;
+  --text-muted: #45405b;
+  --text-faint: #6a6480;
+  --accent: #6d5ada;
+  --accent-strong: #543fc9;
+  --accent-soft: rgba(109, 90, 218, 0.13);
+  --green: #0e9668;
+  --green-soft: rgba(14, 150, 104, 0.12);
+  --amber: #b26a00;
+  --amber-soft: rgba(178, 106, 0, 0.12);
+  --red: #d43c3c;
+  --red-soft: rgba(212, 60, 60, 0.12);
   --radius: 10px;
   --radius-lg: 14px;
-  --shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  --shadow: 0 16px 40px rgba(74, 62, 130, 0.18);
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -503,7 +507,7 @@ body {
   margin-top: 8px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  background: #0d0f16;
+  background: var(--surface-2);
   overflow: hidden;
 }
 
@@ -779,7 +783,7 @@ body {
   margin-top: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: #0d0f16;
+  background: var(--surface);
   overflow: hidden;
 }
 
@@ -1484,7 +1488,7 @@ body {
 }
 .chat-bubble--user .chat-bubble__body {
   background: var(--accent-strong);
-  color: #10131c;
+  color: #fff;
 }
 
 /* --- M10 Phase D1: approvals panel + bidirectional navigation (additive) --- */

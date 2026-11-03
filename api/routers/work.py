@@ -7,6 +7,8 @@ request bodies or headers. Human-only actions require ``request.state.role`` in
 ``{"user","admin"}`` (fail closed). Approval/rejection never returns internal
 exception details or leaks the existence of another user's proposal.
 """
+import hashlib
+import json
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -185,6 +187,97 @@ def links_to_thread(work_type: str, work_id: str, request: Request):
 
 class RejectBody(BaseModel):
     reason: Optional[str] = None
+
+
+class WorkspaceProposalReq(BaseModel):
+    name: str
+    thread_id: Optional[str] = None
+
+
+class ProposeWorkReq(BaseModel):
+    """Deterministic proposal creation for any supported work type.
+
+    Only a proposal row is stored; a human must still approve it before any real
+    workspace record is created. This is the reliable path for all proposal
+    types and does not depend on AI-model JSON output.
+    """
+    work_type: str
+    action: str = "create"
+    payload: dict = {}
+    target_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    agent_id: Optional[str] = None
+
+
+@router.post("/proposals")
+def create_proposal(req: ProposeWorkReq, request: Request):
+    t, u = _identity(request)
+    _require_human(request)
+    from core.tools.work_propose import _reject_secret
+
+    work_type = (req.work_type or "").strip()
+    action = (req.action or "create").strip()
+    agent = (req.agent_id or "workspace_architect").strip().lower()
+    if agent not in AGENT_SLUGS:
+        raise HTTPException(status_code=422, detail="unknown agent")
+    payload = dict(req.payload or {})
+    try:
+        _reject_secret(payload, "payload")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # goal_update: capture the goal's version server-side so approval's
+    # optimistic version guard is enforced (never trust a client-supplied value).
+    if work_type == "goal_update" and action == "update":
+        gid = req.target_id or payload.get("target_id")
+        if not gid:
+            raise HTTPException(status_code=422, detail="target goal is required")
+        rows = _db.query(
+            "SELECT version FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+            (gid, t, u))
+        if not rows:
+            raise HTTPException(status_code=404, detail="goal not found")
+        payload["_base_version"] = int(rows[0]["version"])
+
+    key = hashlib.sha256(
+        f"{t}|{u}|{work_type}|{action}|{json.dumps(payload, sort_keys=True, default=str)}".encode("utf-8")
+    ).hexdigest()
+    try:
+        r = _svc(t, u).propose(
+            work_type, agent, action=action, payload=payload,
+            thread_id=req.thread_id, target_id=req.target_id,
+            idempotency_key=key)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"proposal_id": r["proposal_id"], "status": r["status"],
+            "work_type": work_type, "action": action,
+            "reused": bool(r.get("reused", False))}
+
+
+@router.post("/proposals/workspace")
+def propose_workspace(req: WorkspaceProposalReq, request: Request):
+    """Deterministically create a *proposed* workspace (Option A).
+
+    Only a proposal row is stored; a human must still approve it in the
+    Work/Approvals feed before any real workspace is created. This does not
+    depend on AI-model JSON output, so it is a reliable creation path while
+    keeping workspace creation behind human approval. Idempotent on the name.
+    """
+    t, u = _identity(request)
+    _require_human(request)
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="workspace name is required")
+    key = f"manual-ws:{t}:{u}:{name.lower()}"
+    try:
+        r = _svc(t, u).propose(
+            "workspace", "workspace_architect", payload={"name": name},
+            thread_id=req.thread_id, idempotency_key=key)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"proposal_id": r["proposal_id"], "status": r["status"],
+            "work_type": "workspace", "name": name,
+            "reused": bool(r.get("reused", False))}
 
 
 @router.post("/proposals/{proposal_id}/approve")

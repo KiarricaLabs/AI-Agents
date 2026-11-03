@@ -431,6 +431,34 @@ class TestProposalOnlyCreatesNothing(PhaseCBase):
         self.assertEqual(self._count("episodes"), 0)
 
 
+class TestWorkspaceProposal(PhaseCBase):
+    """M10 Option-A: workspace:create goes through the same proposal + approval."""
+    def test_propose_does_not_create_workspace(self):
+        pid = self._propose("workspace", payload={"name": "New WS"})
+        self.assertEqual(self.svc.get(pid)["status"], "proposed")
+        self.assertEqual(self._count("workspaces"), 1)  # only the setUp workspace
+
+    def test_missing_name_rejected_at_propose(self):
+        # a workspace proposal must carry a name (rejected before persisting)
+        with self.assertRaises(ValueError):
+            self._propose("workspace", payload={})
+
+    def test_approve_creates_workspace(self):
+        pid = self._propose("workspace", payload={"name": "Approved WS"})
+        r = self.svc.approve(pid, USER)
+        self.assertEqual(r["status"], "approved")
+        row = self.db.query("SELECT * FROM workspaces WHERE id=?", (r["result_id"],))[0]
+        self.assertEqual(row["name"], "Approved WS")
+        self.assertEqual(self._count("workspaces"), 2)
+
+    def test_double_approve_idempotent(self):
+        pid = self._propose("workspace", payload={"name": "Idem WS"})
+        r1 = self.svc.approve(pid, USER)
+        r2 = self.svc.approve(pid, USER)
+        self.assertEqual(r2["work_id"], r1["work_id"])
+        self.assertEqual(self._count("workspaces"), 2)
+
+
 class TestApprovalEndpoints(unittest.TestCase):
     TENANT = "phasec"
     USER = "u1"
@@ -525,6 +553,34 @@ class TestApprovalEndpoints(unittest.TestCase):
         c = TestClient(app)
         r = c.post("/work/proposals/does-not-exist/approve", headers=self._headers())
         self.assertEqual(r.status_code, 404)
+
+    def test_propose_workspace_endpoint_then_approve(self):
+        # Deterministic Option-A path: POST /work/proposals/workspace creates only
+        # a *proposal*; a real workspace is created only after human approval.
+        db, ws, pr, gl, svc = self._seed()
+        c = TestClient(app)
+        r1 = c.post("/work/proposals/workspace", headers=self._headers(),
+                    json={"name": "Button WS"})
+        self.assertEqual(r1.status_code, 200)
+        body = r1.json()
+        self.assertEqual(body["status"], "proposed")
+        pid = body["proposal_id"]
+        # at propose time no workspace with that name is created yet
+        self.assertEqual(
+            db.query("SELECT COUNT(*) AS n FROM workspaces WHERE name=?", ("Button WS",))[0]["n"], 0)
+        # idempotent on the same name
+        r2 = c.post("/work/proposals/workspace", headers=self._headers(),
+                    json={"name": "Button WS"})
+        self.assertEqual(r2.json()["proposal_id"], pid)
+        # approve -> workspace created
+        ra = c.post(f"/work/proposals/{pid}/approve", headers=self._headers())
+        self.assertEqual(ra.status_code, 200)
+        rid = ra.json()["result_id"]
+        row = db.query("SELECT name FROM workspaces WHERE id=?", (rid,))[0]
+        self.assertEqual(row["name"], "Button WS")
+        # blank name rejected
+        rb = c.post("/work/proposals/workspace", headers=self._headers(), json={"name": "   "})
+        self.assertEqual(rb.status_code, 422)
 
 
 if __name__ == "__main__":

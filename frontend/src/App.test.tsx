@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import App from "./App";
@@ -31,10 +31,14 @@ function makeFetch(overrides: Record<string, Route> = {}) {
 // the fixtures below, waiting for the async workspace/project data to arrive.
 async function openWorkProject() {
   fireEvent.click(screen.getByRole("button", { name: "Work" }));
-  await screen.findByRole("option", { name: "Acme" });
-  fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: "w1" } });
-  await screen.findByRole("option", { name: "Launch" });
-  fireEvent.change(screen.getByLabelText("Project"), { target: { value: "p1" } });
+  // Scope these to the view's workspace/project selectors so the deterministic
+  // "New proposal" composer (which also lists parents) does not create ambiguity.
+  const wsSelect = await screen.findByLabelText("Workspace");
+  await within(wsSelect).findByRole("option", { name: "Acme" });
+  fireEvent.change(wsSelect, { target: { value: "w1" } });
+  const prSelect = screen.getByLabelText("Project");
+  await within(prSelect).findByRole("option", { name: "Launch" });
+  fireEvent.change(prSelect, { target: { value: "p1" } });
 }
 
 beforeEach(() => {
@@ -975,7 +979,8 @@ describe("UI Cleanup & sample-data handling", () => {
     render(<App />);
     await openWorkProject();
     fireEvent.click(screen.getByTestId("assignment-a1"));
-    expect(await screen.findByText("Assignment")).toBeInTheDocument();
+    // Target the detail panel's heading (the composer also lists "Assignment").
+    expect(await screen.findByRole("heading", { name: "Assignment" })).toBeInTheDocument();
     expect(screen.getAllByText("Ship v1").length).toBeGreaterThanOrEqual(1);
   });
 
