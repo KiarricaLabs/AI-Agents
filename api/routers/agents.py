@@ -218,6 +218,8 @@ def coordinated_plan(req: PlanReq, request: Request):
     configurable default, not a hard-coded permanent route.
     """
     t, u = _identity(request)
+    from api.routers.work import _require_human
+    _require_human(request)
     from core.runtime import build_runtime, load_registry
 
     objective = (req.objective or "").strip()
