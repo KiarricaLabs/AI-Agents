@@ -1525,3 +1525,55 @@ body {
 .exec-history .list { width: 100%; }
 .exec-apply { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .badge--approved { background: #dcfce7; color: #15803d; }
+/* --- Phase 1: agent idea-draft to proposal capture --- */
+.draft-panel { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.draft__toggle, .draft__goto {
+  border: 1px solid var(--border, #cbd5e1);
+  background: transparent;
+  color: var(--accent, #2563eb);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.draft__toggle:hover, .draft__goto:hover { background: rgba(37, 99, 235, 0.08); }
+.draft__form { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.draft__row { display: flex; gap: 8px; flex-wrap: wrap; }
+.draft__row select, .draft__row input {
+  flex: 1 1 200px;
+  padding: 7px 9px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text, #0f172a);
+  background: var(--card, #fff);
+}
+.draft__ctx { margin: 0; font-size: 12px; color: var(--muted, #64748b); }
+.draft__msg { margin: 0; font-size: 13px; color: #2563eb; }
+.draft__actions { display: flex; align-items: center; gap: 8px; }
+.draft__cancel {
+  border: none; background: transparent; color: var(--muted, #64748b);
+  font-size: 13px; cursor: pointer; padding: 6px 10px;
+}
+.draft-composer {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px dashed var(--border, #cbd5e1);
+  border-radius: 10px;
+  background: rgba(37, 99, 235, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.draft-composer__head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.draft-composer__title { font-size: 13px; font-weight: 600; color: var(--text, #0f172a); }
+.draft-composer__hint { font-size: 12px; color: var(--muted, #64748b); }
+.draft-composer .draft__row select, .draft-composer .draft__row input {
+  flex: 1 1 220px;
+  padding: 7px 9px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text, #0f172a);
+  background: var(--card, #fff);
+}

@@ -233,6 +233,10 @@ export default function App() {
   const [agentRetryThread, setAgentRetryThread] = useState<string | null>(null);
   // Model availability is tracked separately from whole-backend `offline`.
   const [modelOnline, setModelOnline] = useState<boolean | null>(null);
+  // Inline names for Workspaces-page Create buttons.
+  const [wsProjName, setWsProjName] = useState("");
+  const [wsGoalName, setWsGoalName] = useState("");
+  const [wsDelivName, setWsDelivName] = useState("");
   // Reliable workspace-creation fallback: offer to propose the workspace for
   // approval when the agent didn't emit a proposal itself.
   const [wsPrompt, setWsPrompt] = useState<{ task: string; threadId: string | null } | null>(null);
@@ -313,6 +317,13 @@ export default function App() {
   const [applyingEid, setApplyingEid] = useState<string | null>(null);
   // --- M10 Phase D4.1: approved-assignment execution ---
   const [confirmExec, setConfirmExec] = useState<string | null>(null);
+  // --- Phase 1: turn an agent's idea draft into an approvable proposal ---
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [draftType, setDraftType] = useState("goal");
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftGoal, setDraftGoal] = useState("");
+  const [draftMsg, setDraftMsg] = useState<string | null>(null);
+  const [draftBusy, setDraftBusy] = useState(false);
 
   useEffect(() => {
     try {
@@ -436,6 +447,10 @@ export default function App() {
     setWsPrompt(null);
     setWsProposed(false);
     setWsError("");
+    setDraftOpen(false);
+    setDraftTitle("");
+    setDraftGoal("");
+    setDraftMsg(null);
     // Choosing an agent starts a fresh context (saved conversations are untouched).
     setOpenThreadId(null);
     setTranscript([]);
@@ -454,6 +469,10 @@ export default function App() {
     setWsProposed(false);
     setWsError("");
     setWsBusy(false);
+    setDraftOpen(false);
+    setDraftTitle("");
+    setDraftGoal("");
+    setDraftMsg(null);
     const payload: any = { task: submitted };
     if (threadIds[selectedAgent]) payload.thread_id = threadIds[selectedAgent];
     // D4.2/Option-A: route explicit workspace-creation requests through the
@@ -654,32 +673,37 @@ export default function App() {
   const createProject = async () => {
     const wid = selectedWorkspaceId || workspaces[0]?.id;
     if (offline || !wid) return;
+    const title = wsProjName.trim() || "New Project";
     await fetch(`${API}/workspaces/projects`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workspace_id: wid, name: "New Project" }),
+      body: JSON.stringify({ workspace_id: wid, name: title }),
     });
+    setWsProjName("");
     refresh();
   };
 
   const createGoal = async () => {
     const pid = selectedProjectId || projects[0]?.id;
     if (offline || !pid) return;
+    const title = wsGoalName.trim() || "New Goal";
     await fetch(`${API}/workspaces/goals`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: pid, title: "New Goal", priority: 1 }),
+      body: JSON.stringify({ project_id: pid, title, priority: 1 }),
     });
+    setWsGoalName("");
     refresh();
   };
 
   const createDeliverable = async () => {
     const pid = selectedProjectId || projects[0]?.id;
     if (offline || !pid) return;
+    const title = wsDelivName.trim() || "New Deliverable";
     const r = await fetch(`${API}/workspaces/deliverables`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: pid, title: "New Deliverable" }),
+      body: JSON.stringify({ project_id: pid, title }),
     });
     const d = await r.json();
     if (d.id) {
@@ -689,6 +713,7 @@ export default function App() {
         body: JSON.stringify({ content: "v1 content" }),
       });
     }
+    setWsDelivName("");
     refresh();
   };
 
@@ -852,6 +877,59 @@ export default function App() {
       setPfMsg("Could not create the proposal. Please try again.");
     } finally {
       setPfBusy(false);
+    }
+  };
+
+  // Phase 1: promote an agent's idea draft (free text) into a real, approvable
+  // proposal via the deterministic workflow endpoint. Only a proposal is stored;
+  // a human still approves it in the Work tab before any real record is created.
+  const chatPropose = async () => {
+    if (offline || draftBusy) return;
+    const title = (draftTitle || "").trim();
+    if (!title) return setDraftMsg("Give this idea a short title first.");
+    const wtype = draftType;
+    const pid = selectedProjectId || projects[0]?.id;
+    const wid = selectedWorkspaceId || workspaces[0]?.id;
+    const payload: any = {};
+    if (wtype === "project") {
+      if (!wid) return setDraftMsg("Choose a parent workspace first (Workspace page).");
+      payload.workspace_id = wid;
+      payload.name = title;
+    } else {
+      if (!pid) return setDraftMsg("Choose a parent project first (Work page).");
+      payload.project_id = pid;
+      if (wtype === "goal" || wtype === "deliverable") {
+        payload.title = title;
+      } else if (wtype === "assignment") {
+        const gid = draftGoal || goalsIn(pid)[0]?.id;
+        if (!gid) return setDraftMsg("This project has no goal to attach the assignment to.");
+        payload.goal_id = gid;
+        payload.agent_id = selectedAgent || "workspace_architect";
+      }
+    }
+    setDraftBusy(true);
+    setDraftMsg(null);
+    try {
+      const r = await fetch(`${API}/work/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ work_type: wtype, action: "create", payload, agent_id: selectedAgent || "workspace_architect" }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setDraftMsg((b as any)?.detail || `Could not create the proposal (${r.status}).`);
+        return;
+      }
+      setDraftMsg("Proposal created \u2014 approve it below and it appears in the workspace.");
+      setDraftOpen(false);
+      setDraftTitle("");
+      setDraftGoal("");
+      setAgentResult((prev: any) => (prev ? { ...prev, draftProposed: true } : prev));
+      await loadFeed();
+    } catch {
+      setDraftMsg("Could not create the proposal. Please try again.");
+    } finally {
+      setDraftBusy(false);
     }
   };
 
@@ -1433,6 +1511,14 @@ export default function App() {
               <div className="subsection">
                 <div className="subsection__head">
                   <h3 className="section-title">Projects</h3>
+                  <input
+                    className="input"
+                    placeholder="Project name…"
+                    style={{ width: 180 }}
+                    value={wsProjName}
+                    onChange={(e) => setWsProjName(e.target.value)}
+                    data-testid="ws-project-name"
+                  />
                   <button className="btn btn--primary" onClick={createProject} disabled={offline}>
                     Create Project
                   </button>
@@ -1755,6 +1841,14 @@ export default function App() {
                 <div className="subsection">
                   <div className="subsection__head">
                     <h3 className="subsection-title">Goals</h3>
+                    <input
+                      className="input"
+                      placeholder="Goal name…"
+                      style={{ width: 180 }}
+                      value={wsGoalName}
+                      onChange={(e) => setWsGoalName(e.target.value)}
+                      data-testid="ws-goal-name"
+                    />
                     <button className="btn btn--primary" onClick={createGoal} disabled={offline}>
                       Create Goal
                     </button>
@@ -1940,6 +2034,14 @@ export default function App() {
                 <div className="subsection">
                   <div className="subsection__head">
                     <h3 className="subsection-title">Deliverables</h3>
+                    <input
+                      className="input"
+                      placeholder="Deliverable name…"
+                      style={{ width: 180 }}
+                      value={wsDelivName}
+                      onChange={(e) => setWsDelivName(e.target.value)}
+                      data-testid="ws-deliverable-name"
+                    />
                     <button className="btn btn--primary" onClick={createDeliverable} disabled={offline}>
                       Create Deliverable
                     </button>
@@ -2454,6 +2556,72 @@ export default function App() {
                   )}
                 </div>
 
+                {/* Phase 1 (safest path): deterministic idea-to-proposal composer.
+                    Always available — works even if the model is slow or offline,
+                    because it never depends on a generated reply. Still files only
+                    a proposal; a human must approve it in Work before any record. */}
+                <div className="draft-composer" data-testid="draft-composer">
+                  <div className="draft-composer__head">
+                    <span className="draft-composer__title">Turn an idea into a proposal</span>
+                    <span className="draft-composer__hint">Deterministic{" \u2014 "}works even if the model is slow</span>
+                  </div>
+                  <div className="draft__row">
+                    <select
+                      value={draftType}
+                      data-testid="draft-composer-type"
+                      onChange={(e) => {
+                        setDraftType(e.target.value);
+                        setDraftMsg(null);
+                        setDraftGoal("");
+                      }}
+                    >
+                      <option value="goal">Goal</option>
+                      <option value="project">Project</option>
+                      <option value="deliverable">Deliverable</option>
+                      <option value="assignment">Assignment</option>
+                    </select>
+                    <input
+                      placeholder="Idea (e.g. \u201cImprove onboarding with a guided welcome flow\u201d)"
+                      data-testid="draft-composer-title"
+                      value={draftTitle}
+                      onChange={(e) => {
+                        setDraftTitle(e.target.value);
+                        setDraftMsg(null);
+                      }}
+                    />
+                  </div>
+                  {draftType === "assignment" && (() => {
+                    const goalsForParent = goalsIn(selectedProjectId || projects[0]?.id || "");
+                    return goalsForParent.length > 0 ? (
+                      <div className="draft__row">
+                        <select value={draftGoal} data-testid="draft-composer-goal" onChange={(e) => setDraftGoal(e.target.value)}>
+                          <option value="">Target goal{"…"}</option>
+                          {goalsForParent.map((g: any) => (
+                            <option key={g.id} value={g.id}>{g.title}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : null;
+                  })()}
+                  <p className="draft__ctx">
+                    Agent: {humanize(selectedAgent || "workspace_architect")}{" · "}
+                    {draftType === "project"
+                      ? `Parent workspace: ${workspaceName(selectedWorkspaceId || workspaces[0]?.id || "")}`
+                      : `Parent project: ${projects.find((p) => p.id === (selectedProjectId || projects[0]?.id))?.name || "None"}`}
+                  </p>
+                  {draftMsg && <p className="draft__msg" role="status">{draftMsg}</p>}
+                  <div className="draft__actions">
+                    <button
+                      className="btn btn--primary btn--sm"
+                      data-testid="draft-composer-submit"
+                      disabled={draftBusy || offline || !draftTitle.trim()}
+                      onClick={chatPropose}
+                    >
+                      {draftBusy ? "Creating…" : "Create proposal"}
+                    </button>
+                  </div>
+                </div>
+
                 {modelOnline === false && !offline && (
                   <div className="warning" data-testid="model-offline-banner" role="alert">
                     The language model is currently unavailable, so replies may not generate until it recovers.
@@ -2598,6 +2766,89 @@ export default function App() {
                         </ul>
                       </div>
                     )}
+                    {!agentGenError && (agentResult.draftProposed ? (
+                      <div className="result__section draft-panel">
+                        <span className="result__heading">Proposal created</span>
+                        <button className="draft__goto" data-testid="draft-goto" onClick={() => setTab("work")}>
+                          Approve it in Work {"·"} Approvals
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="result__section draft-panel">
+                        {!draftOpen ? (
+                          <button
+                            className="draft__toggle"
+                            data-testid="draft-open"
+                            onClick={() => {
+                              setDraftMsg(null);
+                              setDraftTitle(
+                                agentResult.reply
+                                  ? agentResult.reply.replace(/[\r\n]+/g, " ").trim().slice(0, 160)
+                                  : ""
+                              );
+                              setDraftOpen(true);
+                            }}
+                          >
+                            + Make this a proposal
+                          </button>
+                        ) : (
+                          <div className="draft__form" data-testid="draft-form">
+                            <span className="result__heading">Turn this idea into a proposal</span>
+                            <div className="draft__row">
+                              <select
+                                value={draftType}
+                                onChange={(e) => {
+                                  setDraftType(e.target.value);
+                                  setDraftMsg(null);
+                                  setDraftGoal("");
+                                }}
+                              >
+                                <option value="goal">Goal</option>
+                                <option value="project">Project</option>
+                                <option value="deliverable">Deliverable</option>
+                                <option value="assignment">Assignment</option>
+                              </select>
+                              <input
+                                placeholder="Short title for this idea"
+                                value={draftTitle}
+                                onChange={(e) => {
+                                  setDraftTitle(e.target.value);
+                                  setDraftMsg(null);
+                                }}
+                              />
+                            </div>
+                            {draftType === "assignment" && (() => {
+                              const goalsForParent = goalsIn(selectedProjectId || projects[0]?.id || "");
+                              return goalsForParent.length > 0 ? (
+                                <div className="draft__row">
+                                  <select value={draftGoal} onChange={(e) => setDraftGoal(e.target.value)}>
+                                    <option value="">Target goal{"…"}</option>
+                                    {goalsForParent.map((g: any) => (
+                                      <option key={g.id} value={g.id}>{g.title}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              ) : null;
+                            })()}
+                            <p className="draft__ctx">
+                              Agent: {humanize(selectedAgent || "workspace_architect")}{" \u00b7 "}
+                              {draftType === "project"
+                                ? `Parent workspace: ${workspaceName(selectedWorkspaceId || workspaces[0]?.id || "")}`
+                                : `Parent project: ${projects.find((p) => p.id === (selectedProjectId || projects[0]?.id))?.name || "None"}`}
+                            </p>
+                            {draftMsg && <p className="draft__msg" role="status">{draftMsg}</p>}
+                            <div className="draft__actions">
+                              <button className="btn" data-testid="draft-submit" disabled={draftBusy} onClick={chatPropose}>
+                                {draftBusy ? "Creating\u2026" : "Create proposal"}
+                              </button>
+                              <button className="draft__cancel" data-testid="draft-cancel" onClick={() => setDraftOpen(false)}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

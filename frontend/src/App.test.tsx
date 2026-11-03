@@ -1132,6 +1132,100 @@ describe("Conversation Browser", () => {
   });
 });
 
+describe("Phase 1: agent idea-draft to proposal capture", () => {
+  function agentsFixture() {
+    return {
+      [`${API}/agents`]: () =>
+        ok({ agents: [{ name: "strategist", display_name: "Aisha", archetype: "The Visionary", responsibilities: "Planning" }] }),
+      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+      [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1" }] }),
+      [`${API}/agents/strategist/run`]: () =>
+        ok({
+          agent: "strategist", reply: "Here is a goal idea: improve onboarding.", location: "local:ollama:llama3.1",
+          facts: [], proposals: [], tool_results: [], thread_id: "t-1", context_messages: 1,
+        }),
+    };
+  }
+
+  it("lets the user promote an agent idea into an approvable goal proposal", async () => {
+    const fn = makeFetch(agentsFixture());
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByText("Aisha"));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "draft a goal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    await screen.findByText(/improve onboarding/);
+    fireEvent.click(screen.getByTestId("draft-open"));
+    fireEvent.change(screen.getByPlaceholderText("Short title for this idea"), { target: { value: "Improve onboarding" } });
+    fireEvent.click(screen.getByTestId("draft-submit"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/work/proposals`,
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            work_type: "goal", action: "create",
+            payload: { project_id: "p1", title: "Improve onboarding" },
+            agent_id: "strategist",
+          }),
+        })
+      );
+    });
+    expect(await screen.findByTestId("draft-goto")).toBeInTheDocument();
+  });
+
+  it("creates a proposal from the always-available composer without needing a reply", async () => {
+    // No run route at all: the composer must work deterministically without a
+    // generated reply (the safest path when the model is slow or offline).
+    const fn = makeFetch(agentsFixture());
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByText("Aisha"));
+    await screen.findByTestId("draft-composer");
+    fireEvent.change(screen.getByTestId("draft-composer-type"), { target: { value: "project" } });
+    fireEvent.change(screen.getByTestId("draft-composer-title"), {
+      target: { value: "Launch new community portal" },
+    });
+    fireEvent.click(screen.getByTestId("draft-composer-submit"));
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        `${API}/work/proposals`,
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            work_type: "project", action: "create",
+            payload: { workspace_id: "w1", name: "Launch new community portal" },
+            agent_id: "strategist",
+          }),
+        })
+      );
+    });
+  });
+
+  it("does not offer proposal capture when generation failed", async () => {
+    const fn = makeFetch({
+      ...agentsFixture(),
+      [`${API}/agents/strategist/run`]: () =>
+        ok({
+          agent: "strategist", reply: "",
+          location: "local:ollama:llama3.1", facts: [], proposals: [], tool_results: [],
+          thread_id: "t-1", context_messages: 1,
+          generation_error: { code: "model_empty" },
+        }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(await screen.findByText("Aisha"));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "draft a goal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
+    await screen.findByTestId("gen-failure-panel");
+    expect(screen.queryByTestId("draft-open")).not.toBeInTheDocument();
+  });
+});
+
 describe("Approvals & work navigation (M10 D1)", () => {
   it("shows pending vs decided proposals and limits controls to pending", async () => {
     globalThis.fetch = makeFetch({
