@@ -1,6 +1,6 @@
 """Agent execution API: list agents and run them against the local runtime."""
 import uuid
-from typing import Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -35,6 +35,12 @@ class RunReq(BaseModel):
     # ONLY to avoid persisting a duplicate user message for the retried task; it
     # does not repeat consequential tool calls, proposals, or execution.
     retry: bool = False
+
+
+class PlanReq(BaseModel):
+    objective: str
+    project_id: Optional[str] = None
+    workspace_id: Optional[str] = None
 
 
 def _identity(request: Request):
@@ -136,7 +142,7 @@ def run_agent(name: str, req: RunReq, request: Request):
             "SELECT id FROM projects WHERE id=? AND tenant_id=? AND user_id=?",
             (pid, t, u))
         if owned:
-            goals = GoalService(db=_db, tenant_id=t).list(pid) or []
+            goals = GoalService(db=_db, tenant_id=t, user_id=u).list(pid) or []
             project_context["goals"] = [
                 {"id": g.get("id"), "title": g.get("title"),
                  "status": g.get("status") or "open"}
@@ -199,3 +205,73 @@ def run_agent(name: str, req: RunReq, request: Request):
     result["context_messages"] = len(context_history)
     result["brand_id"] = brand_id
     return result
+
+
+@router.post("/plan")
+def coordinated_plan(req: PlanReq, request: Request):
+    """Preview-only coordinated plan (D4.3-A1).
+
+    Takes an ordinary-language objective, grounds it on the caller-selected
+    workspace/project, and returns a reviewable plan of steps with capability-
+    derived owner suggestions. Creates NO records, NO proposals, and no
+    execution. The coordinating agent defaults to strategist (Aisha) but is a
+    configurable default, not a hard-coded permanent route.
+    """
+    t, u = _identity(request)
+    from core.runtime import build_runtime, load_registry
+
+    objective = (req.objective or "").strip()
+    if not objective:
+        raise HTTPException(status_code=422, detail="objective must not be empty")
+
+    # Resolve and OWNERSHIP-CHECK the selected parent context (never trust a
+    # client-supplied parent without a tenant/user scoped lookup).
+    pid = req.project_id or None
+    wid = req.workspace_id or None
+    project_name = None
+    workspace_name = None
+    project_context: Dict = {}
+    if pid:
+        proj = _db.query(
+            "SELECT id, name, workspace_id FROM projects WHERE id=? AND tenant_id=? AND user_id=?",
+            (pid, t, u))
+        if not proj:
+            raise HTTPException(status_code=404, detail="project not found")
+        project_name = proj[0]["name"]
+        wid = wid or proj[0]["workspace_id"]
+        from core.workspace import GoalService
+        goals = GoalService(db=_db, tenant_id=t, user_id=u).list(pid) or []
+        project_context["goals"] = [
+            {"id": g.get("id"), "title": g.get("title"), "status": g.get("status") or "open"}
+            for g in goals
+        ]
+    if wid:
+        ws = _db.query(
+            "SELECT id, name FROM workspaces WHERE id=? AND tenant_id=? AND user_id=?",
+            (wid, t, u))
+        if not ws:
+            raise HTTPException(status_code=404, detail="workspace not found")
+        workspace_name = ws[0]["name"]
+
+    orch = build_runtime(_db, t, u)
+    context: Dict = {
+        "thread_id": str(uuid.uuid4()),
+        "work_intent": True,
+        "project_id": pid,
+        "workspace_id": wid,
+        "project_name": project_name,
+        "workspace_name": workspace_name,
+        "project_context": project_context,
+    }
+    from core.plan import PlanService
+    try:
+        plan = PlanService(orch, t, u).generate(objective, context)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="plan generation failed")
+    return plan

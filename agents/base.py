@@ -57,6 +57,21 @@ PROPOSAL_CONTRACT = (
     "Ordinary conversation must have 'proposal_v1' set to null."
 )
 
+# Instruction shown in unified-planning mode (D4.3-A1). The coordinating agent
+# returns a structured, reviewable plan of steps; NO proposal/execution tool is
+# ever invoked from this preview path and nothing is persisted.
+PLAN_CONTRACT = (
+    "PLANNING MODE (only when coordinating an objective for the personal AI team). "
+    "Return a single JSON object with exactly two keys: 'reply' (your normal, short "
+    "human-facing summary) and 'steps' (an array of step objects). "
+    "Each step object has: 'work_type' (one of workspace, project, goal, goal_update, "
+    "assignment, deliverable, deliverable_version), 'action' (create or update), "
+    "'title' (a short actionable title), and 'reason' (one line on why this step matters). "
+    "Do not invent parent ids; use only the selected workspace/project context supplied. "
+    "If you have no constructive steps, return 'steps' as an empty array. "
+    "Never claim work was approved, created, or completed."
+)
+
 
 class BaseAgent:
     name: str = "base"
@@ -361,6 +376,100 @@ class BaseAgent:
             "location": location,
             "proposal_ids": proposal_ids,
             "proposal_results": proposal_results,
+        }
+        if generation_failed:
+            result["generation_error"] = generation_failed
+        return result
+
+    def plan_steps(self, task: str, context: Optional[Dict[str, Any]] = None):
+        """Preview-only coordinated plan generation (D4.3-A1).
+
+        Builds a grounded, structured ask to the coordinating agent and returns a
+        reviewable list of plan steps. It NEVER invokes a proposal or execution
+        tool and never persists anything: this is a pure preview derivation.
+        """
+        if self.router is None:
+            raise RuntimeError(f"Agent '{self.name}' has no ModelRouter configured.")
+        spec = self.manifest.get("model", {})
+        # Grounding (same display-notes as the proposal path; ids injected later by
+        # the PlanService from trusted context).
+        prompt = task
+        ctx_b = context or {}
+        scopes = []
+        if ctx_b.get("workspace_name"):
+            scopes.append(f"the workspace named \u201c{ctx_b['workspace_name']}\u201d")
+        if ctx_b.get("project_name"):
+            scopes.append(f"the project named \u201c{ctx_b['project_name']}\u201d")
+        if scopes and (ctx_b.get("workspace_id") or ctx_b.get("project_id")):
+            prompt = prompt + (
+                "\n\n[SELECTED WORKSPACE CONTEXT (server-supplied and trusted)] You may reference "
+                + ", ".join(scopes)
+                + ". Do not invent other parent ids."
+            )
+        system = self._system_prompt(facts=[], history=(context or {}).get("conversation"),
+                                     brand=None) + "\n\n" + PLAN_CONTRACT
+        provider, model, location, raw = "ollama", "", "", ""
+        generation_failed = None
+        try:
+            mr = self.router.complete(
+                agent_id=self.name, prompt=prompt, system=system, model_spec=spec,
+                context=context, json_format=True)
+            provider, model, location, raw = mr.provider, mr.model, mr.location, mr.text
+        except ModelUnavailableError:
+            generation_failed = {"code": "model_unavailable", "retryable": True}
+        except ModelEmptyOutputError:
+            generation_failed = {"code": "model_empty", "retryable": True}
+        except Exception:
+            raw = ""
+
+        steps: List[Dict[str, Any]] = []
+        reply = ""
+        if raw:
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.strip("`").strip()
+                if cleaned.lower().startswith("json\n"):
+                    cleaned = cleaned[5:].strip()
+            env = None
+            for cand in (cleaned, raw):
+                try:
+                    env = json.loads(cand)
+                    if env is not None:
+                        break
+                except Exception:
+                    env = None
+            if isinstance(env, dict):
+                r = env.get("reply")
+                if isinstance(r, str) and r.strip():
+                    reply = r.strip()
+                blocks = env.get("steps") or env.get("plan") or []
+                if isinstance(blocks, dict):
+                    blocks = [blocks]
+            elif isinstance(env, list):
+                reply = "Plan below."
+                blocks = env
+            else:
+                blocks = []
+            for b in blocks if isinstance(blocks, list) else []:
+                if not isinstance(b, dict):
+                    continue
+                wt = str(b.get("work_type") or "").strip().lower()
+                title = str(b.get("title") or "").strip()
+                if not wt or not title:
+                    continue
+                steps.append({
+                    "work_type": wt,
+                    "action": str(b.get("action") or "create").strip(),
+                    "title": title,
+                    "reason": str(b.get("reason") or "").strip(),
+                })
+        result = {
+            "agent": self.name,
+            "reply": reply,
+            "steps": steps,
+            "provider": provider,
+            "model": model,
+            "location": location,
         }
         if generation_failed:
             result["generation_error"] = generation_failed

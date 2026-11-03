@@ -1090,6 +1090,49 @@ body {
 .list__item .success { flex-basis: 100%; margin-top: 4px; }
 .assign-panel { flex-basis: 100%; display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; }
 .assign-panel select { padding: 6px 8px; border: 1px solid var(--border, #cbd5e1); border-radius: 8px; font-size: 13px; color: var(--text, #0f172a); background: var(--card, #fff); }
+/* --- D4.3-A1: unified command interface + team plan preview --- */
+.command-panel {
+  margin: 4px 0 18px;
+  padding: 14px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 12px;
+  background: rgba(37, 99, 235, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.command-panel__head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.command-panel__hint { font-size: 12px; color: var(--muted, #64748b); }
+.command-panel__actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.plan-preview { margin-top: 6px; padding-top: 10px; border-top: 1px dashed var(--border, #cbd5e1); display: flex; flex-direction: column; gap: 8px; }
+.plan-preview__head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.plan-preview__reply { margin: 0; font-size: 13px; color: var(--text, #0f172a); }
+.plan-steps { margin: 0; }
+.plan-step { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.plan-step__type { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--muted, #64748b); }
+.plan-step__title { font-weight: 500; }
+.plan-step__owner { margin-left: auto; font-size: 12px; color: var(--accent, #2563eb); }
+.plan-step__reason { flex-basis: 100%; font-size: 12px; color: var(--muted, #64748b); }
+/* --- D4.3-A2: editable plan review + approval bridge --- */
+.plan-preview__actions { display: flex; align-items: center; gap: 10px; }
+.plan-step { display: flex; flex-direction: column; gap: 6px; }
+.plan-step__main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plan-step__title-input {
+  flex: 1 1 240px;
+  padding: 5px 8px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text, #0f172a);
+  background: var(--card, #fff);
+}
+.plan-step__meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.plan-step__ownerrow { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.plan-step__actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.select--sm { padding: 5px 8px; font-size: 12px; }
+.step-goal { max-width: 240px; }
+.badge--rejected { background: #fee2e2; color: #b91c1c; }
+.plan-step__err { font-size: 12px; }
 
 .subsection-title {
   margin: 20px 0 10px;

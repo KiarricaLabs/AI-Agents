@@ -1335,6 +1335,154 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
   });
 });
 
+describe("D4.3-A1 unified command interface", () => {
+  const planFixture = {
+    [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+    [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1" }] }),
+    [`${API}/agents`]: () =>
+      ok({ agents: [
+        { name: "strategist", display_name: "Aisha", archetype: "Strategist" },
+        { name: "communications", display_name: "Brandon", archetype: "Communications" },
+      ] }),
+    [`${API}/agents/plan`]: (url: string, opts?: any) => {
+      const sent = JSON.parse(opts.body);
+      return ok({
+        objective: sent.objective, coordinator: "strategist", reply: "Here is the plan.",
+        steps: [
+          { work_type: "goal", title: "Scope launch", suggested_agent: "strategist", reason: "plan it", project_id: "p1" },
+          { work_type: "deliverable", title: "Landing page", suggested_agent: "communications", reason: "comms", project_id: "p1" },
+        ],
+        provider: "ollama", sent,
+      });
+    },
+  };
+
+  it("generates and renders a coordinated team plan preview", async () => {
+    const fn = makeFetch(planFixture);
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openWorkProject();
+    fireEvent.change(screen.getByTestId("plan-objective"), {
+      target: { value: "Help me organize the launch of my new business." },
+    });
+    fireEvent.click(screen.getByTestId("plan-submit"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find((c: any) => c[0] === `${API}/agents/plan`);
+      expect(call).toBeTruthy();
+      const body = JSON.parse(call[1].body);
+      expect(body.objective).toMatch(/launch/i);
+      expect(body.project_id).toBe("p1");
+    });
+    const panel = await screen.findByTestId("plan-preview");
+    expect(panel).toBeInTheDocument();
+    // Coordinator + owner suggestions render as display names.
+    expect(screen.getAllByText("Aisha").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Brandon").length).toBeGreaterThanOrEqual(1);
+    // Titles now render as editable inputs (A2) backed by the plan step value.
+    expect(screen.getByDisplayValue(/Scope launch/)).toBeInTheDocument();
+    // Preview remains non-destructive: no proposal was created.
+    const propCalls = fn.mock.calls.filter((c: any) => c[0] === `${API}/work/proposals`);
+    expect(propCalls.length).toBe(0);
+  });
+
+  it("shows an honest error when generation fails", async () => {
+    const fn = makeFetch({
+      ...planFixture,
+      [`${API}/agents/plan`]: () => ok({ objective: "x", coordinator: "strategist", reply: "", steps: [], generation_error: { code: "model_unavailable" } }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    fireEvent.change(screen.getByTestId("plan-objective"), { target: { value: "organize" } });
+    fireEvent.click(screen.getByTestId("plan-submit"));
+    const err = await screen.findByTestId("plan-error");
+    expect(err.textContent || "").toMatch(/temporarily unavailable/i);
+  });
+});
+
+describe("D4.3-A2 plan approval bridge", () => {
+  const a2Fixture = {
+    [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
+    [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1" }] }),
+    [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", project_id: "p1", title: "Launch Goal", status: "open" }] }),
+    [`${API}/agents`]: () => ok({ agents: [
+      { name: "strategist", display_name: "Aisha", archetype: "Strategist" },
+      { name: "communications", display_name: "Brandon", archetype: "Communications" },
+      { name: "executive_assistant", display_name: "Taylor", archetype: "Exec" },
+    ] }),
+    [`${API}/agents/plan`]: () => ok({
+      objective: "x", coordinator: "strategist", reply: "",
+      steps: [
+        { work_type: "goal", title: "Scope launch", suggested_agent: "strategist", project_id: "p1", workspace_id: "w1" },
+        { work_type: "deliverable", title: "Landing", suggested_agent: "communications", project_id: "p1", workspace_id: "w1" },
+        { work_type: "assignment", title: "Onboard task", suggested_agent: "executive_assistant", project_id: "p1", workspace_id: "w1" },
+      ],
+    }),
+  };
+
+  async function openPlan() {
+    await openWorkProject();
+    fireEvent.change(screen.getByTestId("plan-objective"), { target: { value: "organize launch" } });
+    fireEvent.click(screen.getByTestId("plan-submit"));
+    await screen.findByTestId("plan-preview");
+  }
+
+  it("edits title/owner and approves a step via /work/proposals", async () => {
+    const fn = makeFetch({ ...a2Fixture, [`${API}/work/proposals`]: () => ok({ proposal_id: "pr1" }) });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openPlan();
+    fireEvent.change(screen.getByTestId("plan-step-title-0"), { target: { value: "Launch website scope" } });
+    fireEvent.change(screen.getByTestId("plan-step-owner-0"), { target: { value: "communications" } });
+    fireEvent.click(screen.getByTestId("plan-approve-0"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find((c: any) => c[0] === `${API}/work/proposals`);
+      expect(call).toBeTruthy();
+      const body = JSON.parse(call[1].body);
+      expect(body.work_type).toBe("goal");
+      expect(body.payload.title).toBe("Launch website scope");
+      expect(body.payload.project_id).toBe("p1");
+      expect(body.agent_id).toBe("communications"); // owner override, not suggested_agent
+    });
+    expect(await screen.findByTestId("plan-done-0")).toBeInTheDocument();
+  });
+
+  it("rejects one step; approve-all skips it and unsupported steps", async () => {
+    const fn = makeFetch({ ...a2Fixture, [`${API}/work/proposals`]: () => ok({ proposal_id: "pr" }) });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openPlan();
+    fireEvent.click(screen.getByTestId("plan-reject-1"));
+    fireEvent.click(screen.getByTestId("plan-approve-all"));
+    await waitFor(() => {
+      const posted = fn.mock.calls
+        .filter((c: any) => c[0] === `${API}/work/proposals`)
+        .map((c: any) => JSON.parse(c[1].body).work_type);
+      expect(posted).toContain("goal");
+      expect(posted).not.toContain("deliverable"); // rejected
+      expect(posted).not.toContain("assignment"); // no target goal chosen -> not filed
+    });
+  });
+
+  it("assignment step posts with chosen goal and owner", async () => {
+    const fn = makeFetch({ ...a2Fixture, [`${API}/work/proposals`]: () => ok({ proposal_id: "pr" }) });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openPlan();
+    const goalSel = await screen.findByTestId("plan-step-goal-2");
+    fireEvent.change(goalSel, { target: { value: "g1" } });
+    fireEvent.click(screen.getByTestId("plan-approve-2"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find((c: any) => c[0] === `${API}/work/proposals`);
+      expect(call).toBeTruthy();
+      const body = JSON.parse(call[1].body);
+      expect(body.work_type).toBe("assignment");
+      expect(body.payload.goal_id).toBe("g1");
+      expect(body.payload.agent_id).toBe("executive_assistant");
+    });
+  });
+});
+
 describe("Approvals & work navigation (M10 D1)", () => {
   it("shows pending vs decided proposals and limits controls to pending", async () => {
     globalThis.fetch = makeFetch({

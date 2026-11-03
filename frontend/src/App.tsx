@@ -338,6 +338,16 @@ export default function App() {
   const [assignOwner, setAssignOwner] = useState<string>("");
   const [assignBusy, setAssignBusy] = useState<string | null>(null);
   const [assignMsg, setAssignMsg] = useState<{ goalId: string; msg: string } | null>(null);
+  // D4.3-A1: unified "New Objective" command -> coordinated team plan preview.
+  const [planObjective, setPlanObjective] = useState<string>("");
+  const [planBusy, setPlanBusy] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planResult, setPlanResult] = useState<any | null>(null);
+  const [planNotice, setPlanNotice] = useState<string | null>(null);
+  // D4.3-A2: editable plan review + approval bridge to /work/proposals.
+  const [planFiling, setPlanFiling] = useState<number | null>(null);
+  const [planAllBusy, setPlanAllBusy] = useState(false);
+  const [planAllMsg, setPlanAllMsg] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -699,6 +709,171 @@ export default function App() {
     } finally {
       setAssignBusy(null);
     }
+  };
+
+  // D4.3-A1: unified command. Send one objective to the coordinating agent and
+  // render a reviewable team plan. Preview only: the backend creates no proposal,
+  // record, or execution; nothing happens until a future approval step.
+  const requestPlan = async () => {
+    if (offline || planBusy || !planObjective.trim()) return;
+    const pid = selectedProjectId || projects[0]?.id || undefined;
+    const wid = selectedWorkspaceId || workspaces[0]?.id || undefined;
+    setPlanBusy(true);
+    setPlanError(null);
+    setPlanResult(null);
+    setPlanNotice(null);
+    try {
+      const r = await fetch(`${API}/agents/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ objective: planObjective.trim(), project_id: pid, workspace_id: wid }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setPlanError((b as any).detail || `Could not generate a plan (${r.status}).`);
+        return;
+      }
+      if ((b as any).generation_error) {
+        const code = (b as any).generation_error.code;
+        setPlanError(
+          code === "model_empty"
+            ? "No useful steps were generated this time. Try again."
+            : "The AI team is temporarily unavailable. Try again."
+        );
+        return;
+      }
+      if (!((b as any).steps || []).length) {
+        setPlanNotice("The team didn't produce constructive steps yet. Refine the objective and try again.");
+      }
+      setPlanResult(b);
+    } catch {
+      setPlanError("Could not reach the AI team. Please try again.");
+    } finally {
+      setPlanBusy(false);
+    }
+  };
+
+  const agentDisplay = (slug: string | null | undefined) => {
+    return agents.find((a) => a.name === slug)?.display_name || humanize(slug || "");
+  };
+
+  // --- D4.3-A2: editable plan review + approval bridge to /work/proposals. ---
+  const updatePlanStep = (i: number, patch: any) => {
+    if (!planResult) return;
+    setPlanResult((prev: any) => {
+      if (!prev) return prev;
+      const steps = (prev.steps || []).map((s: any, idx: number) =>
+        idx === i ? { ...s, ...patch } : s);
+      return { ...prev, steps };
+    });
+  };
+
+  const planOwnerOptions = (step: any) => {
+    if (step.agent_options && step.agent_options.length) return step.agent_options;
+    return agents.map((a) => a.name);
+  };
+
+  // Build the exact /work/proposals payload for a finalized step, or null when the
+  // step cannot yet be bridged (e.g. assignment with no target goal, or an update
+  // type outside A2's create-only bridge). The shared endpoint re-validates
+  // ownership, parent-per-work-type, and idempotency server-side.
+  const buildStepProposal = (step: any) => {
+    const wt = step.work_type;
+    if ((step.action || "create") !== "create") return null;
+    const title = (step.title || "").trim();
+    const pid = step.project_id || selectedProjectId || projects[0]?.id;
+    const wid = step.workspace_id || selectedWorkspaceId || workspaces[0]?.id;
+    const owner = step.owner || step.suggested_agent || "workspace_architect";
+    let payload: any = null;
+    if (wt === "workspace") {
+      payload = { name: title };
+    } else if (wt === "project") {
+      if (!wid) return null;
+      payload = { workspace_id: wid, name: title };
+    } else if (wt === "goal") {
+      if (!pid) return null;
+      payload = { project_id: pid, title };
+    } else if (wt === "deliverable") {
+      if (!pid) return null;
+      payload = { project_id: pid, title };
+    } else if (wt === "assignment") {
+      const gid = step.goal_id;
+      if (!gid) return null;
+      payload = { goal_id: gid, agent_id: owner, priority: 0 };
+    } else {
+      return null; // goal_update / deliverable_version etc. not bridged in A2
+    }
+    return { work_type: wt, action: "create", payload, agent_id: owner };
+  };
+
+  const doApprovePlanStep = async (i: number) => {
+    const step = planResult?.steps?.[i];
+    if (!step) return;
+    const built = buildStepProposal(step);
+    if (!built) {
+      updatePlanStep(i, {
+        error: "Can't propose this yet — add a target (goal/parent) or choose a supported type.",
+      });
+      return;
+    }
+    setPlanFiling(i);
+    updatePlanStep(i, { approved: false, rejected: false, msg: null, error: null });
+    try {
+      const r = await fetch(`${API}/work/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(built),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        updatePlanStep(i, { error: (b as any)?.detail || `Could not propose (${r.status}).` });
+        return;
+      }
+      updatePlanStep(i, {
+        approved: true,
+        msg: (b as any)?.reused
+          ? "Already proposed before — review it in Work · Approvals."
+          : "Proposed for your approval — review in Work · Approvals.",
+      });
+      await loadFeed();
+    } catch {
+      updatePlanStep(i, { error: "Could not file this step. Try again." });
+    } finally {
+      setPlanFiling(null);
+    }
+  };
+
+  const approvePlanStep = (i: number) => {
+    if (planFiling !== null) return;
+    doApprovePlanStep(i);
+  };
+
+  const rejectPlanStep = (i: number) => {
+    if (planFiling !== null) return;
+    updatePlanStep(i, { rejected: true, approved: false, msg: "Rejected — not proposed.", error: null });
+  };
+
+  const removePlanStep = (i: number) => {
+    if (planFiling !== null) return;
+    setPlanResult((prev: any) => {
+      if (!prev) return prev;
+      return { ...prev, steps: (prev.steps || []).filter((_: any, idx: number) => idx !== i) };
+    });
+  };
+
+  const approveAllPlan = async () => {
+    const steps = planResult?.steps || [];
+    const idxs = steps
+      .map((_: any, i: number) => i)
+      .filter((i: number) => !steps[i].approved && !steps[i].rejected && !steps[i].error);
+    if (!idxs.length || planFiling !== null || planAllBusy) return;
+    setPlanAllBusy(true);
+    setPlanAllMsg(null);
+    for (const i of idxs) {
+      await doApprovePlanStep(i);
+    }
+    setPlanAllBusy(false);
+    setPlanAllMsg(idxs.length ? "Plan submitted for approval — review each step in Work · Approvals." : "");
   };
 
   // Shared POST handler. `payload.retry` tells the backend not to persist a
@@ -2112,6 +2287,147 @@ export default function App() {
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
+            </div>
+
+            {/* D4.3-A1: unified command interface — one objective for the whole team. */}
+            <div className="command-panel" data-testid="command-panel">
+              <div className="command-panel__head">
+                <h3 className="section-title">New Objective</h3>
+                <span className="command-panel__hint">Coordinated by {agentDisplay("strategist")} for the whole team</span>
+              </div>
+              <textarea
+                className="task-input"
+                data-testid="plan-objective"
+                value={planObjective}
+                onChange={(e) => {
+                  setPlanObjective(e.target.value);
+                  setPlanError(null);
+                  setPlanNotice(null);
+                }}
+                placeholder="Tell your AI team what to accomplish, e.g. “Help me organize the launch of my new project.”"
+                rows={2}
+                disabled={offline || planBusy}
+              />
+              <div className="command-panel__actions">
+                <button
+                  className="btn btn--primary"
+                  data-testid="plan-submit"
+                  onClick={requestPlan}
+                  disabled={offline || planBusy || !planObjective.trim()}
+                >
+                  {planBusy ? <><span className="spinner" aria-hidden="true" /> Generating team plan…</> : "Generate team plan"}
+                </button>
+                <span className="muted">Preview only — nothing is created until you approve later.</span>
+              </div>
+              {planError && <p className="error" role="alert" data-testid="plan-error">Error: {planError}</p>}
+              {planNotice && <p className="warning" data-testid="plan-notice">{planNotice}</p>}
+              {planResult && !planError && (
+                <div className="plan-preview" data-testid="plan-preview">
+                  <div className="plan-preview__head">
+                    <span className="result__heading">Coordinated team plan · {((planResult.steps || [])).length} step(s)</span>
+                    <span className="muted">Coordinator: {agentDisplay(planResult.coordinator)}</span>
+                  </div>
+                  {planResult.reply && <p className="plan-preview__reply">{planResult.reply}</p>}
+                  <div className="plan-preview__actions">
+                    <button
+                      className="btn btn--sm btn--primary"
+                      data-testid="plan-approve-all"
+                      disabled={planAllBusy || planFiling !== null || planBusy ||
+                        !(planResult.steps || []).some((x: any) => !x.approved && !x.rejected && !x.error)}
+                      onClick={approveAllPlan}
+                    >
+                      {planAllBusy ? "Filing…" : `Approve all pending (${(planResult.steps || []).filter((x: any) => !x.approved && !x.rejected && !x.error).length})`}
+                    </button>
+                  </div>
+                  {planAllMsg && <p className="success" role="status">{planAllMsg}</p>}
+                  <ul className="list plan-steps">
+                    {(planResult.steps || []).map((s: any, i: number) => (
+                      <li key={i} className="list__item plan-step" data-testid={`plan-step-${i}`}>
+                        <div className="plan-step__main">
+                          <span className="plan-step__type">{humanize(s.work_type)}</span>
+                          <input
+                            className="plan-step__title-input"
+                            data-testid={`plan-step-title-${i}`}
+                            value={s.title || ""}
+                            disabled={planFiling !== null || !!(s.approved || s.rejected)}
+                            onChange={(e) => updatePlanStep(i, { title: e.target.value, error: null })}
+                          />
+                          {s.work_type === "assignment" && (() => {
+                            const goalOpts = goalsIn(selectedProjectId || s.project_id || projects[0]?.id || "");
+                            return goalOpts.length > 0 ? (
+                              <select
+                                className="select select--sm step-goal"
+                                data-testid={`plan-step-goal-${i}`}
+                                value={s.goal_id || ""}
+                                onChange={(e) => updatePlanStep(i, { goal_id: e.target.value, error: null })}
+                              >
+                                <option value="">Target goal…</option>
+                                {goalOpts.map((g: any) => (
+                                  <option key={g.id} value={g.id}>{g.title}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <span className="muted plan-step__err">No goal to assign — create a goal first.</span>
+                            );
+                          })()}
+                        </div>
+                        <div className="plan-step__meta">
+                          <label className="plan-step__ownerrow">
+                            <span className="muted">Owner</span>
+                            <select
+                              className="select select--sm"
+                              data-testid={`plan-step-owner-${i}`}
+                              value={s.owner || s.suggested_agent || ""}
+                              disabled={planFiling !== null || !!(s.approved || s.rejected)}
+                              onChange={(e) => updatePlanStep(i, { owner: e.target.value, error: null })}
+                            >
+                              {planOwnerOptions(s).map((slug: string) => (
+                                <option key={slug} value={slug}>{agentDisplay(slug)}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="plan-step__actions">
+                            {!(s.approved || s.rejected) && (
+                              <button
+                                className="btn btn--sm btn--primary"
+                                data-testid={`plan-approve-${i}`}
+                                disabled={planFiling !== null && planFiling !== i || !!s.error}
+                                onClick={() => approvePlanStep(i)}
+                              >
+                                {planFiling === i ? "Filing…" : "Approve"}
+                              </button>
+                            )}
+                            {s.approved && <span className="badge badge--approved" data-testid={`plan-done-${i}`}>Approved</span>}
+                            {!s.approved && !s.rejected && (
+                              <button
+                                className="btn btn--sm btn--ghost"
+                                data-testid={`plan-reject-${i}`}
+                                disabled={planFiling !== null}
+                                onClick={() => rejectPlanStep(i)}
+                              >
+                                Reject
+                              </button>
+                            )}
+                            {s.rejected && <span className="badge badge--rejected">Rejected</span>}
+                            <button
+                              className="btn btn--sm btn--ghost"
+                              data-testid={`plan-remove-${i}`}
+                              disabled={planFiling !== null || !!s.approved}
+                              onClick={() => removePlanStep(i)}
+                              title="Remove this step from the plan"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                        {s.reason && <span className="plan-step__reason">{s.reason}</span>}
+                        {s.msg && <p className="success" role="status" data-testid={`plan-step-msg-${i}`}>{s.msg}</p>}
+                        {s.error && <p className="error" role="alert" data-testid={`plan-step-err-${i}`}>Error: {s.error}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
 
             {!selectedProjectId ? (
