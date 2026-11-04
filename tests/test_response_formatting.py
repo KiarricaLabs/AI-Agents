@@ -16,7 +16,8 @@ class TestResponseStyleGuidance(unittest.TestCase):
     def test_guidance_is_always_present(self):
         prompt = self._prompt()
         self.assertIn("RESPONSE STYLE", prompt)
-        self.assertIn("natural and conversational", prompt)
+        self.assertIn("CONVERSING WITH THE USER", prompt)
+        self.assertIn("DRAFTING A DELIVERABLE", prompt)
         self.assertIn("Markdown", prompt)
 
     def test_guidance_discourages_excessive_formatting(self):

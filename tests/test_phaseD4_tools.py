@@ -1,9 +1,10 @@
 """D4.3 #3 — read-only tool wiring.
 
 Only ``calculate`` and ``now`` are genuinely implemented (safe read-only tools).
-``web_search``/``email``/``calendar`` are declared in manifests but have no
-implementation, so they are intentionally not whitelisted. Tool execution is
-gated by a server-side read-only whitelist + manifest + policy + the tool itself.
+The unimplemented ``web_search``/``email``/``calendar`` capabilities have been
+removed from the manifests (capability honesty), so they are never whitelisted
+and never declared as available. Tool execution is gated by a server-side
+read-only whitelist + manifest + policy + the tool itself.
 """
 from __future__ import annotations
 import unittest
@@ -11,6 +12,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from core.model_router import ModelResult
+from core.runtime import load_registry
+from core.tools import build_registry
 from api.app import app
 
 
@@ -81,6 +84,62 @@ class TestReadonlyToolWiring(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         calc = [x for x in r.json().get("tool_results", []) if x.get("tool") == "calculate"]
         self.assertFalse(calc[0]["ok"])
+
+
+class TestCapabilityHonesty(unittest.TestCase):
+    """M10 closeout — manifest capability honesty.
+
+    Every tool an agent *declares* in its manifest must have a real registered
+    implementation. If an unimplemented capability is ever re-added (e.g.
+    ``web_search``, ``email``, ``calendar``), this fails so the agent cannot
+    present an unavailable action as available.
+    """
+
+    def test_every_declared_tool_is_implemented(self):
+        reg = load_registry()
+        impl = set(build_registry().list())  # tool names actually registered
+        for name in reg.list():
+            manifest = reg.get(name)
+            declared = set(manifest.get("tools") or [])
+            missing = declared - impl
+            self.assertEqual(
+                missing,
+                set(),
+                f"Agent '{name}' declares unimplemented tool(s): {sorted(missing)}",
+            )
+
+    def test_known_phantom_capabilities_absent(self):
+        reg = load_registry()
+        forbidden = {"web_search", "email", "calendar"}
+        for name in reg.list():
+            manifest = reg.get(name)
+            declared = set(manifest.get("tools") or [])
+            perms = set(manifest.get("permissions") or [])
+            self.assertEqual(
+                declared & forbidden, set(),
+                f"Agent '{name}' re-added a phantom tool: {sorted(declared & forbidden)}",
+            )
+            self.assertEqual(
+                perms & {"tool:" + t for t in forbidden}, set(),
+                f"Agent '{name}' re-added a phantom tool permission",
+            )
+
+    def test_all_six_manifests_load_and_keep_identity(self):
+        reg = load_registry()
+        expected = {"tutor", "strategist", "executive_assistant",
+                    "communications", "soundboard", "workspace_architect"}
+        self.assertEqual(set(reg.list()), expected)
+        # Identity fields were not disturbed by the honesty audit.
+        for name in reg.list():
+            ident = reg.get(name).get("identity") or {}
+            for field in ("display_name", "archetype", "role", "personality",
+                          "communication_style", "boundaries",
+                          "responsibilities", "decision_making",
+                          "signature_characteristics"):
+                self.assertTrue(
+                    str(ident.get(field, "")).strip(),
+                    f"Agent '{name}' lost identity field '{field}'",
+                )
 
 
 if __name__ == "__main__":

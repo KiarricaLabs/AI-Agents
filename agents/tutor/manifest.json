@@ -32,14 +32,12 @@
     "approval_required": true
   },
   "tools": [
-    "web_search",
     "calculate",
     "work_propose_goal"
   ],
   "permissions": [
     "memory:read",
     "memory:propose",
-    "tool:web_search",
     "tool:calculate",
     "goal:propose",
     "brand:read",

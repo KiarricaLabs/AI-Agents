@@ -30,7 +30,6 @@
     "approval_required": true
   },
   "tools": [
-    "calendar",
     "now",
     "work_propose_project",
     "work_propose_goal",
@@ -39,7 +38,6 @@
   "permissions": [
     "memory:read",
     "memory:propose",
-    "tool:calendar",
     "tool:now",
     "goal:propose",
     "brand:read",

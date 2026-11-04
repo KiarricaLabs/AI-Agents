@@ -625,10 +625,17 @@ class BaseAgent:
                     + "\n".join(lines)
                 )
         parts.append(
-            "\nRESPONSE STYLE: Be natural and conversational. "
-            "For simple questions, answer directly in a few clear sentences without added formatting. "
+            "\nRESPONSE STYLE - dual mode: "
+            "1) CONVERSING WITH THE USER: "
+            f"respond naturally and in your own personality and communication style (from your identity above). "
+            "Be warm, direct, and human - not robotic. Use your signature mannerisms and framing. "
+            "2) DRAFTING A DELIVERABLE (writing a document, communication, plan, message, brief, or any other finished artefact): "
+            "switch to polished, professional, ready-to-ship language. Keep your personality as context for *how* you work, but the artefact itself should be clean, structured, and professional - no filler, no roleplay, no framing commentary. "
+            "Make it immediately usable by the human."
+        )
+        parts.append(
+            "\nFORMATTING: For simple questions, answer directly in a few clear sentences. "
             "For complex or multi-part tasks, use clear headings, short paragraphs, and lists or a table only when they aid clarity - do not overuse bullet points. "
-            "Explain technical details in plain, understandable language. "
             "Use Markdown (headings, **bold**, *italic*, lists, code) when it improves readability."
         )
         parts.append("")
