@@ -266,9 +266,17 @@ class DeliverableService:
         versions = self.db.query("SELECT MAX(version) as mv FROM deliverable_versions WHERE tenant_id=? AND deliverable_id=?",
                                  (self.tenant_id, deliverable_id))
         mv = (versions[0]["mv"] or 0) + 1
+        # Link the new version to its immediate predecessor as `revision_of`
+        # (the highest existing version id), preserving a traceable revision chain.
+        prev = self.db.query(
+            "SELECT id FROM deliverable_versions WHERE tenant_id=? AND deliverable_id=? "
+            "AND version=?", (self.tenant_id, deliverable_id, mv - 1))
+        prev_id = prev[0]["id"] if prev else None
         vid = str(uuid.uuid4())
-        self.db.execute("INSERT INTO deliverable_versions (id,tenant_id,deliverable_id,version,content,status,created_at) VALUES (?,?,?,?,?,?,?)",
-                        (vid, self.tenant_id, deliverable_id, mv, content, "draft", _now()))
+        self.db.execute(
+            "INSERT INTO deliverable_versions (id,tenant_id,deliverable_id,version,content,status,revision_of,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (vid, self.tenant_id, deliverable_id, mv, content, "draft", prev_id, _now()))
         return vid, mv
     def approve(self, version_id, user_id):
         # agent cannot approve own? agent identity not passed; assume user only
@@ -282,10 +290,36 @@ class DeliverableService:
         self.db.execute("INSERT INTO deliverable_approvals (id,tenant_id,version_id,user_id,decision,created_at) VALUES (?,?,?,?,?,?)",
                         (str(uuid.uuid4()), self.tenant_id, version_id, user_id, "approved", _now()))
     def reject(self, version_id, user_id, reason=""):
+        """Permanently decline a deliverable version (not a revision request).
+        The version is marked rejected and the decision is recorded. The task is
+        NOT set to ready-for-review via this path."""
         self.db.execute("UPDATE deliverable_versions SET status='rejected' WHERE id=?", (version_id,))
         decision = ("rejected:" + reason) if reason else "rejected"
         self.db.execute("INSERT INTO deliverable_approvals (id,tenant_id,version_id,user_id,decision,created_at) VALUES (?,?,?,?,?,?)",
                         (str(uuid.uuid4()), self.tenant_id, version_id, user_id, decision, _now()))
+
+    def request_changes(self, version_id, user_id, reason=""):
+        """Request changes on a deliverable version (distinct from rejection).
+        The version stays reviewable and is flagged requested_changes=1; a new
+        version (revision) is expected next. Records a decision; never closes the
+        deliverable."""
+        rows = self.db.query(
+            "SELECT * FROM deliverable_versions WHERE id=? AND tenant_id=?",
+            (version_id, self.tenant_id))
+        if not rows:
+            raise ValueError("version not found")
+        v = rows[0]
+        note = reason or ""
+        self.db.execute(
+            "UPDATE deliverable_versions SET requested_changes=1, review_note=? "
+            "WHERE id=? AND tenant_id=?",
+            (note, version_id, self.tenant_id))
+        self.db.execute(
+            "INSERT INTO deliverable_approvals (id,tenant_id,version_id,user_id,decision,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (str(uuid.uuid4()), self.tenant_id, version_id, user_id,
+             "requested_changes:" + note if note else "requested_changes", _now()))
+
     def list_versions(self, deliverable_id):
         return self.db.query("SELECT * FROM deliverable_versions WHERE tenant_id=? AND deliverable_id=? ORDER BY version",
                              (self.tenant_id, deliverable_id))

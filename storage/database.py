@@ -201,6 +201,8 @@ CREATE TABLE IF NOT EXISTS assignments (
     user_id TEXT NOT NULL,
     agent_id TEXT NOT NULL,
     task_id TEXT,
+    title TEXT,
+    description TEXT,
     priority INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'queued',
     created_at TEXT NOT NULL
@@ -220,6 +222,9 @@ CREATE TABLE IF NOT EXISTS deliverable_versions (
     version INTEGER NOT NULL,
     content TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'draft',
+    requested_changes INTEGER NOT NULL DEFAULT 0,
+    review_note TEXT,
+    revision_of TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS deliverable_approvals (
@@ -371,6 +376,9 @@ class Database:
             apply_m10_phase_d2_index(c)
             # Phase D3: episode apply markers.
             apply_m10_phase_d3_columns(c)
+            # Phase 4 (UX restructuring): additive task/deliverable fields.
+            from storage.migrations_phase4 import apply_phase4_columns
+            apply_phase4_columns(c)
             # AI Team 2.0 (T2-A): additive group-thread + participants + milestones
             # + dependencies columns/tables. Guarded and idempotent; no-op on fresh DBs.
             from storage.migrations_ai2 import (

@@ -148,6 +148,21 @@ def reject(vid: str, req: RejectBody = None, request: Request = None):
     svc.reject(vid, u, reason=(req.reason if req else ""))
     return {"ok": True}
 
+@router.post("/versions/{vid}/request-changes")
+def request_changes(vid: str, req: RejectBody = None, request: Request = None):
+    """Request changes on a deliverable version (revision) — distinct from reject.
+    The version stays reviewable, flagged requested_changes, awaiting a new
+    revision. Never closes the deliverable; human-only."""
+    t, u = _identity(request)
+    if getattr(request.state, "role", "user") not in ("user", "admin"):
+        raise HTTPException(status_code=403, detail="human review required")
+    svc = DeliverableService(_db, t, u)
+    try:
+        svc.request_changes(vid, u, reason=(req.reason if req else ""))
+        return {"ok": True, "requested_changes": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @router.get("/audit/export")
 def audit_export(request: Request):
     role = getattr(request.state, "role", "user")
