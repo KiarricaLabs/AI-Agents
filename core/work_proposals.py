@@ -40,6 +40,11 @@ ALLOWED = {
     "assignment": {"create", "update"},
     "deliverable": {"create", "update"},
     "deliverable_version": {"create"},
+    # AI Team 2.0 (T2-A): a coordinated plan proposal. Reuses the exact same
+    # approval state machine as every other work type. Approval execution
+    # (creating the workspace tree) lands in T2-B; propose/revision/reject are
+    # fully available now. "propose" is the only action for a plan row.
+    "plan": {"propose"},
 }
 
 _TERMINAL = {"rejected", "failed"}
@@ -189,10 +194,52 @@ class WorkProposalService:
             did = self._need(tid, "target_id (deliverable)")
             self._owned_check("deliverables", did)
             payload.setdefault("deliverable_id", did)
+        elif work_type == "plan":
+            self._validate_plan_payload(payload)
         else:
             raise ValueError(f"unsupported work_type: {work_type}")
 
         return workspace_id, project_id, goal_id, subject_id
+
+    def _validate_plan_payload(self, payload: Dict[str, Any]):
+        """Validate the structured plan snapshot inside a `plan` proposal.
+
+        Enforces tenant/user lineage for revision_of and the structural fields a
+        plan must carry (via TeamPlanBuilder.describe). Uses the same single
+        approval state machine; no new plan table and no second state machine.
+        """
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            raise ValueError("plan title is required")
+        revision_of = payload.get("revision_of")
+        if revision_of:
+            rows = self.db.query(
+                "SELECT id, work_type, status FROM work_proposals "
+                "WHERE id=? AND tenant_id=? AND user_id=?",
+                (revision_of, self.tenant_id, self.user_id))
+            if not rows:
+                raise ValueError("plan revision_of refers to an unknown proposal")
+            prior = rows[0]
+            if prior["work_type"] != "plan":
+                raise ValueError("plan revision_of must reference an earlier plan proposal")
+            if prior["status"] == "rejected":
+                raise ValueError("cannot revise a rejected plan; reopen it explicitly")
+        version = payload.get("version")
+        if version is None:
+            raise ValueError("plan version is required")
+        try:
+            ver = int(version)
+        except (TypeError, ValueError):
+            raise ValueError("plan version must be an integer") from None
+        if ver < 1:
+            raise ValueError("plan version must be >= 1")
+        # Structural validation: task agents must be recognized team members,
+        # sections must be lists, milestone refs in range. Reused at approval.
+        from core.team_plan import TeamPlanBuilder
+        try:
+            TeamPlanBuilder(self.tenant_id, self.user_id).describe(payload)
+        except ValueError as e:
+            raise ValueError(str(e)) from None
 
     def _owned_check(self, table: str, rid: str):
         if not self._owned(table, rid):
@@ -245,6 +292,45 @@ class WorkProposalService:
              json.dumps(payload), reason, context, float(confidence),
              "proposed", key, now))
         return {"proposal_id": proposal_id, "status": "proposed", "reused": False}
+
+    def revision_plan(self, prior_proposal_id: str, agent_id: str, *,
+                      payload_updates: Optional[Dict[str, Any]] = None,
+                      thread_id: Optional[str] = None,
+                      reason: Optional[str] = None,
+                      idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        """Create a NEW plan proposal as a revision of an earlier plan.
+
+        Fully reuses the existing work_proposals state machine. The original
+        proposal is preserved byte-for-byte (never mutated); a new row is created
+        with version incremented and ``payload.revision_of`` set to the prior id.
+        Tenant/user lineage is validated via the same ownership checks.
+        """
+        rows = self.db.query(
+            "SELECT * FROM work_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+            (prior_proposal_id, self.tenant_id, self.user_id))
+        if not rows:
+            raise ProposalNotFound("proposal not found")
+        prior = rows[0]
+        if prior["work_type"] != "plan":
+            raise ValueError("revision_plan requires an existing plan proposal")
+        if prior["status"] == "rejected":
+            raise ValueError("cannot revise a rejected plan; reopen it explicitly")
+        base_payload = json.loads(prior.get("payload_json") or "{}")
+        base_version = int(base_payload.get("version") or 1)
+        if prior.get("status") == "approved":
+            # Revising an approved plan keeps a snapshot of the approved version;
+            # the new row is explicitly a vN+1 proposal.
+            base_version = int(base_payload.get("version") or 1)
+        updates = dict(payload_updates or {})
+        new_payload = dict(base_payload)
+        new_payload.update(updates)
+        # Never allow a caller to tamper with lineage fields.
+        new_payload["version"] = base_version + 1
+        new_payload["revision_of"] = prior_proposal_id
+        return self.propose(
+            "plan", agent_id, action="propose", payload=new_payload,
+            thread_id=thread_id or prior.get("thread_id"), reason=reason,
+            idempotency_key=idempotency_key)
 
     # ------------------------------------------------------------------ reads
     def list(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -591,6 +677,10 @@ class WorkProposalService:
         elif wt == "deliverable_version":
             if not owned("deliverables", p.get("target_id") or payload.get("deliverable_id")):
                 raise StaleProposal("deliverable no longer available or owned")
+        elif wt == "plan":
+            # Re-validate the plan snapshot + revision lineage at approval time
+            # (same tenant/user scoped rules as propose).
+            self._validate_plan_payload(payload)
         else:
             raise StaleProposal("unsupported work type for approval")
 
@@ -702,6 +792,12 @@ class WorkProposalService:
                 "VALUES (?,?,?,?,?,?,?)",
                 (vid, self.tenant_id, did, mv, payload.get("content", ""), "draft", now))
             return vid
+        if wt == "plan":
+            # T2-B: create the full workspace tree + project conversation + all
+            # records on the transaction cursor. Atomic with the rest of approve().
+            from core.team_plan import TeamPlanBuilder
+            result = TeamPlanBuilder(self.tenant_id, self.user_id).execute(c, payload)
+            return result["workspace_id"]
         raise StaleProposal("unsupported work type for approval")
 
     def _mark_stale(self, proposal_id: str):

@@ -371,6 +371,14 @@ class Database:
             apply_m10_phase_d2_index(c)
             # Phase D3: episode apply markers.
             apply_m10_phase_d3_columns(c)
+            # AI Team 2.0 (T2-A): additive group-thread + participants + milestones
+            # + dependencies columns/tables. Guarded and idempotent; no-op on fresh DBs.
+            from storage.migrations_ai2 import (
+                apply_ai2_columns,
+                apply_ai2_tables,
+            )
+            apply_ai2_columns(c)
+            apply_ai2_tables(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))
