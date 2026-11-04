@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 app = FastAPI(title="Personal AI Team")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-from api.routers import memory, workspaces, episodes, agents, brand, work  # noqa: E402
+from api.routers import memory, workspaces, episodes, agents, brand, work, tasks  # noqa: E402
 from api.routers import team  # noqa: E402
 from config.settings import DEFAULT_TENANT, LOCAL_MODE, LOCAL_USER  # noqa: E402
 from core.auth import verify_token, validate_auth_secret  # noqa: E402
@@ -62,6 +62,7 @@ app.include_router(episodes.router)
 app.include_router(agents.router)
 app.include_router(brand.router)
 app.include_router(work.router)
+app.include_router(tasks.router)
 app.include_router(team.router)
 
 
