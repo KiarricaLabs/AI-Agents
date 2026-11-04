@@ -11,7 +11,7 @@ const AGENTS = [
 
 test("agents tab lists all six agents and gates the run flow", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Agents" }).click();
+  await page.getByRole("button", { name: "AI Team" }).click();
 
   for (const name of AGENTS) {
     await expect(page.getByRole("button", { name, exact: true })).toBeVisible();
@@ -26,7 +26,7 @@ test("agents tab lists all six agents and gates the run flow", async ({ page }) 
 test("running a task against an agent produces a reply", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto("/");
-  await page.getByRole("button", { name: "Agents" }).click();
+  await page.getByRole("button", { name: "AI Team" }).click();
   await page.getByRole("button", { name: "tutor", exact: true }).click();
 
   await page.getByPlaceholder("Give your agent a task…").fill("Say hello in one sentence.");

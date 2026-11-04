@@ -30,7 +30,7 @@ test("real offline reload serves cached shell", async ({ browser }) => {
   await ctx.setOffline(true);
   await page.reload();
   await expect(page.getByText(/Personal AI Team/)).toBeVisible();
-  await page.getByRole("button", { name: "Workspaces" }).click();
+  await page.getByRole("button", { name: "Projects" }).click();
 
   // Write paths remain disabled while offline.
   await expect(page.getByRole("button", { name: "Create" })).toBeDisabled();

@@ -1,8 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { createHmac } from "crypto";
 import { E2E_AUTH_SECRET } from "./test-secret";
+import { API } from "./env";
 
-const API = "http://127.0.0.1:8001";
 const SECRET = E2E_AUTH_SECRET;
 
 function token(user: string, tenant: string, role = "admin"): string {

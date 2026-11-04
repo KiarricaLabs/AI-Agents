@@ -5,7 +5,7 @@ import { KNOWN_SAMPLE_IDS } from "./knownSamples";
 import { statusLabel, priorityText } from "./uiText";
 import "./App.css";
 
-const API = "http://127.0.0.1:8001";
+const API = (import.meta.env.VITE_API_BASE as string | undefined) || "http://127.0.0.1:8001";
 
 // Matches an explicit workspace-creation request so the chat offers a reliable
 // "propose workspace" path (the model may not emit a valid proposal itself).
@@ -15,14 +15,15 @@ const WS_INTENT_RE = /(?:create|make|set up|start|add|open|new|build|establish)[
 const SAMPLE_VISIBLE_KEY = "pat.sampleData.visible";
 const SAMPLE_REVEALED_KEY = "pat.sampleData.revealed";
 
-type Tab = "overview" | "workspace" | "work" | "episodes" | "agents";
+type Tab = "home" | "projects" | "ai" | "tasks" | "activity" | "settings";
 
 const NAV: { id: Tab; icon: string; label: string }[] = [
-  { id: "overview", icon: "home", label: "Overview" },
-  { id: "workspace", icon: "grid", label: "Workspaces" },
-  { id: "work", icon: "briefcase", label: "Work" },
-  { id: "episodes", icon: "activity", label: "Activity" },
-  { id: "agents", icon: "bot", label: "Agents" },
+  { id: "home", icon: "home", label: "Home" },
+  { id: "projects", icon: "briefcase", label: "Projects" },
+  { id: "ai", icon: "bot", label: "AI Team" },
+  { id: "tasks", icon: "checklist", label: "Task Center" },
+  { id: "activity", icon: "activity", label: "Activity" },
+  { id: "settings", icon: "gear", label: "Settings" },
 ];
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
@@ -69,6 +70,12 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
       </>
     ),
     activity: <path d="M3 12h4l2-7 4 14 2-7h6" />,
+    gear: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z" />
+      </>
+    ),
     bot: (
       <>
         <rect x="4" y="7" width="16" height="12" rx="3" />
@@ -126,6 +133,55 @@ function proposalStatusLabel(s?: string | null): string {
   };
   if (!s) return "—";
   return m[s] || s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// Human-readable work-type label for the proposal feed.
+const WORK_TYPE_LABEL: Record<string, string> = {
+  workspace: "Workspace",
+  project: "Project",
+  goal: "Goal",
+  goal_update: "Goal update",
+  assignment: "Assignment",
+  deliverable: "Deliverable",
+  deliverable_version: "Deliverable version",
+};
+
+// Extract the actual generated name/title from a proposal payload, falling back
+// to a truthful generic string. Never invents a title.
+function proposalTitle(p: any): string {
+  const payload = p?.payload || {};
+  for (const key of ["title", "name", "content", "summary"]) {
+    const v = payload[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  // fall back to a labeled description of the work type + action
+  const w = WORK_TYPE_LABEL[p?.work_type] || p?.work_type || "work";
+  return `New ${w}`;
+}
+
+// A short, truthful "what happens next" hint for the proposal feed.
+function proposalNextStep(p: any): string {
+  if (p?.status === "proposed") return "Approve to create, or reject.";
+  if (p?.status === "approved") return "Approved — see it under the relevant section.";
+  if (p?.status === "rejected") return "Not applied.";
+  if (p?.status === "stale") return "Outdated — superseded by a newer change.";
+  return "";
+}
+
+// Human-facing label for Task Center statuses (Phase 4).
+const TASK_STATUS_LABEL: Record<string, string> = {
+  awaiting_assignment: "Awaiting assignment",
+  awaiting_execution: "Awaiting execution",
+  in_progress: "In progress",
+  needs_input: "Needs your input",
+  ready_for_review: "Ready for review",
+  revision_requested: "Revision requested",
+  completed: "Completed",
+  rejected: "Rejected",
+};
+function taskStatusLabel(s: string | null | undefined): string {
+  if (!s) return "—";
+  return TASK_STATUS_LABEL[s] || s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function OriginConversation({
@@ -206,7 +262,9 @@ function Stat({ icon, label, value }: { icon: string; label: string; value: numb
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>("home");
+  // Projects tab is segmented: "browse" (workspaces/projects) vs "proposals".
+  const [projectsSection, setProjectsSection] = useState<"browse" | "proposals">("browse");
   const [health, setHealth] = useState("checking...");
   const [workspaces, setWorkspaces] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
@@ -280,6 +338,18 @@ export default function App() {
   const [approvingVersion, setApprovingVersion] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [versionError, setVersionError] = useState<string | null>(null);
+  // --- Phase 4: Task Center ---
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [tasksError, setTasksError] = useState<string | null>(null);
+  const [taskStatusFilter, setTaskStatusFilter] = useState<string>("");
+  const [taskSearch, setTaskSearch] = useState<string>("");
+  // Conversation -> task bridge (M2 backend).
+  const [convTaskThread, setConvTaskThread] = useState<string | null>(null);
+  const [convTaskTitle, setConvTaskTitle] = useState<string>("");
+  const [convTaskGoal, setConvTaskGoal] = useState<string>("");
+  const [convTaskBusy, setConvTaskBusy] = useState(false);
+  const [convTaskMsg, setConvTaskMsg] = useState<string | null>(null);
   // --- M10 Phase D1: approvals + bidirectional navigation (read-only) ---
   const [feed, setFeed] = useState<any[]>([]);
   const [proposalBusy, setProposalBusy] = useState<string | null>(null);
@@ -1023,6 +1093,7 @@ export default function App() {
         const d = await fetch(`${API}/workspaces/deliverables`).then((r) => r.json());
         setDeliverablesList(d.items || []);
       } catch {}
+      await loadTasks();
     } catch {
       setOffline(true);
     }
@@ -1161,6 +1232,62 @@ export default function App() {
       const d = await r.json();
       setThreadLinks(d.items || []);
     } catch { /* offline or backend unavailable */ }
+  };
+
+  // --- Phase 4: Task Center data ---
+  const loadTasks = async () => {
+    setTasksLoading(true);
+    setTasksError(null);
+    try {
+      const r = await fetch(`${API}/tasks`);
+      if (!r.ok) {
+        setTasksError("Could not load tasks.");
+        return;
+      }
+      const d = await r.json();
+      setTasks(d.items || []);
+    } catch {
+      setTasksError("Could not load tasks (offline?).");
+    } finally {
+      setTasksLoading(false);
+    }
+  };
+
+  // Conversation -> task bridge (M2). Creates a proposal only; nothing is
+  // created or executed until a human approves it in the review flow.
+  const submitConversationToTask = async (threadId: string) => {
+    if (offline || convTaskBusy) return;
+    if (!convTaskTitle.trim()) { setConvTaskMsg("Give the task a short title."); return; }
+    const goalId = convTaskGoal;
+    if (!goalId) { setConvTaskMsg("Choose the goal this task should be attached to."); return; }
+    setConvTaskBusy(true);
+    setConvTaskMsg(null);
+    try {
+      const r = await fetch(`${API}/conversations/${encodeURIComponent(threadId)}/to-task`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goal_id: goalId,
+          title: convTaskTitle.trim(),
+          agent_id: selectedAgent || "",
+        }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setConvTaskMsg((b as any).detail || `Could not create the proposal (${r.status}).`);
+        return;
+      }
+      setConvTaskMsg("Proposal created — review and approve it to turn this conversation into work.");
+      setConvTaskTitle("");
+      setConvTaskGoal("");
+      setConvTaskThread(null);
+      await loadFeed();
+      await loadTasks();
+    } catch {
+      setConvTaskMsg("Could not create the proposal. Please try again.");
+    } finally {
+      setConvTaskBusy(false);
+    }
   };
 
   const loadWorkThreads = async (wtype: string, wid: string) => {
@@ -1358,7 +1485,7 @@ export default function App() {
   const openOriginatingThread = (t: any) => {
     const agentId = t.agent_id || selectedAgent || "strategist";
     if (t.agent_id) setSelectedAgent(t.agent_id);
-    setTab("agents");
+    setTab("ai");
     setOpenThreadId(t.thread_id);
     setThreadIds((prev) => ({ ...prev, [agentId]: t.thread_id }));
     setTranscript([]);
@@ -1373,7 +1500,7 @@ export default function App() {
   };
 
   const focusWorkItem = (work_type: string, work_id: string) => {
-    setTab("work");
+    setTab("projects");
     loadFeed();
     setSelectedGoal(null);
     setSelectedAssignment(null);
@@ -1604,7 +1731,7 @@ export default function App() {
   // Jump to a project (or goal) detail from the Overview tab.
   const goToProject = (pid: string) => {
     const p = projects.find((x) => x.id === pid);
-    setTab("workspace");
+    setTab("projects");
     setSelectedDeliverable(null);
     setSelectedGoal(null);
     setSelectedProjectId(pid || null);
@@ -1613,7 +1740,7 @@ export default function App() {
   const goToGoal = (gid: string) => {
     const g = goals.find((x) => x.id === gid);
     const p = g ? projects.find((x) => x.id === g.project_id) : undefined;
-    setTab("workspace");
+    setTab("projects");
     setSelectedDeliverable(null);
     setSelectedGoal(gid);
     setSelectedProjectId(p ? p.id : null);
@@ -1700,27 +1827,13 @@ export default function App() {
         </div>
       )}
 
-      <div className="sample-bar">
-        <button className="btn btn--ghost btn--sm" onClick={toggleAllSamples}>
-          {sampleDataVisible ? "Hide sample data" : "Show sample data"}
-        </button>
-        <button className="btn btn--ghost btn--sm" onClick={() => setManageSamples(true)}>
-          Manage samples
-        </button>
-        <span className="sample-bar__hint">
-          {sampleDataVisible
-            ? "Showing all records, including sample data."
-            : "Sample/test data is hidden. Your own records are never hidden."}
-        </span>
-      </div>
-
       <nav className="nav" aria-label="Sections">
         {NAV.map((n) => (
           <button
             key={n.id}
             data-route={n.id}
             className={`nav__btn${tab === n.id ? " nav__btn--active" : ""}`}
-            onClick={() => { setTab(n.id); if (n.id === "work") loadFeed(); }}
+            onClick={() => { setTab(n.id); if (n.id === "tasks") { loadFeed(); loadTasks(); } }}
             aria-label={n.label}
           >
             <Icon name={n.icon} />
@@ -1765,12 +1878,12 @@ export default function App() {
       )}
 
       <main className="content">
-        {tab === "overview" && (
+        {tab === "home" && (
           <section className="panel">
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Overview</h2>
-                <p className="panel__sub">A summary of your AI team workspace and activity.</p>
+                <h2 className="panel__title">Home</h2>
+                <p className="panel__sub">Your AI team's command center — what's happening and what to do next.</p>
               </div>
             </div>
 
@@ -1802,7 +1915,7 @@ export default function App() {
                       <span className="coord-status__label">Awaiting your approval</span>
                       <span className="coord-status__value" data-testid="coord-pending">{pendingApprovals}</span>
                       {pendingApprovals > 0 && (
-                        <button className="btn btn--sm btn--ghost" data-testid="coord-goto-work" onClick={() => { setTab("work"); loadFeed(); }}>
+                        <button className="btn btn--sm btn--ghost" data-testid="coord-goto-work" onClick={() => { setTab("projects"); loadFeed(); }}>
                           Review proposals
                         </button>
                       )}
@@ -1811,7 +1924,7 @@ export default function App() {
                       <span className="coord-status__label">Work in progress (needs your evidence)</span>
                       <span className="coord-status__value" data-testid="coord-running">{runningEps}</span>
                       {runningEps > 0 && (
-                        <button className="btn btn--sm btn--ghost" onClick={() => setTab("episodes")}>
+                        <button className="btn btn--sm btn--ghost" onClick={() => setTab("activity")}>
                           View activity
                         </button>
                       )}
@@ -1886,12 +1999,16 @@ export default function App() {
           </section>
         )}
 
-        {tab === "workspace" && (
+        {tab === "projects" && projectsSection === "browse" && (
           <section className="panel">
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Workspaces</h2>
-                <p className="panel__sub">Working environments, each containing projects and their work.</p>
+                <h2 className="panel__title">Projects</h2>
+                <p className="panel__sub">Work organized by project. Workspaces act as containers holding related projects.</p>
+              </div>
+              <div className="seg-group">
+                <button className={`seg-btn${(projectsSection as string) === "browse" ? " seg-btn--active" : ""}`} data-testid="projects-browse-tab" onClick={() => setProjectsSection("browse")}>Browse</button>
+                <button className={`seg-btn${(projectsSection as string) === "proposals" ? " seg-btn--active" : ""}`} data-testid="projects-proposals-tab" onClick={() => { setProjectsSection("proposals"); loadFeed(); }}>Proposals</button>
               </div>
             </div>
 
@@ -2194,12 +2311,16 @@ export default function App() {
           </section>
         )}
 
-        {tab === "work" && (
+        {tab === "projects" && projectsSection === "proposals" && (
           <section className="panel">
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Work</h2>
-                <p className="panel__sub">Goals, assignments, and deliverables scoped to a project.</p>
+                <h2 className="panel__title">Proposals &amp; approvals</h2>
+                <p className="panel__sub">Review proposed work and approve what the team should do.</p>
+              </div>
+              <div className="seg-group">
+                <button className={`seg-btn${(projectsSection as string) === "browse" ? " seg-btn--active" : ""}`} data-testid="projects-browse-tab" onClick={() => setProjectsSection("browse")}>Browse</button>
+                <button className={`seg-btn${(projectsSection as string) === "proposals" ? " seg-btn--active" : ""}`} data-testid="projects-proposals-tab" onClick={() => { setProjectsSection("proposals"); loadFeed(); }}>Proposals</button>
               </div>
             </div>
 
@@ -2311,12 +2432,19 @@ export default function App() {
                       <li key={p.id} className="list__item approvals-item" data-testid={`proposal-${p.id}`}>
                         <div className="approvals-item__main">
                           <span className={`badge badge--${p.status || "neutral"}`}>{proposalStatusLabel(p.status)}</span>
-                          <span className="approvals-item__text">{p.proposed_change}</span>
+                          <span className="badge badge--faint">{WORK_TYPE_LABEL[p?.work_type] || p?.work_type || "Work"}</span>
+                          <span className="approvals-item__text">
+                            <strong>{proposalTitle(p)}</strong>
+                            {p.proposed_change && p.proposed_change !== `create ${p.work_type}` ? (
+                              <span className="muted"> · {p.proposed_change}</span>
+                            ) : null}
+                          </span>
                           {p.source_thread_id && (
                             <button className="origin-link" title={p.source_thread_id} onClick={() => openOriginatingThread({ thread_id: p.source_thread_id, agent_id: p.agent_id }) }>
                               #{p.source_thread_id.slice(0, 8)}
                             </button>
                           )}
+                          {proposalNextStep(p) && <span className="muted"> · {proposalNextStep(p)}</span>}
                         </div>
                         {pending ? (
                           <div className="approvals-item__actions">
@@ -2397,7 +2525,7 @@ export default function App() {
                 <div className="warning" data-testid="plan-needs-project" role="alert">
                   There’s no project yet, so goals/deliverables/assignments can’t be created.
                   Create a workspace + project first, then ask your team to plan.
-                  <button className="origin-link" onClick={() => setTab("workspace")}>Open Workspaces →</button>
+                  <button className="origin-link" onClick={() => setTab("projects")}>Open Projects →</button>
                 </div>
               )}
               <div className="command-panel__actions">
@@ -2603,7 +2731,7 @@ export default function App() {
                                   return (
                                     <div className="exec-control">
                                       <span className="badge badge--running">Tracking</span>
-                                      <button className="origin-link" onClick={() => { setTab("episodes"); setSelectedEpisode(ep.episode_id); loadEpisode(ep.episode_id); }}>Open in Activity</button>
+                                      <button className="origin-link" onClick={() => { setTab("activity"); setSelectedEpisode(ep.episode_id); loadEpisode(ep.episode_id); }}>Open in Activity</button>
                                     </div>
                                   );
                                 }
@@ -2694,7 +2822,7 @@ export default function App() {
                                   return (
                                     <div className="exec-control">
                                       <span className="badge badge--running">Tracking</span>
-                                      <button className="origin-link" onClick={() => { setTab("episodes"); setSelectedEpisode(ep.episode_id); loadEpisode(ep.episode_id); }}>Open in Activity</button>
+                                      <button className="origin-link" onClick={() => { setTab("activity"); setSelectedEpisode(ep.episode_id); loadEpisode(ep.episode_id); }}>Open in Activity</button>
                                     </div>
                                   );
                                 }
@@ -2886,12 +3014,12 @@ export default function App() {
           </section>
         )}
 
-        {tab === "episodes" && (
+        {tab === "activity" && (
           <section className="panel">
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Agent Activity</h2>
-                <p className="panel__sub">What your agents have run recently, their status, and their progress.</p>
+                <h2 className="panel__title">Activity</h2>
+                <p className="panel__sub">A readable history of what your AI team has done.</p>
               </div>
             </div>
             {visibleEpisodes.length === 0 ? (
@@ -3037,12 +3165,12 @@ export default function App() {
           </section>
         )}
 
-        {tab === "agents" && (
+        {tab === "ai" && (
           <section className="panel">
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Agents</h2>
-                <p className="panel__sub">Select an agent, review past conversations, and give it a task.</p>
+                <h2 className="panel__title">AI Team</h2>
+                <p className="panel__sub">Your six teammates — their identities, conversations, and how to connect them to projects.</p>
               </div>
             </div>
 
@@ -3051,6 +3179,7 @@ export default function App() {
                 ? conversations.filter((c) => c.agent_id === convFilter)
                 : conversations;
               return (
+                <>
                 <div className="conv-browser">
                   <div className="conv-browser__head">
                     <h3 className="section-title">Conversations</h3>
@@ -3106,13 +3235,47 @@ export default function App() {
                               <button className="btn btn--ghost btn--sm" onClick={() => setRenamingThread(null)}>Cancel</button>
                             </span>
                           ) : (
-                            <button className="btn btn--ghost btn--sm" onClick={(e) => { e.stopPropagation(); startRename(c); }}>Rename</button>
+                            <span className="conv-browser__actions">
+                              <button className="btn btn--ghost btn--sm" onClick={(e) => { e.stopPropagation(); setConvTaskThread(convTaskThread === c.thread_id ? null : c.thread_id); setConvTaskTitle(""); setConvTaskMsg(null); }} title="Turn part of this conversation into a proposed task">
+                                → Task
+                              </button>
+                              <button className="btn btn--ghost btn--sm" onClick={(e) => { e.stopPropagation(); startRename(c); }}>Rename</button>
+                            </span>
                           )}
                         </li>
                       ))}
                     </ul>
                   )}
                 </div>
+
+                {convTaskThread && (
+                  <div className="conv-to-task" data-testid="conv-to-task">
+                    <div className="conv-to-task__head">
+                      <h4 className="subsection-title">Turn this conversation into a task</h4>
+                      <button className="btn btn--ghost btn--sm" onClick={() => setConvTaskThread(null)}>Cancel</button>
+                    </div>
+                    <p className="muted">
+                      This creates a <strong>proposal</strong> (nothing is created or executed until you approve it).
+                      Pick the project/goal to attach it to, then give the task a short title.
+                    </p>
+                    <div className="work-toolbar" style={{ flexWrap: "wrap" }}>
+                      <select className="select select--small" value={selectedProjectId || ""} onChange={(e) => { setConvTaskGoal(""); selectProjectForWork(e.target.value); }} aria-label="Project">
+                        <option value="">Select a project…</option>
+                        {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                      <select className="select select--small" value={convTaskGoal} onChange={(e) => setConvTaskGoal(e.target.value)} aria-label="Goal" data-testid="conv-task-goal">
+                        <option value="">Select a goal…</option>
+                        {goalsIn(selectedProjectId || "").map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+                      </select>
+                      <input className="input input--sm" placeholder="Task title…" value={convTaskTitle} onChange={(e) => setConvTaskTitle(e.target.value)} aria-label="Task title" />
+                      <button className="btn btn--sm btn--primary" disabled={offline || convTaskBusy || !convTaskGoal} onClick={() => submitConversationToTask(convTaskThread)}>
+                        {convTaskBusy ? "Creating proposal…" : "Create proposal"}
+                      </button>
+                    </div>
+                    {convTaskMsg && <p className="success" role="status" data-testid="conv-task-msg">{convTaskMsg}</p>}
+                  </div>
+                )}
+                </>
               );
             })()}
 
@@ -3380,7 +3543,7 @@ export default function App() {
                     <span className="result__heading">Workspace proposal created</span>
                     <p className="muted">
                       Review and approve it in the{" "}
-                      <button className="origin-link" onClick={() => setTab("work")}>Work · Approvals</button>{" "}
+                      <button className="origin-link" onClick={() => setTab("projects")}>Work · Approvals</button>{" "}
                       to actually create the workspace.
                     </p>
                   </div>
@@ -3475,7 +3638,7 @@ export default function App() {
                         <button
                           className="btn btn--sm btn--ghost"
                           data-testid="ideas-to-approve"
-                          onClick={() => setTab("work")}
+                          onClick={() => setTab("projects")}
                         >
                           Review in Work \u00b7 Approvals
                         </button>
@@ -3496,7 +3659,7 @@ export default function App() {
                     {!agentGenError && (agentResult.draftProposed ? (
                       <div className="result__section draft-panel">
                         <span className="result__heading">Proposal created</span>
-                        <button className="draft__goto" data-testid="draft-goto" onClick={() => setTab("work")}>
+                        <button className="draft__goto" data-testid="draft-goto" onClick={() => setTab("projects")}>
                           Approve it in Work {"·"} Approvals
                         </button>
                       </div>
@@ -3580,6 +3743,107 @@ export default function App() {
                 )}
               </div>
             )}
+          </section>
+        )}
+
+        {tab === "tasks" && (
+          <section className="panel">
+            <div className="panel__head">
+              <div>
+                <h2 className="panel__title">Task Center</h2>
+                <p className="panel__sub">Track every piece of work across your projects — what\u2019s waiting, what\u2019s active, and what needs your input.</p>
+              </div>
+            </div>
+            <div className="work-toolbar" style={{ flexWrap: "wrap" }}>
+              <select className="select select--small" value={taskStatusFilter} onChange={(e) => setTaskStatusFilter(e.target.value)} aria-label="Task status filter" data-testid="task-status-filter">
+                <option value="">All statuses</option>
+                <option value="awaiting_assignment">Awaiting assignment</option>
+                <option value="awaiting_execution">Awaiting execution</option>
+                <option value="in_progress">In progress</option>
+                <option value="needs_input">Needs your input</option>
+                <option value="ready_for_review">Ready for review</option>
+                <option value="revision_requested">Revision requested</option>
+                <option value="completed">Completed</option>
+                <option value="rejected">Rejected</option>
+              </select>
+              <input className="input work-search" value={taskSearch} onChange={(e) => setTaskSearch(e.target.value)} placeholder="Search tasks…" aria-label="Search tasks" />
+              <button className="btn btn--ghost btn--sm" onClick={loadTasks} disabled={offline}>Refresh</button>
+            </div>
+
+            {tasksError && <p className="error" role="alert">{tasksError}</p>}
+            {tasksLoading ? (
+              <Empty text="Loading tasks…" />
+            ) : tasks.length === 0 ? (
+              <Empty text="No tasks yet. Ask the AI team to propose work, or create a project and plan." />
+            ) : (
+              <ul className="list">
+                {tasks
+                  .filter((t) => !taskStatusFilter || t.status === taskStatusFilter)
+                  .filter((t) => !taskSearch || (t.title || "").toLowerCase().includes(taskSearch.trim().toLowerCase()))
+                  .map((t) => {
+                    const st = t.status || "";
+                    return (
+                      <li key={t.task_id} className="list__item tasks-item" data-testid={`task-${t.task_id}`}>
+                        <div className="tasks-item__main">
+                          <Icon name={st === "completed" ? "checklist" : st === "ready_for_review" ? "file" : "target"} size={16} />
+                          <span className="list__name"><strong>{t.title || "Untitled task"}</strong></span>
+                          {t.agent_id && <span className="badge badge--faint">{agentLabel(t.agent_id)}</span>}
+                          <span className={`badge badge--${st}`}>{taskStatusLabel(st)}</span>
+                        </div>
+                        <div className="tasks-item__meta">
+                          {t.project_name && <span className="muted">{t.project_name}</span>}
+                          {t.goal_title && <span className="muted"> · {t.goal_title}</span>}
+                          {t.thread_ids?.length ? <span className="muted"> · from conversation</span> : null}
+                        </div>
+                        {t.description && <p className="muted">{t.description}</p>}
+                        <p className="muted"><em>{t.next_action}</em></p>
+                        {t.deliverable && (
+                          <div className="tasks-item__deliv">
+                            <span className="badge badge--faint">Deliverable: {t.deliverable.title}</span>
+                            <span className={`badge badge--${t.deliverable.status}`}>{t.deliverable.status}</span>
+                          </div>
+                        )}
+                        {st === "awaiting_assignment" && (
+                          <div className="tasks-item__actions">
+                            <button className="btn btn--sm btn--ghost" disabled={true} title="Approve via Projects · Proposals">Approve in Projects</button>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {tab === "settings" && (
+          <section className="panel">
+            <div className="panel__head">
+              <div>
+                <h2 className="panel__title">Settings</h2>
+                <p className="panel__sub">Brand context, memory, sample data, and preferences.</p>
+              </div>
+            </div>
+
+            <div className="subsection">
+              <div className="subsection__head"><h3 className="section-title">Sample &amp; test data</h3></div>
+              <div className="work-toolbar" style={{ flexWrap: "wrap" }}>
+                <button className="btn btn--sm btn--ghost" onClick={toggleAllSamples}>
+                  {sampleDataVisible ? "Hide sample data" : "Show sample data"}
+                </button>
+                <button className="btn btn--sm btn--ghost" onClick={() => setManageSamples(true)}>Manage samples</button>
+                <span className="sample-bar__hint">
+                  {sampleDataVisible
+                    ? "Showing all records, including sample data."
+                    : "Sample/test data is hidden. Your own records are never hidden."}
+                </span>
+              </div>
+            </div>
+
+            <div className="subsection">
+              <div className="subsection__head"><h3 className="section-title">Preferences</h3></div>
+              <p className="muted">Other preference controls will appear here as they\u2019re added.</p>
+            </div>
           </section>
         )}
       </main>

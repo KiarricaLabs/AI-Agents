@@ -30,7 +30,10 @@ function makeFetch(overrides: Record<string, Route> = {}) {
 // Drive the Work view into the "Acme" workspace / "Launch" project used by
 // the fixtures below, waiting for the async workspace/project data to arrive.
 async function openWorkProject() {
-  fireEvent.click(screen.getByRole("button", { name: "Work" }));
+  // The proposals & project work now live under the Projects tab's "Proposals"
+  // sub-view (Workspaces and Work were merged into Projects).
+  fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+  fireEvent.click(screen.getByRole("button", { name: "Proposals" }));
   // Scope these to the view's workspace/project selectors so the deterministic
   // "New proposal" composer (which also lists parents) does not create ambiguity.
   const wsSelect = await screen.findByLabelText("Workspace");
@@ -54,11 +57,12 @@ describe("App shell and navigation", () => {
     render(<App />);
     expect(screen.getByRole("heading", { name: "Personal AI Team" })).toBeInTheDocument();
     const tabs: [string, string][] = [
-      ["overview", "Overview"],
-      ["workspace", "Workspaces"],
-      ["work", "Work"],
-      ["episodes", "Activity"],
-      ["agents", "Agents"],
+      ["home", "Home"],
+      ["projects", "Projects"],
+      ["ai", "AI Team"],
+      ["tasks", "Task Center"],
+      ["activity", "Activity"],
+      ["settings", "Settings"],
     ];
     for (const [route, label] of tabs) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
@@ -72,7 +76,7 @@ describe("Workspaces", () => {
     const fn = makeFetch();
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
 
     const input = screen.getByPlaceholderText("Workspace name");
     fireEvent.change(input, { target: { value: "Acme" } });
@@ -91,7 +95,7 @@ describe("Workspaces", () => {
       [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     expect(await screen.findByText("Acme")).toBeInTheDocument();
   });
 
@@ -99,7 +103,7 @@ describe("Workspaces", () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error("offline"))) as any;
     render(<App />);
     await screen.findByText(/read-only/);
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
 });
@@ -111,7 +115,7 @@ describe("Projects", () => {
       [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     fireEvent.click(await screen.findByText("Acme"));
     expect(await screen.findByText(/Launch/)).toBeInTheDocument();
     expect(screen.getByText(/Active/)).toBeInTheDocument();
@@ -123,7 +127,7 @@ describe("Projects", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     fireEvent.click(await screen.findByText("Acme"));
     fireEvent.click(screen.getByRole("button", { name: "Create Project" }));
 
@@ -144,7 +148,7 @@ describe("Overview", () => {
         ok({ items: [{ id: "p1", name: "Launch", status: "active", workspace_id: "w1", created_at: "2026-01-01T00:00:00Z" }] }),
     }) as any;
     render(<App />);
-    expect(await screen.findByText(/summary of your AI team/i)).toBeInTheDocument();
+    expect(await screen.findByText(/your AI team's command center/i)).toBeInTheDocument();
     expect(screen.getAllByText("Open goals").length).toBeGreaterThan(0);
     expect(screen.getByText("Launch")).toBeInTheDocument();
   });
@@ -161,7 +165,7 @@ describe("Project Detail", () => {
       [`${API}/agents`]: () => ok({ agents: [{ name: "tutor", display_name: "Brittany", archetype: "The Educator" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     fireEvent.click(await screen.findByText("Acme"));
     fireEvent.click(await screen.findByText("Launch"));
 
@@ -199,7 +203,8 @@ describe("Work view — Goals", () => {
       [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Proposals" }));
     expect(await screen.findByText(/Select a workspace and project/)).toBeInTheDocument();
   });
 
@@ -561,7 +566,7 @@ describe("Agents", () => {
   it("lists all six agents and shows a selection prompt", async () => {
     globalThis.fetch = makeFetch(agentsFixture()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     expect(await screen.findByRole("button", { name: "tutor" })).toBeInTheDocument();
     for (const n of ["strategist", "executive_assistant", "communications", "soundboard", "workspace_architect"]) {
       expect(screen.getByRole("button", { name: n })).toBeInTheDocument();
@@ -586,7 +591,7 @@ describe("Agents", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     expect(await screen.findByText("Brittany")).toBeInTheDocument();
     expect(screen.getByText("The Educator")).toBeInTheDocument();
     // The card's accessible name remains the slug for stable lookups.
@@ -609,7 +614,7 @@ describe("Agents", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     expect(
       await screen.findByText("Explain concepts and build durable understanding.")
     ).toBeInTheDocument();
@@ -639,7 +644,7 @@ describe("Agents", () => {
         ok({ items: [{ id: "a1", agent_id: "tutor", goal_id: "g1", status: "queued" }] }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
 
     expect(await screen.findByTestId("agent-detail")).toBeInTheDocument();
@@ -670,7 +675,7 @@ describe("Agents", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
       target: { value: "Explain gravity" },
@@ -695,7 +700,7 @@ describe("Agents", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "strategist" }));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
       target: { value: "Plan the quarter" },
@@ -712,7 +717,7 @@ describe("Agents", () => {
   it("keeps the run button disabled with no task entered", async () => {
     globalThis.fetch = makeFetch(agentsFixture()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     expect(screen.getByRole("button", { name: "Run Agent" })).toBeDisabled();
   });
@@ -736,7 +741,7 @@ describe("Agents", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
 
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "hi" } });
@@ -772,7 +777,7 @@ describe("Agents", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "hi" } });
     fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
@@ -793,7 +798,7 @@ describe("Agents", () => {
       [`${API}/agents/tutor/run`]: () => runPromise,
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     const input = screen.getByPlaceholderText("Give your agent a task…");
     fireEvent.change(input, { target: { value: "hello" } });
@@ -825,7 +830,7 @@ describe("Agents", () => {
         Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve({ detail: "Ollama unreachable" }) }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "strategist" }));
     const input = screen.getByPlaceholderText("Give your agent a task…");
     fireEvent.change(input, { target: { value: "Plan the quarter" } });
@@ -854,7 +859,7 @@ describe("Agents", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     const input = screen.getByPlaceholderText("Give your agent a task…");
     fireEvent.change(input, { target: { value: "hello" } });
@@ -882,7 +887,7 @@ describe("Agents", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), {
       target: { value: "hi" },
@@ -913,10 +918,13 @@ describe("UI Cleanup & sample-data handling", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     expect(await screen.findByText("My Team")).toBeInTheDocument();
     expect(screen.queryByText("E2E Workspace")).not.toBeInTheDocument();
+    // Sample controls live in Settings (kept out of the main navigation).
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("button", { name: "Show sample data" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     expect(await screen.findByText("E2E Workspace")).toBeInTheDocument();
   });
 
@@ -931,7 +939,7 @@ describe("UI Cleanup & sample-data handling", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     await screen.findByText("E2E Workspace");
     // Hiding is by ID only, so exactly one (the legitimate) record remains.
     expect(screen.getAllByText("E2E Workspace").length).toBe(1);
@@ -1041,7 +1049,7 @@ describe("Conversation Browser", () => {
   it("lists conversations with agent names and Agent unknown", async () => {
     globalThis.fetch = makeFetch(convosFixture()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     expect(await screen.findByText("Grow my business")).toBeInTheDocument();
     expect(screen.getAllByText("Aisha").length).toBeGreaterThanOrEqual(1); // agent label on the conversation + card
     expect(screen.getByText(/Agent unknown/)).toBeInTheDocument();
@@ -1051,7 +1059,7 @@ describe("Conversation Browser", () => {
   it("filters conversations by agent", async () => {
     globalThis.fetch = makeFetch(convosFixture()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     await screen.findByText("Grow my business");
     fireEvent.change(screen.getByLabelText("Filter conversations by agent"), { target: { value: "strategist" } });
     expect(screen.getByText("Grow my business")).toBeInTheDocument();
@@ -1066,7 +1074,7 @@ describe("Conversation Browser", () => {
     }
     globalThis.fetch = makeFetch(transcriptFixture(longTail)) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByText("Grow my business"));
     const tr = await screen.findByTestId("transcript");
     expect(tr).toBeInTheDocument();
@@ -1088,7 +1096,7 @@ describe("Conversation Browser", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByText("Grow my business"));
     await screen.findByTestId("transcript");
     // Set the active thread, then send a message.
@@ -1106,7 +1114,7 @@ describe("Conversation Browser", () => {
     const fn = makeFetch(convosFixture());
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     await screen.findByText("Grow my business");
     fireEvent.click(screen.getAllByRole("button", { name: "Rename" })[0]);
     fireEvent.change(screen.getByPlaceholderText("Rename conversation"), { target: { value: "My Growth Plan" } });
@@ -1122,7 +1130,7 @@ describe("Conversation Browser", () => {
   it("New Conversation does not delete saved conversations", async () => {
     globalThis.fetch = makeFetch(transcriptFixture()) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByText("Grow my business"));
     await screen.findByTestId("transcript");
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
@@ -1151,7 +1159,7 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
     const fn = makeFetch(agentsFixture());
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByText("Aisha"));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "draft a goal" } });
     fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
@@ -1181,7 +1189,7 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
     const fn = makeFetch(agentsFixture());
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByText("Aisha"));
     await screen.findByTestId("draft-composer");
     fireEvent.change(screen.getByTestId("draft-composer-type"), { target: { value: "project" } });
@@ -1225,7 +1233,7 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByText("Aisha"));
     fireEvent.click(screen.getByTestId("suggest-ideas"));
     await waitFor(() => {
@@ -1262,7 +1270,7 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
     render(<App />);
     // The goal list with "Suggest next step" lives in the Workspaces tab under
     // a selected workspace -> project.
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     fireEvent.click(await screen.findByText("Acme"));
     fireEvent.click(screen.getByText("Launch"));
     fireEvent.click(await screen.findByTestId("suggest-next-g1"));
@@ -1291,7 +1299,7 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Workspaces" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     fireEvent.click(await screen.findByText("Acme"));
     fireEvent.click(screen.getByText("Launch"));
     fireEvent.click(await screen.findByTestId("assign-open-g1"));
@@ -1326,7 +1334,7 @@ describe("Phase 1: agent idea-draft to proposal capture", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByText("Aisha"));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "draft a goal" } });
     fireEvent.click(screen.getByRole("button", { name: "Run Agent" }));
@@ -1392,7 +1400,8 @@ describe("D4.3-A1 unified command interface", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Proposals" }));
     fireEvent.change(screen.getByTestId("plan-objective"), { target: { value: "organize" } });
     fireEvent.click(screen.getByTestId("plan-submit"));
     const err = await screen.findByTestId("plan-error");
@@ -1510,7 +1519,8 @@ describe("D4.3 empty-parent guidance", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Proposals" }));
     const guide = await screen.findByTestId("plan-needs-project");
     expect(guide).toBeInTheDocument();
     expect(guide.textContent || "").toMatch(/no project yet/i);
@@ -1532,7 +1542,7 @@ describe("D4.3 read-only tool wiring", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByText("Aisha"));
     fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "17*23" } });
     fireEvent.click(screen.getByTestId("run-calculate"));
@@ -1596,7 +1606,8 @@ describe("Approvals & work navigation (M10 D1)", () => {
         }),
     }) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Proposals" }));
     expect(await screen.findByTestId("approvals-panel")).toBeInTheDocument();
     // Distinct badges
     expect(screen.getByText("Pending approval")).toBeInTheDocument();
@@ -1612,6 +1623,32 @@ describe("Approvals & work navigation (M10 D1)", () => {
     expect(screen.getByText("declined")).toBeInTheDocument();
   });
 
+  it("labels proposals with work type, generated name, and next step (M11 Fix 3)", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/work/feed`]: () =>
+        ok({
+          items: [
+            { id: "p1", work_type: "project", action: "create", status: "proposed", proposed_change: "create project", decision: null, payload: { name: "On Us Launch" } },
+            { id: "p2", work_type: "goal", action: "create", status: "proposed", proposed_change: "create goal", decision: null, payload: { title: "Boost onboarding" } },
+            { id: "p3", work_type: "deliverable", action: "create", status: "approved", proposed_change: "create deliverable", decision: { work_id: "d1", work_type: "deliverable", label: "Marketing plan", approver: "u1", decided_at: "2026-01-01T00:00:00Z" }, payload: { title: "Marketing plan" } },
+          ],
+        }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Proposals" }));
+    expect(await screen.findByTestId("approvals-panel")).toBeInTheDocument();
+    // Generated names shown (not the generic "create goal").
+    expect(screen.getByText("On Us Launch")).toBeInTheDocument();
+    expect(screen.getByText("Boost onboarding")).toBeInTheDocument();
+    expect(screen.getByText("Marketing plan")).toBeInTheDocument();
+    // Work-type badge labelled (within the approvals item).
+    const firstApprovalItem = screen.getByTestId("proposal-p1");
+    expect(firstApprovalItem.textContent).toMatch(/Project/);
+    // Next-step hint for pending.
+    expect(screen.getAllByText(/Approve to create/).length).toBeGreaterThan(0);
+  });
+
   it("approves a pending proposal through the Phase C endpoint", async () => {
     const fn = makeFetch({
       [`${API}/work/feed`]: () =>
@@ -1619,7 +1656,8 @@ describe("Approvals & work navigation (M10 D1)", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Proposals" }));
     fireEvent.click(await screen.findByTestId("approve-pend1"));
     await waitFor(() => {
       expect(fn).toHaveBeenCalledWith(
@@ -1642,7 +1680,8 @@ describe("Approvals & work navigation (M10 D1)", () => {
     });
     globalThis.fetch = fn as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Proposals" }));
     fireEvent.click(await screen.findByTestId("approve-all-pending"));
     await waitFor(() => {
       expect(fn).toHaveBeenCalledWith(
@@ -1673,7 +1712,7 @@ describe("Approvals & work navigation (M10 D1)", () => {
     };
     globalThis.fetch = makeFetch(fixture) as any;
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByText("Grow my business"));
     expect(await screen.findByTestId("linked-work")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Launch Goal" })).toBeInTheDocument();
@@ -1869,7 +1908,7 @@ describe("Graceful generation failure handling (M10 D4.2)", () => {
   });
 
   async function selectTutor() {
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
     fireEvent.click(await screen.findByRole("button", { name: "tutor" }));
   }
 
@@ -2052,5 +2091,65 @@ describe("Graceful generation failure handling (M10 D4.2)", () => {
     // switch to another agent -> prior failure panel is cleared
     fireEvent.click(screen.getByRole("button", { name: "strategist" }));
     expect(screen.queryByTestId("gen-failure-panel")).not.toBeInTheDocument();
+  });
+});
+
+describe("Phase 4 — Task Center, Settings, conversation-to-task", () => {
+  it("renders tasks loaded from /tasks in the Task Center", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/tasks`]: () =>
+        ok({ items: [
+          { task_id: "t1", kind: "assignment", status: "awaiting_execution", title: "Write launch plan", description: "A short plan", agent_id: "strategist", goal_id: "g1", goal_title: "Launch", project_name: "Launch", workspace_name: "Work", next_action: "Approved. Start execution when ready.", deliverable: null, deliverables: [], thread_ids: [], needs_approval: false },
+        ] }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Task Center" }));
+    expect(await screen.findByText("Write launch plan")).toBeInTheDocument();
+    expect(screen.getByText(/Start execution when ready/)).toBeInTheDocument();
+    // status label is human-readable (badge + status filter option both match)
+    expect(screen.getAllByText("Awaiting execution").length).toBeGreaterThan(0);
+  });
+
+  it("filters tasks by status in the Task Center", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/tasks`]: () =>
+        ok({ items: [
+          { task_id: "t1", status: "awaiting_execution", title: "Task A", agent_id: "tutor" },
+          { task_id: "t2", status: "in_progress", title: "Task B", agent_id: "tutor" },
+        ] }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Task Center" }));
+    expect(await screen.findByText("Task A")).toBeInTheDocument();
+    expect(screen.getByText("Task B")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Task status filter"), { target: { value: "in_progress" } });
+    expect(screen.queryByText("Task A")).not.toBeInTheDocument();
+    expect(screen.getByText("Task B")).toBeInTheDocument();
+  });
+
+  it("renders Settings with sample-data and preferences sections", async () => {
+    globalThis.fetch = makeFetch() as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByText("Sample & test data", { selector: "h3" })).toBeInTheDocument();
+    expect(screen.getByText("Preferences", { selector: "h3" })).toBeInTheDocument();
+  });
+
+  it("opens the conversation-to-task panel from a conversation (AI Team)", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/memory/conversations`]: () =>
+        ok({ items: [
+          { thread_id: "thr-x", agent_id: "strategist", title: "Strategy talk", is_renamed: false, last_activity: "2026-11-02T00:00:00Z", message_count: 3 },
+        ] }),
+      [`${API}/memory/conversation?thread_id=thr-x`]: () =>
+        ok({ items: [ { role: "user", content: "help me", created_at: "now" } ] }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
+    // open the conversation, then click "→ Task" on it
+    fireEvent.click(await screen.findByText("Strategy talk"));
+    fireEvent.click(screen.getByText("→ Task"));
+    expect(await screen.findByTestId("conv-to-task")).toBeInTheDocument();
   });
 });

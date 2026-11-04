@@ -1,6 +1,5 @@
 import { test, expect } from "@playwright/test";
-
-const API = "http://127.0.0.1:8001";
+import { API } from "./env";
 
 test("full workflow journey via backend", async ({ request }) => {
   // workspace
