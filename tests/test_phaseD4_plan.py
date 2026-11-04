@@ -252,3 +252,33 @@ class TestPlanEndpoint(PlanUnitBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestActionableParentNote(PlanUnitBase):
+    def _agent(self, envelope_text):
+        a = BaseAgent(memory=None, router=_FakeRouter(envelope_text),
+                      manifest=self.reg.get("strategist"), user_id="u1",
+                      tools=build_registry(db=self.db, tenant_id=TENANT),
+                      policy=self.policy, brand=None)
+        a.name = "strategist"
+        return a
+
+    def test_missing_parent_uses_actionable_note(self):
+        a = self._agent(json.dumps({"reply": "ok", "proposal_v1": {
+            "work_type": "goal", "action": "create", "payload": {"title": "G"}}}))
+        with patch.object(BaseAgent, "_ingest_proposal_block", return_value={
+                "status": "failed",
+                "error": "project_id is required to create/update this work record"}):
+            r = a._generate_structured("make a goal", {"work_intent": True})
+        self.assertIn("needs a parent", r["reply"])
+        self.assertIn("Project", r["reply"])
+        self.assertNotIn("To try again, please confirm the parent", r["reply"])
+
+    def test_generic_failure_keeps_generic_note(self):
+        a = self._agent(json.dumps({"reply": "ok", "proposal_v1": {
+            "work_type": "goal", "action": "create", "payload": {"title": "G"}}}))
+        with patch.object(BaseAgent, "_ingest_proposal_block", return_value={
+                "status": "failed", "error": "some other validation issue"}):
+            r = a._generate_structured("make a goal", {"work_intent": True})
+        self.assertIn("To try again, please confirm the parent", r["reply"])
+        self.assertNotIn("needs a parent", r["reply"])

@@ -313,7 +313,7 @@ class TestReplyTruthfulness(PhaseBBase):
         before = self._count("goals")
         r = a._ground("c", context={"thread_id": "t1", "work_intent": True})
         self.assertIn("couldn't save", r["reply"])
-        self.assertIn("nothing was added", r["reply"])
+        self.assertIn("needs a parent", r["reply"])
         self.assertEqual(self._count("work_proposals"), 0)
         self.assertEqual(self._count("goals"), before)  # no new real goal
 
@@ -335,7 +335,7 @@ class TestReplyTruthfulness(PhaseBBase):
         a = self._agent("communications", json.dumps(
             {"reply": "I've added your deliverable.", "proposal_v1": blk}))
         r = a._ground("c", context={"thread_id": "t1", "work_intent": True})
-        self.assertIn("parent project or goal is selected", r["reply"])
+        self.assertIn("needs a parent", r["reply"])
         self.assertEqual(self._count("work_proposals"), 0)
 
     def test_saved_proposal_preserves_reply(self):
@@ -360,7 +360,7 @@ class TestReplyTruthfulness(PhaseBBase):
         before = self._count("goals")
         r = a._ground("c", context={"thread_id": "t1", "work_intent": True})
         self.assertIn("couldn't save", r["reply"])          # corrective present
-        self.assertIn("nothing was added", r["reply"])
+        self.assertIn("needs a parent", r["reply"])
         self.assertEqual(self._count("goals"), before)       # no new real goal
         # No success-only claim remains without the correction.
         statuses = [s.get("status") for s in r.get("proposal_results", [])]

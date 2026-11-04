@@ -2392,6 +2392,14 @@ export default function App() {
                 rows={2}
                 disabled={offline || planBusy}
               />
+              {/* D4.3: actionable empty-parent guidance — goals/deliverables need a project. */}
+              {projects.length === 0 && (
+                <div className="warning" data-testid="plan-needs-project" role="alert">
+                  There’s no project yet, so goals/deliverables/assignments can’t be created.
+                  Create a workspace + project first, then ask your team to plan.
+                  <button className="origin-link" onClick={() => setTab("workspace")}>Open Workspaces →</button>
+                </div>
+              )}
               <div className="command-panel__actions">
                 <button
                   className="btn btn--primary"

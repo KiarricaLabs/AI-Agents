@@ -22,6 +22,15 @@ _PROPOSAL_NOT_SAVED_NOTE = (
     "To try again, please confirm the parent project or goal is selected."
 )
 
+# Actionable variant used when the real reason is a MISSING parent (e.g. no
+# project/goal exists to attach the work to). Turns a dead end into a next step.
+_PARENT_REQUIRED_NOTE = (
+    "I couldn't save this because it needs a parent to attach to — a Project "
+    "(for goals/deliverables) or a Goal (for assignments) — and none is available. "
+    "Create one first (Workspaces \u203a create a project), or ask the team to propose "
+    "building it, then try again."
+)
+
 # Truthful, human-readable fallbacks when generation/retrieval fails. These are
 # system-level messages (not personality content): they never claim completed
 # work and never expose raw exceptions or internals.
@@ -368,7 +377,16 @@ class BaseAgent:
         if proposal_results and any(
             s.get("status") != "saved" for s in proposal_results
         ):
-            reply = (reply + "\n\n" + _PROPOSAL_NOT_SAVED_NOTE).strip()
+            errors = [str(s.get("error", "")) for s in proposal_results
+                      if s.get("status") != "saved" and s.get("error")]
+            missing_parent = any(
+                "is required to create/update this work record" in e
+                or "parent" in e.lower()
+                or "target_id" in e
+                for e in errors
+            )
+            note = _PARENT_REQUIRED_NOTE if missing_parent else _PROPOSAL_NOT_SAVED_NOTE
+            reply = (reply + "\n\n" + note).strip()
         result = {
             "reply": reply,
             "provider": provider,

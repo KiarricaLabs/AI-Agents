@@ -1500,6 +1500,23 @@ describe("D4.3-A2 plan approval bridge", () => {
   });
 });
 
+describe("D4.3 empty-parent guidance", () => {
+  it("shows actionable guidance when no project exists to attach work to", async () => {
+    const fn = makeFetch({
+      [`${API}/agents`]: () => ok({ agents: [{ name: "strategist", display_name: "Aisha", archetype: "Strategist" }] }),
+      [`${API}/workspaces`]: () => ok({ items: [] }),
+      [`${API}/workspaces/projects`]: () => ok({ items: [] }),
+      [`${API}/agents/plan`]: () => ok({ objective: "x", coordinator: "strategist", reply: "", steps: [] }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    const guide = await screen.findByTestId("plan-needs-project");
+    expect(guide).toBeInTheDocument();
+    expect(guide.textContent || "").toMatch(/no project yet/i);
+  });
+});
+
 describe("D4.3 read-only tool wiring", () => {
   it("runs the calculate tool and surfaces the result", async () => {
     const fn = makeFetch({
