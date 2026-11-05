@@ -1108,6 +1108,21 @@ export default function App() {
     }
   };
 
+  const deleteGoal = async (id: string) => {
+    try {
+      await fetch(`${API}/workspaces/goals/${encodeURIComponent(id)}`, { method: "DELETE" });
+      setSelectedGoal(null);
+      await refresh();
+    } catch { /* offline */ }
+  };
+
+  const deleteDeliverable = async (id: string) => {
+    try {
+      await fetch(`${API}/workspaces/deliverables/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await refresh();
+    } catch { /* offline */ }
+  };
+
   const createWorkspace = async () => {
     if (!name || offline) return;
     await fetch(`${API}/workspaces`, {
@@ -2799,6 +2814,12 @@ export default function App() {
                           <span className="list__icon"><Icon name="target" size={16} /></span>
                           <span className="list__name">{g.title}</span>
                           <span className={`badge badge--${g.status || "open"}`}>{statusLabel(g.status)}</span>
+                          <span className="list__actions">
+                            <button className="btn btn--sm btn--ghost" data-testid={`del-goal-${g.id}`}
+                              onClick={(e) => { e.stopPropagation(); deleteGoal(g.id); }}>
+                              Delete
+                            </button>
+                          </span>
                         </li>
                       ))}
                     </ul>
@@ -2992,6 +3013,12 @@ export default function App() {
                           <span className="list__name">{d.title}</span>
                           <span className={`badge ${d.latest_status ? `badge--${d.latest_status}` : "badge--neutral"}`}>
                             {statusLabel(d.latest_status) || "No versions"}
+                          </span>
+                          <span className="list__actions">
+                            <button className="btn btn--sm btn--ghost" data-testid={`del-deliverable-${d.id}`}
+                              onClick={(e) => { e.stopPropagation(); deleteDeliverable(d.id); }}>
+                              Delete
+                            </button>
                           </span>
                         </li>
                       ))}

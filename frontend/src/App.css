@@ -1623,6 +1623,7 @@ body {
 .team-chat__convrow .team-chat__conv { flex: 1 1 auto; min-width: 0; }
 .team-chat__del { flex: 0 0 auto; border: none; background: transparent; color: var(--text-faint); cursor: pointer; font-size: 15px; line-height: 1; }
 .team-chat__del:hover { color: var(--danger, #dc2626); }
+.list__actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .pipeline__stages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .pipeline__stage { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
 .pipeline__stage--done { opacity: 0.75; }
