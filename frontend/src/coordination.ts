@@ -290,6 +290,7 @@ export type ReviewActionType =
 
 export interface ReviewItem {
   type: ReviewActionType;
+  key?: string; // stable owner-scoped id used by the non-destructive dismissal
   goal_id?: string;
   goal_title?: string;
   title?: string;
@@ -321,6 +322,20 @@ export function getReviewCenter(): Promise<ReviewCenterResult> {
 // Human-only approval of a proposed TeamGoal (a Review Center action).
 export function approveTeamGoal(goalId: string): Promise<any> {
   return post<any>(`${API}/team/goals/${encodeURIComponent(goalId)}/approve`);
+}
+
+// Human-only, owner-scoped hiding of one review item WITHOUT deleting the
+// underlying coordination evidence. Idempotent; nothing is approved or executed.
+export function dismissReviewItem(type: string, key: string): Promise<any> {
+  return post<any>(`${API}/team/review/dismiss`, { type, key });
+}
+
+// Human-only restore of a previously dismissed review item.
+export function restoreReviewItem(type: string, key: string): Promise<any> {
+  return request<any>(
+    `${API}/team/review/dismiss?type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`,
+    { method: "DELETE" },
+  );
 }
 
 // ---------------------------------------------------------------------------

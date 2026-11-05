@@ -405,6 +405,9 @@ class Database:
             # Phase 8 §15: durable agent progress ledger (additive).
             from storage.migrations_progress import apply_progress_tables
             apply_progress_tables(c)
+            # T2-E Review Center: non-destructive dismissal ledger (additive).
+            from storage.migrations_review import apply_review_tables
+            apply_review_tables(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))

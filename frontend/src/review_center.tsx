@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   getReviewCenter,
   approveTeamGoal,
+  dismissReviewItem,
   humanizeAgent,
   type ReviewCenterResult,
   type ReviewItem,
@@ -66,6 +67,20 @@ export function ReviewCenter({ onOpen }: { onOpen?: (goalId?: string) => void })
     }
   }
 
+  async function doDismiss(item: ReviewItem) {
+    if (!item.type || !item.key) return;
+    setBusy(item.key);
+    setError("");
+    try {
+      await dismissReviewItem(item.type, item.key);
+      await load();
+    } catch (e) {
+      setError(rcErr(e, "Could not dismiss the item."));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const counts = data?.counts || {};
   const total = Object.keys(counts).reduce((s, k) => s + (counts[k] || 0), 0);
 
@@ -100,7 +115,7 @@ export function ReviewCenter({ onOpen }: { onOpen?: (goalId?: string) => void })
                 <ul className="list">
                   {items.map((it, idx) => (
                     <li key={`${type}-${idx}`} className="list__item" data-testid={`review-item-${type}`}>
-                      <ReviewItemRow item={it} busy={busy} onApprove={doApprove} onOpen={onOpen} />
+                      <ReviewItemRow item={it} busy={busy} onApprove={doApprove} onDismiss={doDismiss} onOpen={onOpen} />
                     </li>
                   ))}
                 </ul>
@@ -113,10 +128,11 @@ export function ReviewCenter({ onOpen }: { onOpen?: (goalId?: string) => void })
   );
 }
 
-function ReviewItemRow({ item, busy, onApprove, onOpen }: {
+function ReviewItemRow({ item, busy, onApprove, onDismiss, onOpen }: {
   item: ReviewItem;
   busy: string | null;
   onApprove: (i: ReviewItem) => void;
+  onDismiss?: (i: ReviewItem) => void;
   onOpen?: (goalId?: string) => void;
 }) {
   const open = onOpen ? () => onOpen(item.goal_id) : undefined;
@@ -148,6 +164,13 @@ function ReviewItemRow({ item, busy, onApprove, onOpen }: {
           <button className="btn btn--sm btn--primary" data-testid="review-approve"
             onClick={() => onApprove(item)} disabled={busy !== null}>
             {busy === item.goal_id ? "Approving…" : "Approve"}
+          </button>
+        )}
+        {onDismiss && (
+          <button className="btn btn--sm btn--ghost" data-testid={`review-dismiss-${item.type}`}
+            title="Hide this from the review list (keeps all evidence)"
+            onClick={() => onDismiss(item)} disabled={busy !== null}>
+            Dismiss
           </button>
         )}
         {open && (

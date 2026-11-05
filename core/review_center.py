@@ -22,16 +22,62 @@ Counts are provided alongside for a compact overview.
 """
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from core.agent_comm import AgentCommService
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 class ReviewCenterService:
+    # Allowed item types for the (non-destructive) dismissal ledger.
+    ITEM_TYPES = {
+        "goal_approval", "plan_authorization", "step_review",
+        "deliverable_review", "blocked_step", "blocked_communication",
+    }
+
     def __init__(self, db, tenant_id: str, user_id: str):
         self.db = db
         self.tenant_id = tenant_id
         self.user_id = user_id
+
+    # ------------------------------------------------------------------ dismissals
+
+    def dismissed(self) -> set:
+        """Set of (item_type, item_key) the owner has hidden from their list."""
+        rows = self._q(
+            "SELECT item_type, item_key FROM review_dismissals "
+            "WHERE tenant_id=? AND user_id=?", (self.tenant_id, self.user_id))
+        return {(r["item_type"], r["item_key"]) for r in rows}
+
+    def dismiss(self, item_type: str, item_key: str) -> dict:
+        """Hide one review item for this owner. Never touches evidence."""
+        if item_type not in self.ITEM_TYPES:
+            raise ValueError("unknown item_type")
+        item_key = (item_key or "").strip()
+        if not item_key:
+            raise ValueError("item_key is required")
+        self.db.execute(
+            "INSERT OR IGNORE INTO review_dismissals "
+            "(id, tenant_id, user_id, item_type, item_key, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (uuid.uuid4().hex, self.tenant_id, self.user_id,
+             item_type, item_key, _now()))
+        return {"dismissed": True, "item_type": item_type, "item_key": item_key}
+
+    def undismiss(self, item_type: str, item_key: str) -> dict:
+        """Restore a previously dismissed review item."""
+        if item_type not in self.ITEM_TYPES:
+            raise ValueError("unknown item_type")
+        self.db.execute(
+            "DELETE FROM review_dismissals WHERE tenant_id=? AND user_id=? "
+            "AND item_type=? AND item_key=?",
+            (self.tenant_id, self.user_id, item_type, item_key))
+        return {"dismissed": False, "item_type": item_type, "item_key": item_key}
 
     def _q(self, sql: str, params=()) -> List[Dict[str, Any]]:
         return [dict(r) for r in self.db.query(sql, params)]
@@ -98,28 +144,51 @@ class ReviewCenterService:
     def blocked_communications(self) -> List[Dict[str, Any]]:
         return AgentCommService(self.db, self.tenant_id, self.user_id).blocked()
 
-    def review(self) -> Dict[str, Any]:
-        """Return all owner-scoped action items, categorized, with counts."""
-        items: List[Dict[str, Any]] = []
-        for item in self.pending_goal_approvals():
-            items.append({"type": "goal_approval", **item})
-        for item in self.plans_awaiting_authorization():
-            items.append({"type": "plan_authorization", **item})
-        for item in self.steps_awaiting_review():
-            items.append({"type": "step_review", **item})
-        for item in self.deliverables_awaiting_review():
-            items.append({"type": "deliverable_review", **item})
-        for item in self.blocked_steps():
-            items.append({"type": "blocked_step", **item})
-        for item in self.blocked_communications():
-            items.append({"type": "blocked_communication", **item})
+    @staticmethod
+    def _key_for(item_type: str, item: Dict[str, Any]) -> str:
+        """Stable, unique per-owner key used by the non-destructive dismissal."""
+        if item_type in ("goal_approval", "plan_authorization"):
+            return "goal:" + str(item.get("goal_id") or "")
+        if item_type in ("step_review", "blocked_step"):
+            return "step:%s:%s" % (item.get("plan_id"), item.get("seq"))
+        if item_type == "deliverable_review":
+            return "deliv:" + str(item.get("plan_id") or "")
+        if item_type == "blocked_communication":
+            return "comm:" + str(item.get("id") or "")
+        return ""
 
-        counts = {
-            "goal_approval": len(self.pending_goal_approvals()),
-            "plan_authorization": len(self.plans_awaiting_authorization()),
-            "step_review": len(self.steps_awaiting_review()),
-            "deliverable_review": len(self.deliverables_awaiting_review()),
-            "blocked_step": len(self.blocked_steps()),
-            "blocked_communication": len(self.blocked_communications()),
-        }
+    def review(self) -> Dict[str, Any]:
+        """Return all owner-scoped action items, categorized, with counts.
+
+        Dismissed items (from the non-destructive ledger) are excluded from both
+        the list and the counts. Nothing is deleted; evidence stays intact.
+        """
+        raw: List[Dict[str, Any]] = [
+            {"type": "goal_approval", **item}
+            for item in self.pending_goal_approvals()
+        ] + [
+            {"type": "plan_authorization", **item}
+            for item in self.plans_awaiting_authorization()
+        ] + [
+            {"type": "step_review", **item}
+            for item in self.steps_awaiting_review()
+        ] + [
+            {"type": "deliverable_review", **item}
+            for item in self.deliverables_awaiting_review()
+        ] + [
+            {"type": "blocked_step", **item}
+            for item in self.blocked_steps()
+        ] + [
+            {"type": "blocked_communication", **item}
+            for item in self.blocked_communications()
+        ]
+
+        for it in raw:
+            it["key"] = self._key_for(it["type"], it)
+
+        dismissed = self.dismissed()
+        items = [it for it in raw if (it["type"], it["key"]) not in dismissed]
+        counts: Dict[str, int] = {}
+        for it in items:
+            counts[it["type"]] = counts.get(it["type"], 0) + 1
         return {"items": items, "counts": counts}

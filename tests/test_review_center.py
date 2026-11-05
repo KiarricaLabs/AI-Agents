@@ -179,6 +179,80 @@ class ReviewCenterTest(unittest.TestCase):
             "SELECT status FROM coordination_deliverables WHERE id=? "
             "AND tenant_id=? AND user_id=?", (did, t, u))[0]["status"], "pending")
 
+    # ---------------------------------------------------------- dismissals
+    def test_dismiss_hides_item_but_preserves_evidence(self):
+        t, u, db = self._ctx()
+        h = self._h(u, t)
+        tg = _propose(db, t, u, title="Dismiss Me")
+
+        body = self.client.get("/team/review", headers=h).json()
+        item = next(x for x in body["items"]
+                    if x["type"] == "goal_approval" and x.get("goal_id") == tg)
+        self.assertTrue(item["key"].startswith("goal:"))
+
+        # Dismiss is idempotent.
+        for _ in range(2):
+            r = self.client.post("/team/review/dismiss",
+                                 json={"type": "goal_approval", "key": item["key"]},
+                                 headers=h)
+            self.assertEqual(r.status_code, 200, r.text)
+
+        body2 = self.client.get("/team/review", headers=h).json()
+        self.assertFalse(any(x["type"] == "goal_approval" and x.get("goal_id") == tg
+                            for x in body2["items"]))
+        # Underlying evidence is untouched.
+        rows = db.query(
+            "SELECT status FROM team_goals WHERE id=? AND tenant_id=? AND user_id=?",
+            (tg, t, u))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "proposed")
+
+    def test_undismiss_restores_item(self):
+        t, u, db = self._ctx()
+        h = self._h(u, t)
+        tg = _propose(db, t, u, title="Restore Me")
+        body = self.client.get("/team/review", headers=h).json()
+        item = next(x for x in body["items"]
+                    if x["type"] == "goal_approval" and x.get("goal_id") == tg)
+        self.client.post("/team/review/dismiss",
+                         json={"type": "goal_approval", "key": item["key"]}, headers=h)
+        r = self.client.delete("/team/review/dismiss",
+                               params={"type": "goal_approval", "key": item["key"]},
+                               headers=h)
+        self.assertEqual(r.status_code, 200, r.text)
+        body2 = self.client.get("/team/review", headers=h).json()
+        self.assertTrue(any(x["type"] == "goal_approval" and x.get("goal_id") == tg
+                            for x in body2["items"]))
+
+    def test_dismiss_non_human_403(self):
+        t, u, db = self._ctx()
+        h = {"x-token": issue_token(u, t, "agent")}
+        r = self.client.post("/team/review/dismiss",
+                             json={"type": "goal_approval", "key": "goal:x"}, headers=h)
+        self.assertEqual(r.status_code, 403)
+
+    def test_dismiss_invalid_type_422(self):
+        t, u, db = self._ctx()
+        h = self._h(u, t)
+        r = self.client.post("/team/review/dismiss",
+                             json={"type": "nope", "key": "goal:x"}, headers=h)
+        self.assertEqual(r.status_code, 422)
+
+    def test_dismiss_isolation_across_users(self):
+        t, u1, db = self._ctx()
+        u2 = "fu_" + uuid.uuid4().hex[:8]
+        tg = _propose(db, t, u1, title="Isolated")
+        body = self.client.get("/team/review", headers=self._h(u1, t)).json()
+        item = next(x for x in body["items"]
+                    if x["type"] == "goal_approval" and x.get("goal_id") == tg)
+        self.client.post("/team/review/dismiss",
+                         json={"type": "goal_approval", "key": item["key"]}, headers=self._h(u1, t))
+        # A second user proposing the same key independently still sees their own goal.
+        tg2 = _propose(db, t, u2, title="Other")
+        body2 = self.client.get("/team/review", headers=self._h(u2, t)).json()
+        self.assertTrue(any(x["type"] == "goal_approval" and x.get("goal_id") == tg2
+                            for x in body2["items"]))
+
 
 if __name__ == "__main__":
     unittest.main()

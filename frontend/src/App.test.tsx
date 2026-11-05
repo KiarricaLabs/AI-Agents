@@ -2633,6 +2633,29 @@ describe("Review & Action Center (component)", () => {
     await screen.findByTestId("review-empty");
   });
 
+  it("dismisses a review item via POST and reloads the list", async () => {
+    let state: any = {
+      items: [{ type: "goal_approval", goal_id: "tg1", title: "Launch", key: "goal:tg1" }],
+      counts: { goal_approval: 1 },
+    };
+    const dismissCalls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/team/review")) return ok(state);
+      if (method === "POST" && url.endsWith("/team/review/dismiss")) {
+        dismissCalls.push(url);
+        state = { items: [], counts: {} }; // dismissal removes it from the list
+        return ok({ dismissed: true });
+      }
+      return ok({ items: [], counts: {} });
+    }) as any;
+    render(<ReviewCenter />);
+    await screen.findByTestId("review-section-goal_approval");
+    fireEvent.click(screen.getByTestId("review-dismiss-goal_approval"));
+    await screen.findByTestId("review-empty");
+    expect(dismissCalls.length).toBeGreaterThan(0);
+  });
+
   it("renders a blocked_communication section with from\u2192to metadata", async () => {
     globalThis.fetch = reviewBackend({
       items: [{
