@@ -1611,6 +1611,7 @@ body {
   justify-content: center; font-weight: 700; line-height: 1; flex-shrink: 0;
   box-shadow: 0 0 0 1px rgba(255,255,255,0.35);
 }
+.agent-avatar--img { object-fit: cover; display: inline-block; }
 .team-chat__composer { display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .team-chat__composer .input { width: 100%; box-sizing: border-box; }
 .team-chat__actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }

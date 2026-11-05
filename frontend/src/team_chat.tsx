@@ -12,7 +12,23 @@ import { Markdown } from "./markdown";
 
 const THREAD_KEY = "ai-team-shared-thread";
 
-// Per-agent avatar: a deterministic colored initial icon (no real photos needed).
+// Agent photos (fall back to a colored initial when no photo is mapped).
+import tutorUrl from "./assets/agents/tutor.jpg";
+import strategistUrl from "./assets/agents/strategist.jpg";
+import execAssistantUrl from "./assets/agents/executive_assistant.jpg";
+import workspaceArchitectUrl from "./assets/agents/workspace_architect.jpg";
+import soundboardUrl from "./assets/agents/soundboard.jpg";
+import communicationsUrl from "./assets/agents/communications.jpg";
+
+const AVATAR_IMG: Record<string, string> = {
+  tutor: tutorUrl,
+  strategist: strategistUrl,
+  executive_assistant: execAssistantUrl,
+  workspace_architect: workspaceArchitectUrl,
+  soundboard: soundboardUrl,
+  communications: communicationsUrl,
+};
+
 const AGENT_COLORS = ["#d97706", "#7c3aed", "#059669", "#dc2626", "#2563eb", "#0891b2", "#db2777"];
 
 function agentInitial(slug?: string): string {
@@ -29,6 +45,19 @@ function agentColor(slug?: string): string {
 }
 
 export function AgentAvatar({ slug, size = 28 }: { slug?: string; size?: number }) {
+  const src = slug ? AVATAR_IMG[slug.toLowerCase()] : undefined;
+  if (src) {
+    return (
+      <img
+        className="agent-avatar agent-avatar--img"
+        data-testid={`avatar-${slug || "team"}`}
+        aria-hidden="true"
+        src={src}
+        alt=""
+        style={{ width: size, height: size }}
+      />
+    );
+  }
   return (
     <span
       className="agent-avatar"
