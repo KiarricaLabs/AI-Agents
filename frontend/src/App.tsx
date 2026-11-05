@@ -5,6 +5,7 @@ import { KNOWN_SAMPLE_IDS } from "./knownSamples";
 import { statusLabel, priorityText } from "./uiText";
 import { Coordination } from "./coordination_panel";
 import { ReviewCenter } from "./review_center";
+import { TeamMemory } from "./team_memory";
 import "./App.css";
 
 const API = (import.meta.env.VITE_API_BASE as string | undefined) || "http://127.0.0.1:8001";
@@ -3182,6 +3183,7 @@ export default function App() {
                 : conversations;
               return (
                 <>
+                <TeamMemory agentDisplay={(slug) => agentLabel(slug || "")} />
                 <div className="conv-browser">
                   <div className="conv-browser__head">
                     <h3 className="section-title">Conversations</h3>
@@ -3575,15 +3577,31 @@ export default function App() {
                       <div
                         key={i}
                         className={`chat-bubble chat-bubble--${m.role === "user" ? "user" : "agent"}`}
+                        data-testid={`msg-${i}`}
                       >
-                        <div className="chat-bubble__role">
-                          {m.role === "user"
-                            ? "You"
-                            : (agents.find((x) => x.name === selectedAgent)?.display_name || humanize(selectedAgent))}
+                        <div className="chat-bubble__head">
+                          <span className="chat-bubble__role">
+                            {m.role === "user"
+                              ? "You"
+                              : (agents.find((x) => x.name === selectedAgent)?.display_name || humanize(selectedAgent))}
+                          </span>
+                          {m.created_at && (
+                            <span className="chat-bubble__time" data-testid={`msg-time-${i}`}>{formatStamp(m.created_at)}</span>
+                          )}
                         </div>
                         <div className="chat-bubble__body markdown"><Markdown source={m.content} /></div>
                       </div>
                     ))}
+                    {agentRunning && (
+                      <div className="chat-bubble chat-bubble--agent" data-testid="chat-thinking">
+                        <div className="chat-bubble__role">
+                          {(agents.find((x) => x.name === selectedAgent)?.display_name || humanize(selectedAgent))}
+                        </div>
+                        <div className="chat-bubble__status" role="status">
+                          <span className="spinner" aria-hidden="true" /> thinking…
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 

@@ -1540,12 +1540,42 @@ body {
 .chat-bubble--agent {
   align-items: flex-start;
 }
+.chat-bubble__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
 .chat-bubble__role {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   color: var(--text-faint);
 }
+.chat-bubble__time {
+  font-size: 10px;
+  color: var(--text-faint);
+  opacity: 0.75;
+}
+.chat-bubble__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.chat-bubble__status .spinner {
+  width: 11px;
+  height: 11px;
+}
+
+/* --- Chunk 4: team memory panel (Phase 9 $16) --- */
+.team-memory { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+.tm-propose, .tm-pending, .tm-approved { display: flex; flex-direction: column; gap: 8px; }
+.tm-item { align-items: center; gap: 12px; flex-wrap: wrap; }
+.tm-item__main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tm-item__title { font-weight: 600; }
+.tm-item__meta { font-size: 12px; }
 .chat-bubble__body {
   max-width: 82%;
   padding: 10px 12px;

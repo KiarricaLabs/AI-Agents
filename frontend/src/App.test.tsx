@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import App from "./App";
 import { Coordination } from "./coordination_panel";
 import { ReviewCenter } from "./review_center";
+import { TeamMemory } from "./team_memory";
 
 const API = "http://127.0.0.1:8001";
 
@@ -1100,6 +1101,18 @@ describe("Conversation Browser", () => {
     expect(tr).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "Plan" })).toBeInTheDocument(); // Markdown heading renders
     expect(screen.getByText("deep q15")).toBeInTheDocument(); // far beyond the 12-message window
+  });
+
+  it("shows message timestamps and no thinking indicator while idle", async () => {
+    globalThis.fetch = makeFetch(transcriptFixture()) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
+    fireEvent.click(await screen.findByText("Grow my business"));
+    await screen.findByTestId("transcript");
+    expect(screen.getByTestId("msg-0")).toBeInTheDocument();
+    expect(screen.getByTestId("msg-time-0").textContent).not.toBe("");
+    expect(screen.getByTestId("msg-time-1").textContent).not.toBe("");
+    expect(screen.queryByTestId("chat-thinking")).toBeNull();
   });
 
   it("continuing appends to the same thread", async () => {
@@ -2651,5 +2664,99 @@ describe("Review & Action Center (component)", () => {
     await screen.findByTestId("review-row-plan_authorization");
     fireEvent.click(screen.getByTestId("review-open"));
     expect(opened).toBe("tg9");
+  });
+});
+
+describe("Team Memory (component)", () => {
+  function memoryBackend(initial: any, onMutate?: (kind: string) => void) {
+    let state = { ...initial };
+    const fn = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method || "GET").toUpperCase();
+      if (url.endsWith("/memory/profile"))
+        return ok({ items: state.profile });
+      if (url.includes("/memory/proposals?") && method === "GET")
+        return ok({ proposals: state.proposals });
+      if (method === "POST" && url.includes("/memory/proposals/") && url.includes("/approve")) {
+        if (onMutate) onMutate("approve");
+        return ok({ ok: true });
+      }
+      if (method === "POST" && url.includes("/memory/proposals/") && url.includes("/reject")) {
+        if (onMutate) onMutate("reject");
+        return ok({ ok: true });
+      }
+      if (method === "POST" && url.includes("/memory/revoke/")) {
+        if (onMutate) onMutate("revoke");
+        return ok({ ok: true });
+      }
+      if (method === "POST" && url.endsWith("/memory/proposals")) {
+        if (onMutate) onMutate("propose");
+        return ok({ ok: true, proposal_id: "np1" });
+      }
+      return ok({ items: [], proposals: [] });
+    });
+    return fn;
+  }
+
+  it("lists approved memories and pending proposals", async () => {
+    globalThis.fetch = memoryBackend({
+      profile: [{ id: "m1", key: "Launch window", value: "prefer spring", created_at: "2026-01-01T00:00:00Z" }],
+      proposals: [{ id: "p1", key: "Use Figma", value: "Design tool", agent_id: "strategist", confidence: 0.8 }],
+    }) as any;
+    render(<TeamMemory />);
+    await screen.findByTestId("tm-memory-m1");
+    expect(screen.getByText("Launch window")).toBeInTheDocument();
+    expect(screen.findByTestId("tm-proposal-p1")).toBeTruthy();
+    expect(screen.getByTestId("tm-approve-p1")).toBeInTheDocument();
+    expect(screen.getByTestId("tm-reject-p1")).toBeInTheDocument();
+    expect(screen.getByTestId("tm-revoke-m1")).toBeInTheDocument();
+  });
+
+  it("approving a proposal calls the human-only endpoint", async () => {
+    const fn = memoryBackend({
+      profile: [],
+      proposals: [{ id: "p1", key: "Use Figma", value: "Design tool", agent_id: "strategist" }],
+    });
+    globalThis.fetch = fn as any;
+    render(<TeamMemory />);
+    await screen.findByTestId("tm-approve-p1");
+    fireEvent.click(screen.getByTestId("tm-approve-p1"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find((c: any) => c[0].includes("/memory/proposals/p1/approve"));
+      expect(call).toBeTruthy();
+      expect(call![1].method).toBe("POST");
+    });
+  });
+
+  it("rejecting a proposal calls the endpoint and a post-mutation reload occurs", async () => {
+    const fn = memoryBackend(
+      { profile: [], proposals: [{ id: "p1", key: "Use Figma", value: "Design tool" }] },
+      () => { /* reload re-reads state */ }
+    );
+    globalThis.fetch = fn as any;
+    render(<TeamMemory />);
+    await screen.findByTestId("tm-reject-p1");
+    fireEvent.click(screen.getByTestId("tm-reject-p1"));
+    await waitFor(() => {
+      expect(fn.mock.calls.find((c: any) => c[0].includes("/memory/proposals/p1/reject"))).toBeTruthy();
+    });
+  });
+
+  it("proposes a durable memory after human input", async () => {
+    const fn = memoryBackend({ profile: [], proposals: [] });
+    globalThis.fetch = fn as any;
+    render(<TeamMemory />);
+    await screen.findByTestId("tm-propose");
+    fireEvent.change(screen.getByTestId("tm-title"), { target: { value: "Prefers async" } });
+    fireEvent.change(screen.getByTestId("tm-value"), { target: { value: "No sync standups" } });
+    fireEvent.click(screen.getByTestId("tm-propose-btn"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find((c: any) => c[0].endsWith("/memory/proposals") && c[1]?.method === "POST");
+      expect(call).toBeTruthy();
+      const body = JSON.parse(call![1].body);
+      expect(body.key).toBe("Prefers async");
+      expect(body.value).toBe("No sync standups");
+    });
+    expect(await screen.findByTestId("tm-note")).toBeInTheDocument();
+    expect(screen.getByTestId("tm-note").textContent).toMatch(/must approve/);
   });
 });
