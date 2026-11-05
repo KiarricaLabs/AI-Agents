@@ -22,6 +22,47 @@ from core.message_work_extractor import (
 )
 
 
+class MockModelRouterTest(unittest.TestCase):
+    def test_mock_off_by_default_returns_real_path(self):
+        # With PAT_MOCK_AGENTS unset, complete() must NOT short-circuit:
+        # it should attempt the real provider (Ollama) and fail there, proving
+        # mock mode is off by default rather than silently substituting.
+        import os
+        from core.model_router import ModelRouter
+
+        os.environ.pop("PAT_MOCK_AGENTS", None)
+        r = ModelRouter(base_url="http://127.0.0.1:9", timeout=1, retries=0)
+        with self.assertRaises(Exception):
+            r.complete("strategist", "hi")
+
+    def test_mock_on_returns_deterministic_reply(self):
+        import os
+        from core.model_router import ModelRouter
+
+        os.environ["PAT_MOCK_AGENTS"] = "1"
+        try:
+            r = ModelRouter()
+            res = r.complete("strategist", "anything")
+            self.assertEqual(res.location, "mock")
+            self.assertEqual(res.provider, "mock")
+            self.assertIn("strategist", res.text.lower())
+        finally:
+            os.environ.pop("PAT_MOCK_AGENTS", None)
+
+    def test_mock_never_returns_real_location(self):
+        import os
+        from core.model_router import ModelRouter
+
+        os.environ["PAT_MOCK_AGENTS"] = "1"
+        try:
+            for slug in ("strategist", "tutor", "unknown_agent"):
+                r = ModelRouter().complete(slug, "hi")
+                self.assertEqual(r.location, "mock")
+                self.assertFalse(r.location.startswith("local:"))
+        finally:
+            os.environ.pop("PAT_MOCK_AGENTS", None)
+
+
 class MessageToAssignmentTest(unittest.TestCase):
     def test_extracts_task_subject_output_priority(self):
         d = MessageToAssignment.extract(

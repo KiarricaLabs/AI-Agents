@@ -64,6 +64,30 @@ class GroupChatSecurityTest(unittest.TestCase):
         }, headers=self._h(u, t, role="agent"))
         self.assertEqual(r.status_code, 403)
 
+    def test_mock_dispatch_returns_deterministic_replies_and_records_progress(self):
+        import os
+        os.environ["PAT_MOCK_AGENTS"] = "1"
+        try:
+            t, u = ("fg_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+            h = self._h(u, t)
+            thr = self.client.post("/team/threads", json={"title": "Smoke", "thread_type": "team"}, headers=h).json()["thread_id"]
+            r = self.client.post("/team/messages", json={
+                "message": "Plan a launch strategy and draft the announcement", "thread_id": thr,
+            }, headers=h)
+            self.assertEqual(r.status_code, 200, r.text)
+            body = r.json()
+            self.assertTrue(body.get("coordinated_team_response"))
+            self.assertTrue(body.get("responses"))
+            for resp in body["responses"]:
+                self.assertEqual(resp["model"], "mock")
+                self.assertTrue((resp.get("reply") or "").strip())
+            # progress rows were written for the responders
+            prog = self.client.get(f"/team/progress?thread_id={thr}", headers=h).json()["items"]
+            self.assertGreaterEqual(len(prog), 1)
+            self.assertTrue(all(p["status"] == "completed" for p in prog))
+        finally:
+            os.environ.pop("PAT_MOCK_AGENTS", None)
+
     def test_progress_is_tenantly_isolated(self):
         t1, u = ("fg_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
         t2 = "fg_%s" % uuid.uuid4().hex[:8]

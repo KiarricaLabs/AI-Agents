@@ -8,11 +8,30 @@ Design goals:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from config.settings import AI_PROVIDER, AI_MODEL, AI_BASE_URL
 from core.errors import ModelUnavailableError, ModelEmptyOutputError
+
+
+# Opt-in deterministic mock for testing agent responses WITHOUT a live model.
+# Only active when PAT_MOCK_AGENTS is set (1/true/yes). Never the default and
+# never used for real work; replies are labelled location=\"mock\" so they can't
+# be mistaken for model output. Fail-closed: absent the flag, real Ollama runs.
+def _mock_enabled() -> bool:
+    return (os.environ.get("PAT_MOCK_AGENTS") or "").lower() in ("1", "true", "yes")
+
+
+MOCK_REPLIES: Dict[str, str] = {
+    "workspace_architect": "Here is the workspace-architect view of that request — scope, responsibilities, and the structure I'd recommend.",
+    "strategist": "From the strategist seat: here is a concise recommendation and the tradeoffs worth weighing before we proceed.",
+    "tutor": "As tutor, here is a clear explanation of the idea, the steps involved, and what each one builds toward.",
+    "executive_assistant": "As your assistant, here is a tidy summary of what's being asked, what happens next, and what needs your go-ahead.",
+    "communications": "Here is a draft comms angle for the request — clear messaging you could review and refine.",
+    "soundboard": "Here are a few perspectives worth considering on that request, as an honest sounding board.",
+}
 
 
 @dataclass
@@ -48,6 +67,12 @@ class ModelRouter:
         context: Optional[Dict[str, Any]] = None,
         json_format: bool = False,
     ) -> ModelResult:
+        # OPT-IN deterministic mock (testing agent responses without a live model).
+        if _mock_enabled():
+            return ModelResult(
+                text=MOCK_REPLIES.get(agent_id, MOCK_REPLIES["workspace_architect"]),
+                provider="mock", model="mock", location="mock",
+            )
         from core.tracing import start_span, end_span
         from core import metrics
 
