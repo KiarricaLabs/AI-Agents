@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from core.agent_comm import AgentCommService
+
 
 class ReviewCenterService:
     def __init__(self, db, tenant_id: str, user_id: str):
@@ -93,6 +95,9 @@ class ReviewCenterService:
             (self.tenant_id, self.user_id))
 
     # ------------------------------------------------------------------ review
+    def blocked_communications(self) -> List[Dict[str, Any]]:
+        return AgentCommService(self.db, self.tenant_id, self.user_id).blocked()
+
     def review(self) -> Dict[str, Any]:
         """Return all owner-scoped action items, categorized, with counts."""
         items: List[Dict[str, Any]] = []
@@ -106,6 +111,8 @@ class ReviewCenterService:
             items.append({"type": "deliverable_review", **item})
         for item in self.blocked_steps():
             items.append({"type": "blocked_step", **item})
+        for item in self.blocked_communications():
+            items.append({"type": "blocked_communication", **item})
 
         counts = {
             "goal_approval": len(self.pending_goal_approvals()),
@@ -113,5 +120,6 @@ class ReviewCenterService:
             "step_review": len(self.steps_awaiting_review()),
             "deliverable_review": len(self.deliverables_awaiting_review()),
             "blocked_step": len(self.blocked_steps()),
+            "blocked_communication": len(self.blocked_communications()),
         }
         return {"items": items, "counts": counts}

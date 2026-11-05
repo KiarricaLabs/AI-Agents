@@ -2619,6 +2619,28 @@ describe("Review & Action Center (component)", () => {
     await screen.findByTestId("review-empty");
   });
 
+  it("renders a blocked_communication section with from\u2192to metadata", async () => {
+    globalThis.fetch = reviewBackend({
+      items: [{
+        type: "blocked_communication",
+        id: "cm1",
+        from_agent: "strategist",
+        to_agent: "tutor",
+        content: "ask tutor for sources",
+        message: "depth limit reached",
+        depth: 3,
+      }],
+      counts: { blocked_communication: 1 },
+    }) as any;
+    render(<ReviewCenter />);
+    await screen.findByTestId("review-section-blocked_communication");
+    const row = screen.getByTestId("review-row-blocked_communication");
+    expect(row).toBeInTheDocument();
+    // from → to subtitle and the error/explanation message are shown.
+    expect(row.textContent).toContain("→");
+    expect(row.textContent).toMatch(/depth limit reached/);
+  });
+
   it("routes an 'Open in AI Team' action to onOpen", async () => {
     let opened: string | undefined;
     globalThis.fetch = reviewBackend({

@@ -399,6 +399,9 @@ class Database:
             # T2-C-5: coordination deliverable versioning (additive tables only).
             from storage.migrations_t2c5 import apply_t2c5_tables
             apply_t2c5_tables(c)
+            # T2-E: durable agent-to-agent coordination ledger (additive).
+            from storage.migrations_t2e import apply_t2e_tables
+            apply_t2e_tables(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))

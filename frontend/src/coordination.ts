@@ -285,7 +285,8 @@ export type ReviewActionType =
   | "plan_authorization"
   | "step_review"
   | "deliverable_review"
-  | "blocked_step";
+  | "blocked_step"
+  | "blocked_communication";
 
 export interface ReviewItem {
   type: ReviewActionType;
@@ -299,6 +300,11 @@ export interface ReviewItem {
   seq?: number;
   agent_id?: string;
   error?: string;
+  // blocked_communication items carry the from→to coordinator ledger info.
+  from_agent?: string;
+  to_agent?: string;
+  content?: string;
+  message?: string;
 }
 
 export interface ReviewCenterResult {

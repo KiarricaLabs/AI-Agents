@@ -25,11 +25,12 @@ const TYPE_LABEL: Record<string, string> = {
   step_review: "Steps awaiting review",
   deliverable_review: "Deliverables awaiting review",
   blocked_step: "Blocked / failed steps",
+  blocked_communication: "Blocked agent coordination",
 };
 
 // Order sections sensibly in the hub.
 const SECTION_ORDER = ["goal_approval", "plan_authorization", "step_review",
-  "deliverable_review", "blocked_step"];
+  "deliverable_review", "blocked_step", "blocked_communication"];
 
 export function ReviewCenter({ onOpen }: { onOpen?: (goalId?: string) => void }) {
   const [data, setData] = useState<ReviewCenterResult | null>(null);
@@ -119,19 +120,27 @@ function ReviewItemRow({ item, busy, onApprove, onOpen }: {
   onOpen?: (goalId?: string) => void;
 }) {
   const open = onOpen ? () => onOpen(item.goal_id) : undefined;
-  const title = item.title || item.goal_title || "—";
+  const title = item.title || item.goal_title ||
+    (item.type === "blocked_communication" ? "Coordination loop blocked" : "—");
   const subtitle =
     item.type === "step_review" || item.type === "blocked_step"
       ? `Step ${item.seq} · ${humanizeAgent(item.agent_id)}`
-      : humanizeAgent(item.coordinator_agent);
+      : item.type === "blocked_communication"
+        ? `${humanizeAgent(item.from_agent)} → ${humanizeAgent(item.to_agent)}`
+        : humanizeAgent(item.coordinator_agent);
+
+  const errorText =
+    item.type === "blocked_communication"
+      ? `${item.content || ""} ${item.message || ""}`.slice(0, 140)
+      : item.error || "";
 
   return (
     <div className="review-row" data-testid={`review-row-${item.type}`}>
       <div className="review-row__main">
         <span className="review-row__title">{title}</span>
         {subtitle && <span className="muted review-row__meta">{subtitle}</span>}
-        {item.type === "blocked_step" && item.error && (
-          <span className="warning review-row__error">{(item.error || "").slice(0, 140)}</span>
+        {errorText && (
+          <span className="warning review-row__error">{errorText}</span>
         )}
       </div>
       <div className="coord-step__actions">
