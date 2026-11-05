@@ -206,6 +206,55 @@ def delete_deliverable(deliverable_id: str, request: Request):
     return {"ok": True, "deleted": "deliverable"}
 
 
+def _delete_project_cascade(db, tenant, user, pid) -> bool:
+    owned = db.query("SELECT id FROM projects WHERE id=? AND tenant_id=? AND user_id=?",
+                     (pid, tenant, user))
+    if not owned:
+        return False
+    gids = [r["id"] for r in db.query(
+        "SELECT id FROM goals WHERE project_id=? AND tenant_id=? AND user_id=?",
+        (pid, tenant, user))]
+    for gid in gids:
+        db.execute("DELETE FROM goal_events WHERE goal_id=? AND tenant_id=?", (gid, tenant))
+        db.execute("DELETE FROM assignments WHERE goal_id=? AND tenant_id=?", (gid, tenant))
+    dids = [r["id"] for r in db.query(
+        "SELECT id FROM deliverables WHERE project_id=? AND tenant_id=? AND user_id=?",
+        (pid, tenant, user))]
+    for did in dids:
+        db.execute("DELETE FROM deliverable_versions WHERE deliverable_id=? AND tenant_id=?", (did, tenant))
+    db.execute("DELETE FROM goals WHERE project_id=? AND tenant_id=? AND user_id=?", (pid, tenant, user))
+    db.execute("DELETE FROM deliverables WHERE project_id=? AND tenant_id=? AND user_id=?", (pid, tenant, user))
+    db.execute("DELETE FROM milestones WHERE project_id=? AND tenant_id=?", (pid, tenant))
+    db.execute("DELETE FROM projects WHERE id=? AND tenant_id=? AND user_id=?", (pid, tenant, user))
+    return True
+
+
+@router.delete("/projects/{project_id}")
+def delete_project(project_id: str, request: Request):
+    """Owner-scoped, human-gated project deletion (cascades goals/deliverables)."""
+    t, u = _identity(request); _require_human(request)
+    if not _delete_project_cascade(_db, t, u, project_id):
+        raise HTTPException(status_code=404, detail="project not found")
+    return {"ok": True, "deleted": "project"}
+
+
+@router.delete("/{workspace_id}")
+def delete_workspace(workspace_id: str, request: Request):
+    """Owner-scoped, human-gated workspace deletion (cascades all its projects)."""
+    t, u = _identity(request); _require_human(request)
+    if not _db.query("SELECT id FROM workspaces WHERE id=? AND tenant_id=? AND user_id=?",
+                     (workspace_id, t, u)):
+        raise HTTPException(status_code=404, detail="workspace not found")
+    pids = [r["id"] for r in _db.query(
+        "SELECT id FROM projects WHERE workspace_id=? AND tenant_id=? AND user_id=?",
+        (workspace_id, t, u))]
+    for pid in pids:
+        _delete_project_cascade(_db, t, u, pid)
+    _db.execute("DELETE FROM workspaces WHERE id=? AND tenant_id=? AND user_id=?",
+                (workspace_id, t, u))
+    return {"ok": True, "deleted": "workspace"}
+
+
 @router.get("/health")
 def health():
     return {"ok": True}

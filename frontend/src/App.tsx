@@ -1123,6 +1123,22 @@ export default function App() {
     } catch { /* offline */ }
   };
 
+  const deleteProject = async (id: string) => {
+    try {
+      await fetch(`${API}/workspaces/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (selectedProjectId === id) setSelectedProjectId(null);
+      await refresh();
+    } catch { /* offline */ }
+  };
+
+  const deleteWorkspace = async (id: string) => {
+    try {
+      await fetch(`${API}/workspaces/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (selectedWorkspaceId === id) { setSelectedWorkspaceId(null); setSelectedProjectId(null); }
+      await refresh();
+    } catch { /* offline */ }
+  };
+
   const createWorkspace = async () => {
     if (!name || offline) return;
     await fetch(`${API}/workspaces`, {
@@ -2184,6 +2200,12 @@ export default function App() {
                       <span className="list__icon"><Icon name="grid" size={16} /></span>
                       <span className="list__name">{w.name}</span>
                       <span className="badge badge--neutral">{plural(projectsIn(w.id).length, "project")}</span>
+                      <span className="list__actions">
+                        <button className="btn btn--sm btn--ghost" data-testid={`del-workspace-${w.id}`}
+                          onClick={(e) => { e.stopPropagation(); deleteWorkspace(w.id); }}>
+                          Delete
+                        </button>
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -2219,6 +2241,12 @@ export default function App() {
                         <span className="list__name">{p.name}</span>
                         <span className="badge badge--neutral">{plural(goalsIn(p.id).length, "goal")}</span>
                         <span className={`badge badge--${p.status || "neutral"}`}>{statusLabel(p.status)}</span>
+                        <span className="list__actions">
+                          <button className="btn btn--sm btn--ghost" data-testid={`del-project-${p.id}`}
+                            onClick={(e) => { e.stopPropagation(); deleteProject(p.id); }}>
+                            Delete
+                          </button>
+                        </span>
                       </li>
                     ))}
                   </ul>

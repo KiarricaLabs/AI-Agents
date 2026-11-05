@@ -90,6 +90,31 @@ class DeleteEndpointsTest(unittest.TestCase):
         r = self.client.delete(f"/work/proposals/{uuid.uuid4()}", headers=self._h(u, t, role="agent"))
         self.assertEqual(r.status_code, 403)
 
+    def test_delete_project_cascades_goals_and_deliverables(self):
+        t, u = ("dd_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+        h = self._h(u, t)
+        ws = self.client.post("/workspaces", json={"name": "Acme"}, headers=h).json()["id"]
+        pid = self.client.post("/workspaces/projects", json={"workspace_id": ws, "name": "Launch"}, headers=h).json()["id"]
+        self.client.post("/workspaces/goals", json={"project_id": pid, "title": "G"}, headers=h)
+        self.client.post("/workspaces/deliverables", json={"project_id": pid, "title": "D"}, headers=h)
+        r = self.client.delete(f"/workspaces/projects/{pid}", headers=h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.client.get("/workspaces/projects", headers=h).json()["items"], [])
+
+    def test_delete_workspace_cascades_projects(self):
+        t, u = ("dd_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+        h = self._h(u, t)
+        ws = self.client.post("/workspaces", json={"name": "Acme"}, headers=h).json()["id"]
+        self.client.post("/workspaces/projects", json={"workspace_id": ws, "name": "Launch"}, headers=h)
+        r = self.client.delete(f"/workspaces/{ws}", headers=h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.client.get("/workspaces", headers=h).json()["items"], [])
+
+    def test_delete_project_non_human_403(self):
+        t, u = ("dd_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+        r = self.client.delete(f"/workspaces/projects/{uuid.uuid4()}", headers=self._h(u, t, role="agent"))
+        self.assertEqual(r.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()
