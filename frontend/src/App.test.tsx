@@ -2667,6 +2667,69 @@ describe("Review & Action Center (component)", () => {
   });
 });
 
+describe("Conversation draft extraction (component)", () => {
+  function aiFixture() {
+    return {
+      [`${API}/agents`]: () => ok({ agents: [{ name: "strategist", display_name: "Aisha", archetype: "The Visionary" }] }),
+    };
+  }
+
+  it("extracts an assignment draft and does not auto-propose", async () => {
+    const fn = makeFetch({
+      ...aiFixture(),
+      [`${API}/work/extract`]: (url: string, opts?: any) => {
+        const b = JSON.parse(opts.body);
+        return ok({ kind: b.kind, draft: { kind: b.kind, title: "Research the market", subject_agent: "strategist", expected_output: "a brief", priority: "high" }, persisted: false });
+      },
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
+    fireEvent.click(await screen.findByRole("button", { name: "strategist" }));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "assign: Research the market\nto: strategist" } });
+    fireEvent.click(screen.getByTestId("extract-assignment"));
+    await screen.findByTestId("extract-panel");
+    expect(screen.getByTestId("extract-title").value).toBe("Research the market");
+    expect(screen.getByTestId("extract-agent").value).toBe("strategist");
+    // Draft only: no proposal is created on extraction.
+    expect(fn.mock.calls.some((c: any) => typeof c[0] === "string" && c[0].includes("/work/proposals"))).toBe(false);
+  });
+
+  it("proposing a deliverable draft without project context surfaces an error", async () => {
+    const fn = makeFetch({
+      ...aiFixture(),
+      [`${API}/work/extract`]: () => ok({ kind: "deliverable", draft: { kind: "deliverable", title: "Launch deck", format: "pdf" }, persisted: false }),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
+    fireEvent.click(await screen.findByRole("button", { name: "strategist" }));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "deliverable: Launch deck" } });
+    fireEvent.click(screen.getByTestId("extract-deliverable"));
+    await screen.findByTestId("extract-panel");
+    expect(screen.getByTestId("extract-title").value).toBe("Launch deck");
+    fireEvent.click(screen.getByTestId("extract-propose"));
+    await screen.findByTestId("extract-error");
+    expect(screen.getByTestId("extract-error").textContent).toMatch(/Pick a project/);
+  });
+
+  it("extract API error is surfaced without proposing", async () => {
+    const fn = makeFetch({
+      ...aiFixture(),
+      [`${API}/work/extract`]: () => fail({ detail: "unknown agent: bogus" }, 400),
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
+    fireEvent.click(await screen.findByRole("button", { name: "strategist" }));
+    fireEvent.change(screen.getByPlaceholderText("Give your agent a task…"), { target: { value: "assign to bogus" } });
+    fireEvent.click(screen.getByTestId("extract-assignment"));
+    await screen.findByTestId("extract-error");
+    expect(screen.getByTestId("extract-error").textContent).toMatch(/unknown agent/);
+    expect(screen.queryByTestId("extract-panel")).toBeNull();
+  });
+});
+
 describe("Team Memory (component)", () => {
   function memoryBackend(initial: any, onMutate?: (kind: string) => void) {
     let state = { ...initial };

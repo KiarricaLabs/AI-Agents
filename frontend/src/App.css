@@ -1569,6 +1569,11 @@ body {
   height: 11px;
 }
 
+/* --- Chunk 5: conversation draft extraction panel (Phases 5-6) --- */
+.extract-panel { display: flex; flex-direction: column; gap: 8px; margin: 10px 0;
+  padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+.extract-panel__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
 /* --- Chunk 4: team memory panel (Phase 9 $16) --- */
 .team-memory { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
 .tm-propose, .tm-pending, .tm-approved { display: flex; flex-direction: column; gap: 8px; }

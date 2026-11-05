@@ -288,6 +288,11 @@ export default function App() {
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentResult, setAgentResult] = useState<any>(null);
   const [agentError, setAgentError] = useState("");
+  // --- Chunk 5: conversation -> assignment/deliverable draft extraction ---
+  const [extractBusy, setExtractBusy] = useState(false);
+  const [extractError, setExtractError] = useState("");
+  const [extractDraft, setExtractDraft] = useState<any | null>(null);
+  const [extractMsg, setExtractMsg] = useState("");
   // --- M10 D4.2: graceful generation failure handling ---
   const [agentGenError, setAgentGenError] = useState<any>(null);
   const [agentRetryTask, setAgentRetryTask] = useState<string | null>(null);
@@ -1406,6 +1411,89 @@ export default function App() {
       setPfMsg("Could not create the proposal. Please try again.");
     } finally {
       setPfBusy(false);
+    }
+  };
+
+  // Chunk 5: extract an editable assignment/deliverable DRAFT from the typed
+  // message. Drafts persist nothing; the human proposes them for approval below.
+  const runExtract = async (kind: string) => {
+    if (offline || extractBusy) return;
+    const trimmed = task.trim();
+    if (!trimmed) return setExtractError("Type a message to extract from first.");
+    setExtractBusy(true);
+    setExtractError("");
+    setExtractMsg("");
+    setExtractDraft(null);
+    try {
+      const body: any = { kind, message: trimmed };
+      if (kind === "assignment") body.subject_agent = selectedAgent || "workspace_architect";
+      else body.owner_agent = selectedAgent || undefined;
+      const r = await fetch(`${API}/work/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setExtractError((b as any).detail || `Could not extract a draft (${r.status}).`);
+        return;
+      }
+      setExtractDraft(b.draft);
+      setExtractMsg(`Draft ${kind} extracted — edit the details, pick a target, then propose for approval.`);
+    } catch {
+      setExtractError("Could not extract a draft. Please try again.");
+    } finally {
+      setExtractBusy(false);
+    }
+  };
+
+  // Chunk 5: turn the edited extract draft into a work proposal (existing,
+  // human-only /work/proposals flow). Nothing is created until the human approves.
+  const proposeExtracted = async () => {
+    if (offline || extractBusy) return;
+    if (!extractDraft) return;
+    setExtractBusy(true);
+    setExtractError("");
+    setExtractMsg("");
+    try {
+      const kind = extractDraft.kind;
+      let work_type = kind;
+      let payload: any = {};
+      let target_id: string | undefined;
+      if (kind === "assignment") {
+        const gid = draftGoal || goalsIn(selectedProjectId || "")[0]?.id;
+        if (!gid) {
+          setExtractError("Pick a project with a goal to attach the assignment to.");
+          return;
+        }
+        work_type = "assignment";
+        payload = { goal_id: gid, agent_id: extractDraft.subject_agent || "workspace_architect" };
+      } else {
+        const pid = selectedProjectId || projects[0]?.id;
+        if (!pid) {
+          setExtractError("Pick a project to attach the deliverable to.");
+          return;
+        }
+        work_type = "deliverable";
+        payload = { project_id: pid, title: extractDraft.title || "New deliverable" };
+      }
+      const r = await fetch(`${API}/work/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ work_type, action: "create", payload, target_id, agent_id: extractDraft.subject_agent || selectedAgent || "workspace_architect" }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setExtractError((b as any).detail || `Could not create the proposal (${r.status}).`);
+        return;
+      }
+      setExtractMsg("Proposal created — approve it in Work · Approvals to create the real record.");
+      setExtractDraft(null);
+      await loadFeed();
+    } catch {
+      setExtractError("Could not create the proposal. Please try again.");
+    } finally {
+      setExtractBusy(false);
     }
   };
 
@@ -3436,10 +3524,85 @@ export default function App() {
                   >
                     🧮 Calculate
                   </button>
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    data-testid="extract-assignment"
+                    onClick={() => runExtract("assignment")}
+                    disabled={offline || extractBusy || !task.trim()}
+                    title="Parse this message into an editable assignment draft (nothing created until you approve)"
+                  >
+                    ↗ Extract assignment
+                  </button>
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    data-testid="extract-deliverable"
+                    onClick={() => runExtract("deliverable")}
+                    disabled={offline || extractBusy || !task.trim()}
+                    title="Parse this message into an editable deliverable draft (nothing created until you approve)"
+                  >
+                    ↗ Extract deliverable
+                  </button>
                   {agentRunning && (
                     <span className="task-panel__status">Generating response locally…</span>
                   )}
                 </div>
+
+                {extractError && <p className="error" role="alert" data-testid="extract-error">{extractError}</p>}
+                {extractDraft && (
+                  <div className="extract-panel" data-testid="extract-panel">
+                    <div className="extract-panel__head">
+                      <span className="result__heading">
+                        {extractDraft.kind === "assignment" ? "Assignment draft" : "Deliverable draft"}
+                      </span>
+                      <span className="badge badge--faint">draft only — requires your approval</span>
+                    </div>
+                    <p className="muted">
+                      Extracted from your message. Nothing is created until you approve a proposal.
+                    </p>
+                    <div className="work-toolbar" style={{ flexWrap: "wrap" }}>
+                      <span className="muted">Title:</span>
+                      <input
+                        className="input input--sm"
+                        value={extractDraft.title || ""}
+                        data-testid="extract-title"
+                        aria-label="Draft title"
+                        onChange={(e) => setExtractDraft({ ...extractDraft, title: e.target.value })}
+                      />
+                      {extractDraft.kind === "assignment" ? (
+                        <>
+                          <span className="muted">Agent:</span>
+                          <input
+                            className="input input--sm"
+                            value={extractDraft.subject_agent || ""}
+                            data-testid="extract-agent"
+                            aria-label="Subject agent"
+                            onChange={(e) => setExtractDraft({ ...extractDraft, subject_agent: e.target.value })}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <span className="muted">Format:</span>
+                          <input
+                            className="input input--sm"
+                            value={extractDraft.format || ""}
+                            data-testid="extract-format"
+                            aria-label="Deliverable format"
+                            onChange={(e) => setExtractDraft({ ...extractDraft, format: e.target.value })}
+                          />
+                        </>
+                      )}
+                      <button
+                        className="btn btn--sm btn--primary"
+                        data-testid="extract-propose"
+                        disabled={extractBusy}
+                        onClick={proposeExtracted}
+                      >
+                        {extractBusy ? "Proposing…" : "Propose for approval"}
+                      </button>
+                    </div>
+                    {extractMsg && <p className="success" role="status" data-testid="extract-msg">{extractMsg}</p>}
+                  </div>
+                )}
 
                 {/* Phase 1 (safest path): deterministic idea-to-proposal composer.
                     Always available — works even if the model is slow or offline,

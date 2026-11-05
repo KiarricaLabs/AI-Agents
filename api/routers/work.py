@@ -194,6 +194,19 @@ class WorkspaceProposalReq(BaseModel):
     thread_id: Optional[str] = None
 
 
+class ExtractWorkReq(BaseModel):
+    """Human-gated draft extraction from a conversation message.
+
+    DRAFT ONLY: returns an editable assignment/deliverable draft. Nothing is
+    persisted here; the human proposes it through ``POST /work/proposals`` and
+    approves it before any real record is created.
+    """
+    kind: str
+    message: str
+    subject_agent: Optional[str] = None  # used as the assignment subject fallback
+    owner_agent: Optional[str] = None    # used as the deliverable owner fallback
+
+
 class ProposeWorkReq(BaseModel):
     """Deterministic proposal creation for any supported work type.
 
@@ -207,6 +220,32 @@ class ProposeWorkReq(BaseModel):
     target_id: Optional[str] = None
     thread_id: Optional[str] = None
     agent_id: Optional[str] = None
+
+
+@router.post("/extract")
+def extract_work(req: ExtractWorkReq, request: Request):
+    """Return an editable, validated assignment/deliverable DRAFT from a message.
+
+    Human-gated. Drafts persist nothing; creating real work still requires the
+    human-only ``POST /work/proposals`` flow plus explicit approval.
+    """
+    from core.message_work_extractor import EXTRACTORS
+
+    t, u = _identity(request)
+    _require_human(request)
+    extract = EXTRACTORS.get((req.kind or "").strip().lower())
+    if not extract:
+        raise HTTPException(status_code=400, detail=f"unsupported kind: {req.kind}")
+    try:
+        kwargs = {}
+        if req.kind == "assignment":
+            kwargs["subject_agent"] = req.subject_agent
+        else:
+            kwargs["owner_agent"] = req.owner_agent
+        draft = extract(req.message, **kwargs)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"kind": draft["kind"], "draft": draft, "persisted": False}
 
 
 @router.post("/proposals")
