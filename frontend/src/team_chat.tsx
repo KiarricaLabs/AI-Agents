@@ -12,6 +12,35 @@ import { Markdown } from "./markdown";
 
 const THREAD_KEY = "ai-team-shared-thread";
 
+// Per-agent avatar: a deterministic colored initial icon (no real photos needed).
+const AGENT_COLORS = ["#d97706", "#7c3aed", "#059669", "#dc2626", "#2563eb", "#0891b2", "#db2777"];
+
+function agentInitial(slug?: string): string {
+  const name = humanizeAgent(slug);
+  const word = (name || "team").split(/[\s-]+/).filter(Boolean)[0] || "?";
+  return (word[0] || "?").toUpperCase();
+}
+
+function agentColor(slug?: string): string {
+  const s = (slug || "team").toLowerCase();
+  let h = 0;
+  for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return AGENT_COLORS[h % AGENT_COLORS.length];
+}
+
+export function AgentAvatar({ slug, size = 28 }: { slug?: string; size?: number }) {
+  return (
+    <span
+      className="agent-avatar"
+      data-testid={`avatar-${slug || "team"}`}
+      aria-hidden="true"
+      style={{ width: size, height: size, background: agentColor(slug), fontSize: Math.round(size * 0.48) }}
+    >
+      {agentInitial(slug)}
+    </span>
+  );
+}
+
 interface Msg {
   role: "user" | "assistant";
   agent?: string;
@@ -384,6 +413,7 @@ export function TeamChat() {
           messages.map((m, i) => (
             <div key={i} className={`chat-bubble chat-bubble--${m.role === "user" ? "user" : "agent"}`}>
               <div className="chat-bubble__head">
+                {m.role !== "user" && <AgentAvatar slug={m.agent} />}
                 <span className="chat-bubble__role">
                   {m.role === "user" ? "You" : m.agent ? humanizeAgent(m.agent) : "Team"}
                 </span>
@@ -395,7 +425,7 @@ export function TeamChat() {
         )}
         {sending && (
           <div className="chat-bubble chat-bubble--agent">
-            <div className="chat-bubble__role">Team</div>
+            <div className="chat-bubble__head"><AgentAvatar slug="" /><div className="chat-bubble__role">Team</div></div>
             <div className="chat-bubble__status" role="status"><span className="spinner" aria-hidden="true" /> coordinating…</div>
           </div>
         )}

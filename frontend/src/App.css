@@ -1606,6 +1606,14 @@ body {
   gap: 12px;
   padding: 12px;
 }
+.agent-avatar {
+  border-radius: 50%; color: #fff; display: inline-flex; align-items: center;
+  justify-content: center; font-weight: 700; line-height: 1; flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.35);
+}
+.team-chat__composer { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.team-chat__composer .input { width: 100%; box-sizing: border-box; }
+.team-chat__actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 
 /* --- Pipeline (chat -> deliverable) view --- */
 .pipeline { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
