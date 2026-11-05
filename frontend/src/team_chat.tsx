@@ -212,6 +212,9 @@ export function TeamChat() {
     } else if (propKind === "assignment") {
       if (!propParent) { setPropMsg("Choose a target goal."); return; }
       payload = { goal_id: propParent, agent_id: propDraft.subject_agent || "workspace_architect" };
+    } else if (propKind === "plan") {
+      // A plan is self-contained: approving it creates its own workspace/project
+      // plus goals (from milestones) and deliverables. No parent needed.
     } else {
       if (!propParent) { setPropMsg("Choose a parent project."); return; }
       payload = { project_id: propParent, title: propDraft.title || "New deliverable" };
@@ -219,6 +222,26 @@ export function TeamChat() {
     setPropBusy(true);
     setPropMsg("");
     try {
+      if (propKind === "plan") {
+        const r = await fetch(`${API}/team/plans`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: propDraft.title || "New plan",
+            milestones: propDraft.milestones || [],
+            deliverables: propDraft.deliverables || [],
+            tasks: [],
+            success_criteria: [],
+            description: propDraft.description || "",
+            thread_id: threadId || undefined,
+          }),
+        });
+        const b = await r.json().catch(() => ({}));
+        if (!r.ok) { setPropMsg((b as any).detail || `Could not create the plan proposal (${r.status}).`); return; }
+        setPropMsg("Plan proposed — approve it to create the goals and deliverables.");
+        setPropDraft(null);
+        setPropParent("");
+        return;
+      }
       const r = await fetch(`${API}/work/proposals`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ work_type, action: "create", payload, thread_id: threadId || undefined }),
@@ -229,7 +252,7 @@ export function TeamChat() {
       setPropDraft(null);
       setPropParent("");
     } catch {
-      setPropMsg("Could not create the proposal. Please try again.");
+      setPropMsg(propKind === "plan" ? "Could not create the plan proposal. Please try again." : "Could not create the proposal. Please try again.");
     } finally {
       setPropBusy(false);
     }
@@ -279,6 +302,7 @@ export function TeamChat() {
             <select className="select select--small" value={propKind} onChange={(e) => chooseKind(e.target.value)} aria-label="Proposal kind" data-testid="prop-kind">
               <option value="project">Project</option>
               <option value="goal">Goal</option>
+              <option value="plan">Plan (goals + deliverables)</option>
               <option value="assignment">Assignment</option>
               <option value="deliverable">Deliverable</option>
             </select>
@@ -292,11 +316,13 @@ export function TeamChat() {
               <span className="muted">Title:</span>
               <input className="input input--sm" value={propDraft.title || ""} data-testid="prop-title" aria-label="Proposal title"
                 onChange={(e) => setPropDraft({ ...propDraft, title: e.target.value })} />
-              <span className="muted">Parent:</span>
-              <select className="select select--small" value={propParent} onChange={(e) => setPropParent(e.target.value)} aria-label="Parent" data-testid="prop-parent">
-                <option value="">Select a parent…</option>
-                {parentOptions().map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-              </select>
+              {propKind !== "plan" && (<>
+                <span className="muted">Parent:</span>
+                <select className="select select--small" value={propParent} onChange={(e) => setPropParent(e.target.value)} aria-label="Parent" data-testid="prop-parent">
+                  <option value="">Select a parent…</option>
+                  {parentOptions().map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                </select>
+              </>)}
               <button className="btn btn--sm btn--primary" data-testid="prop-file" disabled={propBusy} onClick={proposeProposal}>
                 {propBusy ? "Filing…" : "Propose for approval"}
               </button>

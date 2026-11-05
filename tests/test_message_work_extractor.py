@@ -18,8 +18,27 @@ from fastapi.testclient import TestClient
 from api.app import app  # noqa: E402
 from core.auth import issue_token
 from core.message_work_extractor import (
-    MessageToAssignment, MessageToDeliverable, MessageToProject, MessageToGoal,
+    MessageToAssignment, MessageToDeliverable, MessageToProject, MessageToGoal, MessageToPlan,
 )
+
+
+class MessageToPlanTest(unittest.TestCase):
+    def test_parses_milestones_and_deliverables(self):
+        d = MessageToPlan.extract(
+            "plan: SF Bay launch\nmilestone: Research\nmilestone: Onboard\ndeliverable: Market brief")
+        self.assertEqual(d["kind"], "plan")
+        self.assertEqual(d["title"], "SF Bay launch")
+        self.assertEqual([m["title"] for m in d["milestones"]], ["Research", "Onboard"])
+        self.assertEqual([x["title"] for x in d["deliverables"]], ["Market brief"])
+
+    def test_defaults_when_no_structure_given(self):
+        d = MessageToPlan.extract("plan: Just an idea")
+        self.assertEqual(len(d["milestones"]), 1)
+        self.assertEqual(len(d["deliverables"]), 1)
+
+    def test_empty_rejected(self):
+        with self.assertRaises(ValueError):
+            MessageToPlan.extract("")
 
 
 class MockModelRouterTest(unittest.TestCase):

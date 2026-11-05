@@ -77,7 +77,10 @@ class TeamPlanApprovalIntegrationTest(unittest.TestCase):
         projects = self.client.get("/workspaces/projects", headers=h).json()["items"]
         self.assertGreaterEqual(len(projects), 1)
         goals = self.client.get("/workspaces/goals", headers=h).json()["items"]
-        self.assertEqual([g["title"] for g in goals], ["Research market"])
+        # Goals come from milestones (option A), not one-per-task.
+        self.assertEqual([g["title"] for g in goals], ["Phase 1"])
+        asgs = self.client.get("/workspaces/assignments", headers=h).json()["items"]
+        self.assertEqual([a["agent_id"] for a in asgs], ["strategist"])
         deliv = self.client.get("/workspaces/deliverables", headers=h).json()["items"]
         self.assertEqual([d["title"] for d in deliv], ["Market brief"])
 

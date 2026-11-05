@@ -160,35 +160,56 @@ class TeamPlanBuilder:
                  "planned", m["deadline"], now, now))
             milestone_ids.append(mid)
 
-        # --- goals + assignments (tasks roll up to milestones) ---
+        # --- goals come from milestones; tasks become assignments nested under them ---
         goal_ids: List[str] = []
+        goal_by_milestone: Dict[int, str] = {}   # milestone_index -> goal id
         assignment_ids: List[str] = []
-        for t in plan["tasks"]:
+        for i, m in enumerate(plan["milestones"]):
             gid = str(uuid.uuid4())
             c.execute(
                 "INSERT INTO goals "
                 "(id,tenant_id,project_id,user_id,title,priority,status,progress,updated_at,version,created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (gid, self.tenant_id, pid, self.user_id, t["title"], 0,
+                (gid, self.tenant_id, pid, self.user_id, m["title"], 0,
                  "open", 0, now, 0, now))
-            # roll task up to its milestone if present
-            if t.get("milestone_index") is not None:
-                c.execute(
-                    "UPDATE goals SET milestone_id=? WHERE id=? AND tenant_id=?",
-                    (milestone_ids[t["milestone_index"]], gid, self.tenant_id))
+            c.execute(
+                "UPDATE goals SET milestone_id=? WHERE id=? AND tenant_id=?",
+                (milestone_ids[i], gid, self.tenant_id))
             c.execute(
                 "INSERT INTO goal_events (id,tenant_id,goal_id,status,detail,created_at) "
                 "VALUES (?,?,?,?,?,?)",
                 (str(uuid.uuid4()), self.tenant_id, gid, "created",
-                 f"title={t['title']}", now))
+                 f"title={m['title']}", now))
             goal_ids.append(gid)
-            # assignment for the task's agent
+            goal_by_milestone[i] = gid
+        # each task becomes an assignment under its milestone's goal; a task
+        # without a milestone nests under the first goal so goals == milestones.
+        for t in plan["tasks"]:
+            goal_for = goal_by_milestone.get(t.get("milestone_index"))
+            if goal_for is None:
+                goal_for = goal_ids[0] if goal_ids else None
+            if goal_for is None:
+                # no milestones at all: give tasks a default goal so they still nest
+                gid = str(uuid.uuid4())
+                c.execute(
+                    "INSERT INTO goals "
+                    "(id,tenant_id,project_id,user_id,title,priority,status,progress,updated_at,version,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (gid, self.tenant_id, pid, self.user_id, plan["title"], 0,
+                     "open", 0, now, 0, now))
+                c.execute(
+                    "INSERT INTO goal_events (id,tenant_id,goal_id,status,detail,created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), self.tenant_id, gid, "created",
+                     f"title={plan['title']}", now))
+                goal_ids.append(gid)
+                goal_for = gid
             aid = str(uuid.uuid4())
             c.execute(
                 "INSERT INTO assignments "
                 "(id,tenant_id,goal_id,user_id,agent_id,priority,status,created_at) "
                 "VALUES (?,?,?,?,?,?,?,?)",
-                (aid, self.tenant_id, gid, self.user_id, t["agent"], 0, "queued", now))
+                (aid, self.tenant_id, goal_for, self.user_id, t["agent"], 0, "queued", now))
             if t.get("milestone_index") is not None:
                 c.execute(
                     "UPDATE assignments SET milestone_id=? WHERE id=? AND tenant_id=?",

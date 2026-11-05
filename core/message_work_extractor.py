@@ -196,10 +196,43 @@ class MessageToGoal:
                 "source_context": "conversation"}
 
 
+class MessageToPlan:
+    """Parses a planning brief into an editable plan draft (title + milestones +
+    deliverables). Deterministic and rule-based like the other extractors, so it
+    is testable and never persists anything."""
+
+    @staticmethod
+    def extract(message: str) -> Dict[str, object]:
+        text = _clean(message)
+        if not text:
+            raise ValueError("message is required")
+        lines = _lines(message)
+        title = _match_first([(r"^plan\s*[:\-]\s*(.+)$")], lines) \
+            or _cap(lines[0] if lines else "New plan")
+        milestones: List[Dict[str, object]] = []
+        deliverables: List[Dict[str, str]] = []
+        for i, ln in enumerate(lines):
+            m = re.match(r"^(?:milestone|phase)\s*[:\.\-]?\s*([^,;]+)$", ln, re.I)
+            if m and m.group(1).strip():
+                milestones.append({"title": _cap(m.group(1), 200), "order": i})
+                continue
+            d = re.match(r"^(?:deliverable|produce|output)\s*[:\.\-]?\s*(.+)$", ln, re.I)
+            if d and d.group(1).strip():
+                deliverables.append({"title": _cap(d.group(1), 200)})
+        if not milestones:
+            milestones.append({"title": f"Phase 1 — {_cap(title, 40)}", "order": 0})
+        if not deliverables:
+            deliverables.append({"title": _cap(title, 60) + " deliverable"})
+        return {"kind": "plan", "title": title,
+                "milestones": milestones, "deliverables": deliverables,
+                "source_context": "conversation"}
+
+
 # Dispatch so the API can call either extractor by kind.
 EXTRACTORS = {
     "assignment": MessageToAssignment.extract,
     "deliverable": MessageToDeliverable.extract,
     "project": MessageToProject.extract,
     "goal": MessageToGoal.extract,
+    "plan": MessageToPlan.extract,
 }

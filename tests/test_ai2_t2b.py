@@ -100,7 +100,8 @@ class PlanApprovalTest(unittest.TestCase):
         self.assertTrue(self.db.query("SELECT id FROM workspaces WHERE id=?", (wid,)))
         proj = self.db.query("SELECT id FROM projects WHERE workspace_id=?", (wid,))
         self.assertEqual(len(proj), 1)
-        self.assertEqual(len(self.db.query("SELECT id FROM goals WHERE project_id=?", (proj[0]["id"],))), 2)
+        # Goals == milestones (option A); tasks become assignments under them.
+        self.assertEqual(len(self.db.query("SELECT id FROM goals WHERE project_id=?", (proj[0]["id"],))), 1)
         self.assertEqual(len(self.db.query("SELECT id FROM assignments")), 2)
         self.assertEqual(len(self.db.query("SELECT id FROM deliverables WHERE project_id=?", (proj[0]["id"],))), 1)
         self.assertEqual(len(self.db.query("SELECT id FROM milestones WHERE project_id=?", (proj[0]["id"],))), 1)
