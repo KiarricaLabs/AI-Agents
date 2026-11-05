@@ -215,8 +215,67 @@ export function getDeliverableVersion(planId: string, executionId: string,
 }
 
 // ---------------------------------------------------------------------------
+// T2-C-8: TeamGoal authoring (propose + project-goal picker)
+// ---------------------------------------------------------------------------
+
+export interface ProjectGoal {
+  id: string;
+  title: string;
+  priority?: number;
+  project_id?: string;
+  status?: string;
+}
+
+export interface ProposeStepInput {
+  seq: number;
+  agent_id: string;
+  responsibility?: string | null;
+  depends_on_seq?: number | null;
+}
+
+export interface ProposeTeamGoalInput {
+  title: string;
+  coordinator_agent: string;
+  goal_id?: string | null;
+  thread_id?: string | null;
+  summary?: string | null;
+  expected_deliverable?: string | null;
+  steps?: ProposeStepInput[];
+  idempotency_key?: string;
+}
+
+export interface ProposeTeamGoalResult {
+  team_goal_id: string;
+  status: string;
+  reused?: boolean;
+}
+
+// Owner-scoped project goals used to power the coordination authoring picker.
+// Reuses the existing GET /workspaces/goals endpoint (no new backend surface).
+export function listProjectGoals(): Promise<{ items: ProjectGoal[] }> {
+  return request<{ items: ProjectGoal[] }>(`${API}/workspaces/goals`);
+}
+
+// Human-only TeamGoal proposal (intent only): creates a 'proposed' goal and
+// never approves, authorizes a plan, or starts execution.
+export function proposeTeamGoal(input: ProposeTeamGoalInput): Promise<ProposeTeamGoalResult> {
+  return post<ProposeTeamGoalResult>(`${API}/team/goals`, input);
+}
+
+// ---------------------------------------------------------------------------
 // UI helpers
 // ---------------------------------------------------------------------------
+
+// Known agent slugs usable for team-goal coordinator/step selection. This is a
+// UI picker list only; server-side validation remains authoritative.
+export const AGENT_SLUGS = [
+  "workspace_architect",
+  "strategist",
+  "tutor",
+  "executive_assistant",
+  "communications",
+  "soundboard",
+];
 
 const STEP_STATUS_LABEL: Record<string, string> = {
   pending: "Planned",

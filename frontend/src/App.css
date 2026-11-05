@@ -1679,3 +1679,10 @@ body {
 .version-content{max-height:260px;overflow:auto;background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-word}
 .version-history{margin:12px 0}
 .version-detail{margin:8px 0}
+/* == T2-C-8-2 — TeamGoal authoring form == */
+.coord-author-form{display:flex;flex-direction:column;gap:10px}
+.coord-field{display:flex;flex-direction:column;gap:4px}
+.coord-field>span{font-size:12px;font-weight:600;color:var(--text,#334155)}
+.coord-field input,.coord-field select,.coord-field textarea{width:100%;box-sizing:border-box}
+.coord-step-editor{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.coord-step-editor__seq{font-weight:600;min-width:22px}

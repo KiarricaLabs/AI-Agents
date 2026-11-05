@@ -5,6 +5,7 @@ their coordination plans and for human-authorized plan approval.
 
 Endpoints
 ---------
+- POST  /team/goals                       human: propose a TeamGoal (intent only)
 - GET   /team/goals                       list owner's TeamGoals
 - GET   /team/goals/{id}                  retrieve one TeamGoal (steps + approvals)
 - GET   /team/goals/{id}/coordination-plan   transient validated plan (review-only)
@@ -21,7 +22,7 @@ work, and never mutates the TeamGoal status.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -72,6 +73,62 @@ def _plan_svc(t: str, u: str):
 
 class RejectGoalBody(BaseModel):
     reason: Optional[str] = None
+
+
+class ProposeStep(BaseModel):
+    seq: int
+    agent_id: str
+    responsibility: Optional[str] = None
+    depends_on_seq: Optional[int] = None
+
+
+class ProposeGoalBody(BaseModel):
+    """Human-authored TeamGoal request. ``steps`` is an ordered list of
+    per-agent contributions validated server-side by TeamGoalService.propose."""
+    title: str
+    coordinator_agent: str
+    goal_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    summary: Optional[str] = None
+    expected_deliverable: Optional[str] = None
+    steps: Optional[List[ProposeStep]] = None
+    idempotency_key: Optional[str] = None
+
+
+@router.post("")
+def propose_team_goal(body: ProposeGoalBody, request: Request):
+    """Human-only TeamGoal proposal. Creates an INTENT in 'proposed' state only:
+    it does NOT approve the goal, does NOT authorize a coordination plan, and does
+    NOT initiate execution. Project-goal ownership is checked owner-scoped (404 for
+    a foreign/unknown goal); all other field validation errors map to 422. Identity
+    comes exclusively from request.state (never client-supplied)."""
+    t, u = _identity(request)
+    _require_human(request)
+
+    if body.goal_id:
+        owned = _db.query(
+            "SELECT id FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+            (body.goal_id, t, u))
+        if not owned:
+            raise HTTPException(status_code=404, detail="goal not found")
+
+    try:
+        result = _goal_svc(t, u).propose(
+            title=body.title,
+            coordinator_agent=body.coordinator_agent,
+            goal_id=body.goal_id,
+            thread_id=body.thread_id,
+            summary=body.summary,
+            expected_deliverable=body.expected_deliverable,
+            steps=([{"seq": s.seq, "agent_id": s.agent_id,
+                     "responsibility": s.responsibility,
+                     "depends_on_seq": s.depends_on_seq} for s in body.steps]
+                   if body.steps else None),
+            idempotency_key=body.idempotency_key,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return result
 
 
 @router.get("")

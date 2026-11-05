@@ -18,12 +18,32 @@ so a rerun against a reused DB does not duplicate records.
 """
 from __future__ import annotations
 
+import sys
+
 from config.settings import DB_PATH, DEFAULT_TENANT, LOCAL_USER
 from core.team_goal import TeamGoalService
 from core.workspace import WorkspaceService, ProjectService, GoalService
 from storage.database import Database
 
 TITLE = "E2E Launch Goal"
+PROJ_GOAL_TITLE = "E2E Project Goal"
+
+
+def seed_project_goal_only() -> None:
+    """Seed ONLY an owned project goal (workspace/project/goal) for the TeamGoal
+    authoring E2E, WITHOUT creating a TeamGoal. Prints the goal id. No approval,
+    plan authorization, or execution happens here."""
+    tenant = DEFAULT_TENANT
+    user = LOCAL_USER
+    db = Database(path=DB_PATH, tenant_id=tenant)
+    for g in GoalService(db, tenant, user).list():
+        if g.get("title") == PROJ_GOAL_TITLE:
+            print(g["id"])
+            return
+    ws = WorkspaceService(db, tenant, user).create("E2E WS")
+    pid = ProjectService(db, tenant, user).create(ws, "E2E Project")
+    gid = GoalService(db, tenant, user).create(pid, PROJ_GOAL_TITLE, 0)
+    print(gid)
 
 
 def main() -> None:
@@ -52,4 +72,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if "--project-goal" in sys.argv[1:]:
+        seed_project_goal_only()
+    else:
+        main()

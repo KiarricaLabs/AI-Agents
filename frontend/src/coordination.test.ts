@@ -12,6 +12,8 @@ import {
   getExecutionStatus,
   listDeliverableVersions,
   getDeliverableVersion,
+  listProjectGoals,
+  proposeTeamGoal,
   stepStatusLabel,
   execStatusLabel,
   versionStatusLabel,
@@ -114,6 +116,55 @@ describe("coordination API layer", () => {
     const v = await getDeliverableVersion("p1", "e1", "v2");
     expect(v.status).toBe("approved");
     expect(v.revision_of).toBe("v1");
+  });
+
+  it("lists project goals for the authoring picker", async () => {
+    useFetch(() => ok({ items: [{ id: "g1", title: "Launch", priority: 1 }] }));
+    const r = await listProjectGoals();
+    expect(r.items).toHaveLength(1);
+    expect(r.items[0].id).toBe("g1");
+  });
+
+  it("proposes a team goal via POST with the full contract", async () => {
+    useFetch((url, init: any) => {
+      expect(url.endsWith("/team/goals")).toBe(true);
+      expect(init.method).toBe("POST");
+      const body = JSON.parse(init.body);
+      expect(body.title).toBe("Launch");
+      expect(body.coordinator_agent).toBe("workspace_architect");
+      expect(body.goal_id).toBe("g1");
+      expect(body.steps).toEqual([
+        { seq: 1, agent_id: "strategist", responsibility: "Strategy", depends_on_seq: undefined },
+      ]);
+      return ok({ team_goal_id: "tg1", status: "proposed", reused: false });
+    });
+    const r = await proposeTeamGoal({
+      title: "Launch",
+      coordinator_agent: "workspace_architect",
+      goal_id: "g1",
+      steps: [{ seq: 1, agent_id: "strategist", responsibility: "Strategy" }],
+    });
+    expect(r.status).toBe("proposed");
+  });
+
+  it("omits optional fields that are undefined", async () => {
+    const spy = useFetch((_url, init: any) => {
+      const body = JSON.parse(init.body);
+      expect(body.summary).toBeUndefined();
+      expect(body.expected_deliverable).toBeUndefined();
+      expect(body.depends_on_seq).toBeUndefined();
+      return ok({ team_goal_id: "tg2", status: "proposed", reused: false });
+    });
+    const r = await proposeTeamGoal({ title: "X", coordinator_agent: "strategist" });
+    expect(r.team_goal_id).toBe("tg2");
+    void spy;
+  });
+
+  it("surfaces validation detail from the propose endpoint", async () => {
+    useFetch(() => fail(422, { detail: "unknown coordinator agent" }));
+    await expect(
+      proposeTeamGoal({ title: "X", coordinator_agent: "nope" }))
+      .rejects.toThrow(/unknown coordinator agent/);
   });
 
   it("surfaces backend detail on error", async () => {

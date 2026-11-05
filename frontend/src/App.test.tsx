@@ -2423,3 +2423,110 @@ describe("Coordination panel (component)", () => {
     expect(detail.textContent).toContain("Launch brief");
   });
 });
+
+describe("Coordination authoring form (component)", () => {
+  // Minimal backend stub simulating the propose + project-goal picker endpoints.
+  function coordAuthorBackend() {
+    const state: any = { goals: [], gid: 0 };
+    const fn = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method || "GET").toUpperCase();
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (method === "GET" && url.endsWith("/team/goals")) return ok({ items: state.goals });
+      if (method === "GET" && url.endsWith("/workspaces/goals")) {
+        return ok({ items: [{ id: "g1", title: "Launch", priority: 1 }] });
+      }
+      if (method === "POST" && url.endsWith("/team/goals")) {
+        state.gid += 1;
+        const created = { id: `tg${state.gid}`, title: body.title,
+          coordinator_agent: body.coordinator_agent, status: "proposed" };
+        state.goals.push(created);
+        return ok({ team_goal_id: created.id, status: "proposed", reused: false });
+      }
+      return ok({ items: [] });
+    });
+    return fn;
+  }
+
+  function openForm() {
+    render(<Coordination />);
+    fireEvent.click(screen.getByTestId("coord-new-goal"));
+    return screen.getByTestId("coord-create");
+  }
+
+  async function fillRequired() {
+    const picker = screen.getByTestId("coord-goal-picker");
+    fireEvent.change(picker, { target: { value: "g1" } });
+    fireEvent.change(screen.getByTestId("coord-form-title"), { target: { value: "Launch brief" } });
+  }
+
+  it("opens the authoring form and lists project goals", async () => {
+    globalThis.fetch = coordAuthorBackend() as any;
+    await openForm();
+    const picker = screen.getByTestId("coord-goal-picker");
+    await waitFor(() =>
+      expect(within(picker).getAllByRole("option").map((o) => o.getAttribute("value")))
+        .toContain("g1"));
+    expect(within(picker).getByRole("option", { name: "Launch" })).toBeInTheDocument();
+    expect(screen.getByTestId("coord-form-coordinator")).toBeInTheDocument();
+  });
+
+  it("validates required inputs before proposing", async () => {
+    globalThis.fetch = coordAuthorBackend() as any;
+    await openForm();
+    // no title, no project goal selected -> blocked client-side
+    fireEvent.click(screen.getByTestId("coord-propose"));
+    await screen.findByText(/A title is required/);
+    expect(screen.getByTestId("coord-create")).toBeInTheDocument();
+  });
+
+  it("proposes a team goal, shows proposed status, and refreshes the list", async () => {
+    globalThis.fetch = coordAuthorBackend() as any;
+    await openForm();
+    await waitFor(() =>
+      expect(within(screen.getByTestId("coord-goal-picker")).getByRole("option", { name: "Launch" }))
+        .toBeInTheDocument());
+    await fillRequired();
+    fireEvent.click(screen.getByTestId("coord-propose"));
+
+    await screen.findByText(/Approval is a separate human step/);
+    await waitFor(() => expect(screen.queryByTestId("coord-create")).not.toBeInTheDocument());
+    // proposed status is visible and the goal list refreshed with the new goal
+    await screen.findByTestId("coord-goal-tg1");
+    expect(screen.getByTestId("coord-goal-tg1").textContent).toContain("proposed");
+  });
+
+  it("adds and removes ordered steps and selects a dependency", async () => {
+    globalThis.fetch = coordAuthorBackend() as any;
+    await openForm();
+    await screen.findByTestId("coord-step-editor-1");
+    fireEvent.click(screen.getByTestId("coord-add-step"));
+    const editor2 = await screen.findByTestId("coord-step-editor-2");
+    expect(within(editor2).getByRole("option", { name: "after #1" })).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("coord-step-dep-2"), { target: { value: "1" } });
+    expect(screen.getByTestId("coord-step-dep-2").value).toBe("1");
+    // removing a step collapses the sequence back to one editor
+    fireEvent.click(screen.getByTestId("coord-step-remove-2"));
+    await waitFor(() => expect(screen.queryByTestId("coord-step-editor-2")).not.toBeInTheDocument());
+    expect(screen.getByTestId("coord-step-editor-1")).toBeInTheDocument();
+  });
+
+  it("surfaces a backend validation error from propose", async () => {
+    const fn = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/team/goals")) return ok({ items: [] });
+      if (method === "GET" && url.endsWith("/workspaces/goals")) {
+        return ok({ items: [{ id: "g1", title: "Launch" }] });
+      }
+      if (method === "POST" && url.endsWith("/team/goals")) {
+        return fail({ detail: "unknown coordinator agent" }, 422);
+      }
+      return ok({ items: [] });
+    });
+    globalThis.fetch = fn as any;
+    await openForm();
+    await waitFor(() => expect(within(screen.getByTestId("coord-goal-picker")).getByRole("option", { name: "Launch" })).toBeInTheDocument());
+    await fillRequired();
+    fireEvent.click(screen.getByTestId("coord-propose"));
+    await screen.findByText(/unknown coordinator agent/);
+  });
+});
