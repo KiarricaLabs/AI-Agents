@@ -402,6 +402,9 @@ class Database:
             # T2-E: durable agent-to-agent coordination ledger (additive).
             from storage.migrations_t2e import apply_t2e_tables
             apply_t2e_tables(c)
+            # Phase 8 §15: durable agent progress ledger (additive).
+            from storage.migrations_progress import apply_progress_tables
+            apply_progress_tables(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))

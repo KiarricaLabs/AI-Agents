@@ -48,6 +48,8 @@ export function TeamChat() {
   const [propParents, setPropParents] = useState<{ workspaces: any[]; projects: any[]; goals: any[] }>({ workspaces: [], projects: [], goals: [] });
   const [propBusy, setPropBusy] = useState(false);
   const [propMsg, setPropMsg] = useState("");
+  // --- Phase 8 §15: durable team progress feed for this thread ---
+  const [progress, setProgress] = useState<any[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
 
   const ensureThread = useCallback(async () => {
@@ -75,6 +77,11 @@ export function TeamChat() {
         content: m.content,
         created_at: m.created_at,
       })));
+    } catch { /* offline */ }
+    try {
+      const pr = await fetch(`${API}/team/progress?thread_id=${encodeURIComponent(tid)}`);
+      const pb = await pr.json().catch(() => ({}));
+      setProgress(pb.items || []);
     } catch { /* offline */ }
   }, []);
 
@@ -116,6 +123,11 @@ export function TeamChat() {
         content: x.reply || "",
       })).filter((m: Msg) => m.content);
       setMessages((prev) => [...prev, ...bubbles]);
+      if (threadId) {
+        const pr = await fetch(`${API}/team/progress?thread_id=${encodeURIComponent(threadId)}`);
+        const pb = await pr.json().catch(() => ({}));
+        setProgress(pb.items || []);
+      }
       if ((b.errors || []).length) {
         setError(`${b.errors.length} agent(s) couldn't respond just now.`);
       }
@@ -306,6 +318,20 @@ export function TeamChat() {
           </div>
         )}
       </div>
+
+      {progress.length > 0 && (
+        <div className="team-progress" data-testid="team-progress">
+          <span className="section-title">Recent activity ({progress.length})</span>
+          <ul className="list">
+            {progress.slice(0, 6).map((p, i) => (
+              <li key={`${p.id || i}`} className="list__item team-progress__item" data-testid={`progress-${i}`}>
+                <span className="badge badge--faint">{humanizeAgent(p.agent_id)} · {p.status}</span>
+                {p.detail && <span className="muted"> — {p.detail.slice(0, 140)}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {error && <p className="error" role="alert" data-testid="team-chat-error">{error}</p>}
 

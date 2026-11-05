@@ -2794,6 +2794,19 @@ describe("Team Chat (component)", () => {
     });
     expect(screen.getByTestId("prop-msg").textContent).toMatch(/Proposal created/);
   });
+
+  it("shows the team progress feed for the thread", async () => {
+    localStorage.removeItem("ai-team-shared-thread");
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/team/threads")) return ok({ thread_id: "team-1" });
+      if (url.includes("/team/progress?")) return ok({ items: [{ id: "p1", agent_id: "strategist", status: "completed", detail: "plan ready" }] });
+      if (url.includes("/memory/conversation?")) return ok({ items: [] });
+      return ok({ items: [] });
+    });
+    render(<TeamChat />);
+    await screen.findByTestId("team-progress");
+    expect(screen.getByText(/plan ready/)).toBeInTheDocument();
+  });
 });
 
 describe("Team Memory (component)", () => {

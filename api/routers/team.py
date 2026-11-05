@@ -181,6 +181,17 @@ def team_message(req: TeamMessageReq, request: Request):
     try:
         result = TeamRouter(reg, orch, t, u,
                             coordinator=DEFAULT_PLAN_COORDINATOR).dispatch_team(msg, router_ctx, persist)
+        # Phase 8 §15: record completed progress for each agent that responded so
+        # the command center can show what the team did, without re-running anyone.
+        if req.thread_id and result.get("responses"):
+            from core.progress import ProgressService
+            prog = ProgressService(_db, t, u)
+            for resp in result["responses"]:
+                try:
+                    prog.record(req.thread_id, resp.get("agent", "agent"), "completed",
+                                (resp.get("reply") or "")[:200] or None)
+                except ValueError:
+                    pass
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     return result
