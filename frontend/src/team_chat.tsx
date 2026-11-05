@@ -189,8 +189,23 @@ export function TeamChat() {
     let work_type = propKind;
     let payload: any = {};
     if (propKind === "project") {
-      if (!propParent) { setPropMsg("Choose a parent workspace."); return; }
-      payload = { workspace_id: propParent, name: propDraft.title || "New project" };
+      // Seamless path: with no workspace selected, create one (a container) on
+      // this explicit human action, then attach the project proposal to it.
+      if (propParent) {
+        payload = { workspace_id: propParent, name: propDraft.title || "New project" };
+      } else {
+        const wsName = (propDraft.title || "New project").slice(0, 60) + " · workspace";
+        const wsr = await fetch(`${API}/workspaces`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: wsName }),
+        });
+        const wsb = await wsr.json().catch(() => ({}));
+        if (!wsr.ok || !wsb.id) {
+          setPropMsg("Could not create a workspace to attach the project to. Please create one in Projects first.");
+          return;
+        }
+        payload = { workspace_id: wsb.id, name: propDraft.title || "New project" };
+      }
     } else if (propKind === "goal") {
       if (!propParent) { setPropMsg("Choose a parent project."); return; }
       payload = { project_id: propParent, title: propDraft.title || "New goal", priority: 0 };

@@ -2798,6 +2798,37 @@ describe("Team Chat (component)", () => {
     expect(screen.getByTestId("prop-msg").textContent).toMatch(/Proposal created/);
   });
 
+  it("auto-creates a workspace when proposing a project with no parent selected", async () => {
+    localStorage.removeItem("ai-team-shared-thread");
+    const fn = vi.fn(async (url: string, init?: any) => {
+      if (url.endsWith("/team/threads")) return ok({ thread_id: "team-1" });
+      if (url.includes("/memory/conversation?")) return ok({ items: [] });
+      if (url.endsWith("/workspaces") && init?.method === "POST") return ok({ id: "w9" });
+      if (url.endsWith("/workspaces")) return ok({ items: [] });
+      if (url.endsWith("/workspaces/projects")) return ok({ items: [] });
+      if (url.endsWith("/workspaces/goals")) return ok({ items: [] });
+      if (url.endsWith("/work/extract")) return ok({ kind: "project", draft: { kind: "project", title: "Build a product", description: null }, persisted: false });
+      if (url.endsWith("/work/proposals")) return ok({ ok: true });
+      return ok({ items: [] });
+    });
+    globalThis.fetch = fn as any;
+    render(<TeamChat />);
+    await screen.findByTestId("team-chat-input");
+    fireEvent.click(screen.getByTestId("mode-propose"));
+    fireEvent.change(screen.getByTestId("team-chat-input"), { target: { value: "project: Build a product" } });
+    fireEvent.click(screen.getByTestId("team-chat-propose"));
+    await screen.findByTestId("prop-title");
+    // No parent chosen -> proposing files the project under an auto-created workspace.
+    fireEvent.click(screen.getByTestId("prop-file"));
+    await waitFor(() => {
+      const wsCall = fn.mock.calls.find((c: any) => c[0].endsWith("/workspaces") && c[1]?.method === "POST");
+      expect(wsCall).toBeTruthy();
+      const prop = fn.mock.calls.find((c: any) => c[0].endsWith("/work/proposals") && c[1]?.method === "POST");
+      expect(prop).toBeTruthy();
+      expect(JSON.parse(prop![1].body).payload.workspace_id).toBe("w9");
+    });
+  });
+
   it("shows the team progress feed for the thread", async () => {
     localStorage.removeItem("ai-team-shared-thread");
     globalThis.fetch = vi.fn(async (url: string) => {
