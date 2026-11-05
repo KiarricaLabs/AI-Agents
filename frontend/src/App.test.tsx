@@ -2791,6 +2791,8 @@ describe("Team Chat (component)", () => {
       const body = JSON.parse(call![1].body);
       expect(body.work_type).toBe("project");
       expect(body.payload.workspace_id).toBe("w1");
+      // Task Center ↔ group-chat linkage: proposal carries the source thread.
+      expect(body.thread_id).toBe("team-1");
     });
     expect(screen.getByTestId("prop-msg").textContent).toMatch(/Proposal created/);
   });

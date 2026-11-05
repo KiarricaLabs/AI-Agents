@@ -206,7 +206,7 @@ export function TeamChat() {
     try {
       const r = await fetch(`${API}/work/proposals`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ work_type, action: "create", payload }),
+        body: JSON.stringify({ work_type, action: "create", payload, thread_id: threadId || undefined }),
       });
       const b = await r.json().catch(() => ({}));
       if (!r.ok) { setPropMsg((b as any).detail || `Could not create the proposal (${r.status}).`); return; }
