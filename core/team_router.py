@@ -82,6 +82,23 @@ class TeamRouter:
         tokens = self._capability_tokens(manifest)
         return sum(1 for kw in tokens if kw.lower() in low)
 
+    def _mentioned(self, message_l: str) -> List[str]:
+        """Direct mentions: agent named by @slug or by display name (case- and
+        boundary-insensitive). A named agent is ALWAYS considered relevant even
+        if its capabilities don't match the message intent."""
+        import re
+        found: List[str] = []
+        for slug in self.registry.list():
+            manifest = self.registry.get(slug) or {}
+            display = ((manifest.get("identity", {}) or {}).get("display_name") or "").strip()
+            if f"@{slug}".lower() in message_l:
+                found.append(slug)
+                continue
+            if display and re.search(
+                rf"(?<![a-z0-9_]){re.escape(display.lower())}(?![a-z0-9_])", message_l):
+                found.append(slug)
+        return found
+
     def _context_terms(self, text: str) -> List[str]:
         """Context terms derived from the message itself (extendable to project
         context later). Kept local/deterministic now."""
@@ -92,19 +109,24 @@ class TeamRouter:
         agent slugs that should respond, up to max_responders. Empty if none."""
         if not (message or "").strip():
             return []
+        message_l = message.lower()
+        direct = set(self._mentioned(message_l))
         scored: List[tuple] = []
         for slug in self.registry.list():
             manifest = self.registry.get(slug)
             if not manifest:
                 continue
-            cap_ok = any(k in message.lower() for c in manifest.get("capabilities", [])
+            cap_ok = any(k in message_l for c in manifest.get("capabilities", [])
                          for k in _CAPABILITY_KEYWORDS.get(c, [c]))
-            if not cap_ok:
-                # Capability pass: absent capability -> never routed. (Hard filter.)
+            # Direct mentions bypass the capability hard filter.
+            if not cap_ok and slug not in direct:
                 continue
             score = self._score(manifest, message)
-            if score <= 0:
+            if score <= 0 and slug not in direct:
                 continue
+            if slug in direct:
+                # A named agent joins the shortlist even with no keyword score.
+                score = max(score, 1)
             scored.append((score, slug))
         # Deterministic: highest score first, then stable slug ordering.
         scored.sort(key=lambda pair: (-pair[0], pair[1]))

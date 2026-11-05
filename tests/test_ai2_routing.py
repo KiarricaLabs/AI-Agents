@@ -64,6 +64,22 @@ class TeamRouterTest(unittest.TestCase):
         return Orchestrator(registry=self.reg, policy=self.policy, router=None,
                             memory=None, user_id="u1", tools=None, brand=None)
 
+    def test_direct_mention_brings_in_agent_despite_capability(self):
+        # Naming Portia (soundboard) by display name routes her even when the
+        # message carries no listen/reflect keyword.
+        relevant = self.router.relevant("@portia, let's go")
+        self.assertIn("soundboard", relevant)
+
+    def test_at_slug_mention_routes_agent(self):
+        relevant = self.router.relevant("@soundboard what do you think")
+        self.assertIn("soundboard", relevant)
+
+    def test_direct_mention_keeps_capability_agents_in_play(self):
+        # Mentioning Portia alongside a comms ask should bring in BOTH.
+        relevant = self.router.relevant("draft the announcement and ask @portia for her take")
+        self.assertIn("communications", relevant)
+        self.assertIn("soundboard", relevant)
+
     def test_capability_pass_filters_ineligible(self):
         # A communications/marketing message routes to the comms-capable agent,
         # and never to an agent that lacks a matching capability.
