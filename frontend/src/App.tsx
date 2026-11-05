@@ -7,6 +7,7 @@ import { Coordination } from "./coordination_panel";
 import { ReviewCenter } from "./review_center";
 import { TeamMemory } from "./team_memory";
 import { TeamChat } from "./team_chat";
+import { Pipeline } from "./pipeline";
 import "./App.css";
 
 const API = (import.meta.env.VITE_API_BASE as string | undefined) || "http://127.0.0.1:8001";
@@ -2089,6 +2090,7 @@ export default function App() {
               </div>
             )}
 
+            <Pipeline onJump={setTab} />
             <Coordination />
             <ReviewCenter onOpen={() => setTab("home")} />
           </section>

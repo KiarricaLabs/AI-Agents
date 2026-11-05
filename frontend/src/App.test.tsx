@@ -6,6 +6,7 @@ import { Coordination } from "./coordination_panel";
 import { ReviewCenter } from "./review_center";
 import { TeamMemory } from "./team_memory";
 import { TeamChat } from "./team_chat";
+import { Pipeline } from "./pipeline";
 
 const API = "http://127.0.0.1:8001";
 
@@ -1422,7 +1423,7 @@ describe("D4.3-A1 unified command interface", () => {
     // Titles now render as editable inputs (A2) backed by the plan step value.
     expect(screen.getByDisplayValue(/Scope launch/)).toBeInTheDocument();
     // Preview remains non-destructive: no proposal was created.
-    const propCalls = fn.mock.calls.filter((c: any) => c[0] === `${API}/work/proposals`);
+    const propCalls = fn.mock.calls.filter((c: any) => c[0] === `${API}/work/proposals` && ((c[1]?.method || "GET").toUpperCase() === "POST"));
     expect(propCalls.length).toBe(0);
   });
 
@@ -1478,7 +1479,7 @@ describe("D4.3-A2 plan approval bridge", () => {
     fireEvent.change(screen.getByTestId("plan-step-owner-0"), { target: { value: "communications" } });
     fireEvent.click(screen.getByTestId("plan-approve-0"));
     await waitFor(() => {
-      const call = fn.mock.calls.find((c: any) => c[0] === `${API}/work/proposals`);
+      const call = fn.mock.calls.find((c: any) => c[0] === `${API}/work/proposals` && ((c[1]?.method || "GET").toUpperCase() === "POST"));
       expect(call).toBeTruthy();
       const body = JSON.parse(call[1].body);
       expect(body.work_type).toBe("goal");
@@ -1498,7 +1499,7 @@ describe("D4.3-A2 plan approval bridge", () => {
     fireEvent.click(screen.getByTestId("plan-approve-all"));
     await waitFor(() => {
       const posted = fn.mock.calls
-        .filter((c: any) => c[0] === `${API}/work/proposals`)
+        .filter((c: any) => c[0] === `${API}/work/proposals` && ((c[1]?.method || "GET").toUpperCase() === "POST"))
         .map((c: any) => JSON.parse(c[1].body).work_type);
       expect(posted).toContain("goal");
       expect(posted).not.toContain("deliverable"); // rejected
@@ -1515,7 +1516,7 @@ describe("D4.3-A2 plan approval bridge", () => {
     fireEvent.change(goalSel, { target: { value: "g1" } });
     fireEvent.click(screen.getByTestId("plan-approve-2"));
     await waitFor(() => {
-      const call = fn.mock.calls.find((c: any) => c[0] === `${API}/work/proposals`);
+      const call = fn.mock.calls.find((c: any) => c[0] === `${API}/work/proposals` && ((c[1]?.method || "GET").toUpperCase() === "POST"));
       expect(call).toBeTruthy();
       const body = JSON.parse(call[1].body);
       expect(body.work_type).toBe("assignment");
@@ -1538,7 +1539,7 @@ describe("D4.3-A2 plan approval bridge", () => {
     // Unsupported step: no Approve control, a clear label, and no proposal POST.
     expect(screen.getByTestId("plan-unsupported-0")).toBeInTheDocument();
     expect(screen.queryByTestId("plan-approve-0")).not.toBeInTheDocument();
-    expect(fn.mock.calls.filter((c: any) => c[0] === `${API}/work/proposals`).length).toBe(0);
+    expect(fn.mock.calls.filter((c: any) => c[0] === `${API}/work/proposals` && ((c[1]?.method || "GET").toUpperCase() === "POST")).length).toBe(0);
   });
 });
 
@@ -2808,6 +2809,33 @@ describe("Team Chat (component)", () => {
     render(<TeamChat />);
     await screen.findByTestId("team-progress");
     expect(screen.getByText(/plan ready/)).toBeInTheDocument();
+  });
+});
+
+describe("Pipeline (component)", () => {
+  it("renders the ladder and highlights the approval stage for a pending proposal", async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/work/proposals")) return ok({ items: [{ id: "p1", title: "Launch app", work_type: "project", status: "proposed" }] });
+      return ok({ items: [] });
+    });
+    render(<Pipeline />);
+    await screen.findByTestId("pipeline-stages");
+    expect(screen.getByTestId("pipeline-chat")).toBeInTheDocument();
+    expect(screen.getByTestId("pipeline-approval")).toHaveClass("pipeline__stage--now");
+    expect(screen.getByTestId("pipeline-created")).toHaveClass("pipeline__stage--upcoming");
+  });
+
+  it("shows created work as done and routes to Task Center after approval", async () => {
+    let jumped: string | undefined;
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/work/proposals")) return ok({ items: [{ id: "p1", title: "Launch app", work_type: "goal", status: "approved" }] });
+      return ok({ items: [] });
+    });
+    render(<Pipeline onJump={(t) => { jumped = t; }} />);
+    await screen.findByTestId("pipeline-stages");
+    expect(screen.getByTestId("pipeline-approval")).toHaveClass("pipeline__stage--done");
+    fireEvent.click(screen.getByTestId("pipeline-goto-tasks"));
+    expect(jumped).toBe("tasks");
   });
 });
 
