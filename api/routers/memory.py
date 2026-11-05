@@ -20,6 +20,11 @@ def _identity(request: Request):
     return tenant, user
 
 
+def _require_human(request: Request):
+    if getattr(request.state, "role", None) not in ("user", "admin"):
+        raise HTTPException(status_code=403, detail="human-only")
+
+
 def _svc(tenant_id: str):
     return MemoryService(db=_db, tenant_id=tenant_id)
 
@@ -80,6 +85,22 @@ def list_conversations(request: Request):
     """Global conversation browser across all agents (agent filter is client-side)."""
     t, u = _identity(request)
     return {"items": _svc(t).list_threads(u)}
+
+
+@router.delete("/conversations/{thread_id}")
+def delete_conversation(thread_id: str, request: Request):
+    """Owner-scoped, human-gated thread deletion (removes its messages + links)."""
+    t, u = _identity(request); _require_human(request)
+    if not _db.query("SELECT thread_id FROM conversation_threads WHERE thread_id=? AND tenant_id=? AND user_id=?",
+                     (thread_id, t, u)):
+        raise HTTPException(status_code=404, detail="conversation not found")
+    for table in ("conversation_memory", "conversation_participants",
+                  "agent_progress", "work_links"):
+        _db.execute(f"DELETE FROM {table} WHERE thread_id=? AND tenant_id=? AND user_id=?",
+                    (thread_id, t, u))
+    _db.execute("DELETE FROM conversation_threads WHERE thread_id=? AND tenant_id=? AND user_id=?",
+                (thread_id, t, u))
+    return {"ok": True, "deleted": "conversation"}
 
 
 @router.patch("/conversations/{thread_id}")

@@ -353,3 +353,18 @@ def reject_proposal(proposal_id: str, body: RejectBody = None, request: Request 
     except ProposalAlreadyDecided:
         raise HTTPException(status_code=409, detail="proposal already decided")
     return {"ok": True, "status": "rejected"}
+
+
+@router.delete("/proposals/{proposal_id}")
+def delete_proposal(proposal_id: str, request: Request):
+    """Owner-scoped, human-gated removal of a proposal row from the list.
+    Never touches records created by an approved proposal."""
+    t, u = _identity(request)
+    _require_human(request)
+    rows = _db.query("SELECT id FROM work_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+                     (proposal_id, t, u))
+    if not rows:
+        raise HTTPException(status_code=404, detail="proposal not found")
+    _db.execute("DELETE FROM work_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+                (proposal_id, t, u))
+    return {"ok": True, "deleted": "proposal"}

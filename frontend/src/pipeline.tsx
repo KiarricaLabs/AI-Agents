@@ -61,6 +61,14 @@ export function Pipeline({ onJump }: { onJump?: (tab: "home" | "projects" | "tas
   useEffect(() => { load(); }, [load]);
 
   const item = props.find((p) => p.id === selected) || null;
+
+  const deleteProp = async () => {
+    if (!item) return;
+    try {
+      const r = await fetch(`${API}/work/proposals/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      if (r.ok) { setSelected(""); await load(); }
+    } catch { /* offline */ }
+  };
   const approved = item ? (item.status || "") !== "proposed" : false;
   const workType = item?.work_type || "";
   const createdLabel = WORK_LABEL[workType] || "Record";
@@ -94,15 +102,21 @@ export function Pipeline({ onJump }: { onJump?: (tab: "home" | "projects" | "tas
 
       {error && <p className="error" role="alert">{error}</p>}
 
-      <select className="select" data-testid="pipeline-select" value={selected}
-        onChange={(e) => setSelected(e.target.value)} aria-label="Proposal">
-        <option value="">Select a proposal…</option>
-        {props.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.title || p.work_type || p.id.slice(0, 8)} — {p.status} ({p.work_type || "?"})
-          </option>
-        ))}
-      </select>
+      <div className="pipeline__toolbar">
+        <select className="select" data-testid="pipeline-select" value={selected}
+          onChange={(e) => setSelected(e.target.value)} aria-label="Proposal">
+          <option value="">Select a proposal…</option>
+          {props.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.title || p.work_type || p.id.slice(0, 8)} — {p.status} ({p.work_type || "?"})
+            </option>
+          ))}
+        </select>
+        {item && (
+          <button className="btn btn--sm btn--ghost" data-testid="pipeline-delete"
+            onClick={deleteProp} title="Delete this proposal from the list">Delete</button>
+        )}
+      </div>
 
       {!loading && props.length === 0 && (
         <p className="muted" data-testid="pipeline-empty">

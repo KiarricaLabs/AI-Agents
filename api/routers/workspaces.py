@@ -17,6 +17,11 @@ def _identity(request: Request):
     return tenant, user
 
 
+def _require_human(request: Request):
+    if getattr(request.state, "role", None) not in ("user", "admin"):
+        raise HTTPException(status_code=403, detail="human-only")
+
+
 class CreateWorkspace(BaseModel):
     name: str
 class CreateProject(BaseModel):
@@ -173,6 +178,33 @@ def audit_export(request: Request):
     rows = db.query("SELECT * FROM memory_audit WHERE tenant_id=?", (tenant,))
     safe = [{k: v for k, v in r.items() if k not in ("detail",)} for r in rows]
     return {"ok": True, "exported": safe}
+
+@router.delete("/goals/{goal_id}")
+def delete_goal(goal_id: str, request: Request):
+    """Owner-scoped, human-gated goal deletion (removes its assignments + events)."""
+    t, u = _identity(request); _require_human(request)
+    if not _db.query("SELECT id FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+                     (goal_id, t, u)):
+        raise HTTPException(status_code=404, detail="goal not found")
+    _db.execute("DELETE FROM goal_events WHERE goal_id=? AND tenant_id=?", (goal_id, t))
+    _db.execute("DELETE FROM assignments WHERE goal_id=? AND tenant_id=?", (goal_id, t))
+    _db.execute("DELETE FROM goals WHERE id=? AND tenant_id=? AND user_id=?", (goal_id, t, u))
+    return {"ok": True, "deleted": "goal"}
+
+
+@router.delete("/deliverables/{deliverable_id}")
+def delete_deliverable(deliverable_id: str, request: Request):
+    """Owner-scoped, human-gated deliverable deletion (removes its versions)."""
+    t, u = _identity(request); _require_human(request)
+    if not _db.query("SELECT id FROM deliverables WHERE id=? AND tenant_id=? AND user_id=?",
+                     (deliverable_id, t, u)):
+        raise HTTPException(status_code=404, detail="deliverable not found")
+    _db.execute("DELETE FROM deliverable_versions WHERE deliverable_id=? AND tenant_id=?",
+                (deliverable_id, t))
+    _db.execute("DELETE FROM deliverables WHERE id=? AND tenant_id=? AND user_id=?",
+                (deliverable_id, t, u))
+    return {"ok": True, "deleted": "deliverable"}
+
 
 @router.get("/health")
 def health():

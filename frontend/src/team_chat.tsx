@@ -160,6 +160,21 @@ export function TeamChat() {
     if (typeof localStorage !== "undefined") localStorage.setItem(THREAD_KEY, tid);
   };
 
+  const deleteConv = async (tid: string) => {
+    try {
+      const r = await fetch(`${API}/memory/conversations/${encodeURIComponent(tid)}`, { method: "DELETE" });
+      if (r.ok) {
+        if (threadId === tid) {
+          if (typeof localStorage !== "undefined") localStorage.removeItem(THREAD_KEY);
+          setThreadId("");
+          setMessages([]);
+          setProgress([]);
+        }
+        loadConversations();
+      }
+    } catch { /* offline */ }
+  };
+
   useEffect(() => {
     (async () => { await ensureThread(); setBooting(false); loadConversations(); })();
   }, [ensureThread, loadConversations]);
@@ -351,14 +366,23 @@ export function TeamChat() {
           <ul className="team-chat__convlist">
             {conversations.map((c) => (
               <li key={c.thread_id}>
-                <button
-                  className={`team-chat__conv${threadId === c.thread_id ? " team-chat__conv--active" : ""}`}
-                  data-testid={`conv-${c.thread_id}`}
-                  onClick={() => openConv(c.thread_id)}
-                  title={c.title || c.thread_id}
-                >
-                  {c.title || c.thread_id}
-                </button>
+                <div className="team-chat__convrow">
+                  <button
+                    className={`team-chat__conv${threadId === c.thread_id ? " team-chat__conv--active" : ""}`}
+                    data-testid={`conv-${c.thread_id}`}
+                    onClick={() => openConv(c.thread_id)}
+                    title={c.title || c.thread_id}
+                  >
+                    {c.title || c.thread_id}
+                  </button>
+                  <button
+                    className="team-chat__del"
+                    data-testid={`del-conv-${c.thread_id}`}
+                    aria-label={`Delete ${c.title || "conversation"}`}
+                    title="Delete conversation"
+                    onClick={() => deleteConv(c.thread_id)}
+                  >×</button>
+                </div>
               </li>
             ))}
           </ul>
