@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import App from "./App";
+import { Coordination } from "./coordination_panel";
 
 const API = "http://127.0.0.1:8001";
 
@@ -572,6 +573,24 @@ describe("Agents", () => {
       expect(screen.getByRole("button", { name: n })).toBeInTheDocument();
     }
     expect(screen.getByText(/Select an agent to begin/)).toBeInTheDocument();
+  });
+
+  it("renders the coordination panel and lists team goals", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/team/goals`]: () =>
+        ok({ items: [{ id: "g1", title: "Launch", coordinator_agent: "workspace_architect", status: "approved" }] }),
+      [`${API}/team/goals/g1`]: () =>
+        ok({ id: "g1", title: "Launch", coordinator_agent: "workspace_architect", status: "approved", steps: [] }),
+      [`${API}/team/goals/g1/coordination-plan`]: () =>
+        ok({ team_goal_id: "g1", coordinator: "workspace_architect", steps: [], plan_valid: true, errors: [], warnings: [], transient: true }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "AI Team" }));
+    // Coordination panel present after agents/conversations load
+    const panel = await screen.findByTestId("coordination-panel");
+    expect(panel).toBeInTheDocument();
+    const goalBtn = await screen.findByTestId("coord-goal-g1");
+    expect(goalBtn.textContent).toContain("Launch");
   });
 
   it("shows agent display name and archetype when the backend provides them", async () => {
@@ -2110,6 +2129,19 @@ describe("Phase 4 — Task Center, Settings, conversation-to-task", () => {
     expect(screen.getAllByText("Awaiting execution").length).toBeGreaterThan(0);
   });
 
+  it("links from the Task Center to coordination (AI tab)", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/tasks`]: () => ok({ items: [] }),
+      [`${API}/team/goals`]: () => ok({ items: [] }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Task Center" }));
+    const link = await screen.findByTestId("open-coordination");
+    expect(link.textContent).toContain("Open coordination");
+    fireEvent.click(link);
+    expect(await screen.findByTestId("coordination-panel")).toBeInTheDocument();
+  });
+
   it("filters tasks by status in the Task Center", async () => {
     globalThis.fetch = makeFetch({
       [`${API}/tasks`]: () =>
@@ -2151,5 +2183,243 @@ describe("Phase 4 — Task Center, Settings, conversation-to-task", () => {
     fireEvent.click(await screen.findByText("Strategy talk"));
     fireEvent.click(screen.getByText("→ Task"));
     expect(await screen.findByTestId("conv-to-task")).toBeInTheDocument();
+  });
+});
+
+describe("Coordination panel (component)", () => {
+  const GOAL = {
+    id: "g1", title: "Launch", coordinator_agent: "workspace_architect",
+    status: "approved",
+  };
+  const PLAN_STEPS = [
+    { seq: 1, agent_id: "workspace_architect", responsibility: "Draft brief",
+      depends_on_seq: null, capability_ok: true, delegation_ok: true, valid: true,
+      error: null, status: "pending", effective_permissions: ["work:propose:goal"] },
+    { seq: 2, agent_id: "strategist", responsibility: "Refine brief",
+      depends_on_seq: 1, capability_ok: true, delegation_ok: true, valid: true,
+      error: null, status: "pending", effective_permissions: ["work:propose:goal"] },
+  ];
+  const REVIEW = {
+    team_goal_id: "g1", coordinator: "workspace_architect", steps: PLAN_STEPS,
+    plan_valid: true, errors: [], warnings: [], transient: true,
+  };
+  const PLAN = {
+    plan_id: "p1", team_goal_id: "g1", goal_id: null,
+    coordinator: "workspace_architect", expected_deliverable: "Launch brief",
+    status: "authorized", steps: PLAN_STEPS, reused: false,
+  };
+
+  function execSummary(s: any) {
+    return {
+      execution_id: s.executionId, plan_id: "p1", team_goal_id: "g1",
+      status: s.runStatus,
+      steps: s.steps.map((st: any) => ({
+        seq: st.seq, status: st.status, error: null,
+        has_evidence: st.status !== "pending",
+      })),
+      deliverable: s.deliverable,
+    };
+  }
+
+  function nextEligible(s: any) {
+    const sorted: any[] = [...s.steps].sort((a: any, b: any) => a.seq - b.seq);
+    for (const step of sorted) {
+      if (["awaiting_review", "in_progress", "accepted", "rejected"].includes(step.status)) continue;
+      const dep = PLAN_STEPS.find((p) => p.seq === step.seq)!.depends_on_seq;
+      if (dep != null) {
+        const d = s.steps.find((x: any) => x.seq === dep);
+        if (!d || d.status !== "accepted") continue;
+      }
+      return step;
+    }
+    return null;
+  }
+
+  function dependentClosure(s: any, targets: number[]): number[] {
+    const deps: Record<number, number | null> = { 1: null, 2: 1 };
+    const closure = new Set(targets);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [seq, dep] of Object.entries(deps)) {
+        if (dep != null && closure.has(dep) && !closure.has(Number(seq))) {
+          closure.add(Number(seq)); changed = true;
+        }
+      }
+    }
+    return [...closure].sort((a, b) => a - b);
+  }
+
+  // State-machine fetch stub simulating the T2-C-3/4/5 backend for one goal.
+  function coordBackend() {
+    const s: any = {
+      runStatus: "", executionId: "e1", steps: [], deliverable: null, versions: [],
+    };
+    const fn = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method || "GET").toUpperCase();
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (method === "GET" && url.endsWith("/team/goals")) return ok({ items: [GOAL] });
+      if (method === "GET" && url.endsWith("/coordination-plan")) return ok(REVIEW);
+      if (method === "POST" && url.endsWith("/coordination-plan/authorize")) return ok(PLAN);
+      if (method === "POST" && url.endsWith("/execution/initiate")) {
+        s.runStatus = "running";
+        s.steps = PLAN_STEPS.map((p) => ({ seq: p.seq, status: "pending" }));
+        s.deliverable = null; s.versions = [];
+        return ok({ execution_id: s.executionId, plan_id: "p1", team_goal_id: "g1", status: "running", reused: false });
+      }
+      if (method === "POST" && url.endsWith("/step/execute")) {
+        const el = nextEligible(s);
+        if (!el) return fail({ detail: "no eligible step" }, 409);
+        s.steps.find((x: any) => x.seq === el.seq)!.status = "awaiting_review";
+        return ok({ execution_id: s.executionId, step: el.seq, status: "awaiting_review" });
+      }
+      const stepReview = url.match(/\/step\/(\d+)\/review$/);
+      if (method === "POST" && stepReview) {
+        const seq = Number(stepReview[1]);
+        s.steps.find((x: any) => x.seq === seq)!.status = body.decision;
+        if (body.decision === "accepted" && s.steps.every((x: any) => x.status === "accepted")) {
+          s.runStatus = "ready_for_review";
+        }
+        return ok({ execution_id: s.executionId, step: seq, decision: body.decision, run_status: s.runStatus });
+      }
+      if (method === "POST" && url.endsWith("/aggregate")) {
+        s.deliverable = {
+          deliverable_id: "d1", execution_id: s.executionId, title: "Launch brief",
+          content: { expected_deliverable: "Launch brief", steps: [] },
+          status: "pending", review_note: null, reused: false,
+        };
+        s.versions = [{
+          version_id: "v1", deliverable_id: "d1", execution_id: s.executionId,
+          version: 1, content: s.deliverable.content, status: "pending",
+          review_note: null, revision_of: null,
+          created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+        }];
+        return ok(s.deliverable);
+      }
+      if (method === "POST" && url.endsWith("/deliverable/review")) {
+        if (body.decision === "revision_requested") {
+          const closure = dependentClosure(s, (body.rework_steps || []).map(Number));
+          s.steps.forEach((st: any) => { if (closure.includes(st.seq)) st.status = "revision_requested"; });
+          s.deliverable.status = "revision_requested"; s.runStatus = "running";
+          return ok({ execution_id: s.executionId, decision: "revision_requested", run_status: "running", steps: closure, version_id: "v1", version: 1 });
+        }
+        if (body.decision === "accepted") {
+          s.deliverable.status = "approved"; s.runStatus = "completed";
+          return ok({ execution_id: s.executionId, decision: "accepted", run_status: "completed", version_id: "v1", version: 1, approval: [] });
+        }
+        if (body.decision === "rejected") {
+          s.deliverable.status = "rejected"; s.runStatus = "rejected";
+          return ok({ execution_id: s.executionId, decision: "rejected", run_status: "rejected", version_id: "v1", version: 1, approval: [] });
+        }
+        return fail({ detail: "bad decision" }, 422);
+      }
+      if (method === "GET" && /\/deliverable\/versions\/[^/]+$/.test(url)) {
+        const vid = url.split("/").pop();
+        const v = s.versions.find((x: any) => x.version_id === vid);
+        return v ? ok(v) : fail({ detail: "version not found" }, 404);
+      }
+      if (method === "GET" && url.endsWith("/deliverable/versions")) {
+        return ok({ execution_id: s.executionId, versions: s.versions });
+      }
+      if (method === "GET" && url.includes(`/execution/${s.executionId}`)) {
+        return ok(execSummary(s));
+      }
+      return ok({ items: [] });
+    });
+    return fn;
+  }
+
+  async function openToExecution() {
+    render(<Coordination />);
+    fireEvent.click(await screen.findByTestId("coord-goal-g1"));
+    fireEvent.click(await screen.findByTestId("coord-authorize"));
+    fireEvent.click(await screen.findByTestId("coord-start-exec"));
+  }
+
+  // Wait for a button to become clickable (it may be temporarily disabled by an
+  // in-flight async reload) and then click it.
+  async function clickEnabled(testId: string) {
+    await screen.findByTestId(testId);
+    await waitFor(() => expect(screen.getByTestId(testId)).toBeEnabled());
+    fireEvent.click(screen.getByTestId(testId));
+  }
+
+  it("executes one step at a time and never auto-advances", async () => {
+    globalThis.fetch = coordBackend() as any;
+    await openToExecution();
+    await waitFor(() => expect(screen.getByTestId("coord-exec-next")).toBeEnabled());
+    await clickEnabled("coord-exec-next");
+    // Step 1 is ready for review; step 2 must NOT be auto-dispatched.
+    await screen.findByTestId("coord-accept-1");
+    expect(screen.queryByTestId("coord-accept-2")).not.toBeInTheDocument();
+    await clickEnabled("coord-accept-1");
+    await waitFor(() => expect(screen.queryByTestId("coord-accept-1")).not.toBeInTheDocument());
+    // Accepting step 1 must not dispatch step 2 either.
+    expect(screen.queryByTestId("coord-accept-2")).not.toBeInTheDocument();
+    await clickEnabled("coord-exec-next");
+    await screen.findByTestId("coord-accept-2");
+    expect(screen.queryByTestId("coord-accept-1")).not.toBeInTheDocument();
+  });
+
+  it("supports step revision (request revision on a step)", async () => {
+    globalThis.fetch = coordBackend() as any;
+    await openToExecution();
+    await clickEnabled("coord-exec-next");
+    await screen.findByTestId("coord-revise-1");
+    await clickEnabled("coord-revise-1");
+    await waitFor(() => expect(screen.queryByTestId("coord-revise-1")).not.toBeInTheDocument());
+    expect(screen.getByTestId("coord-step-1").textContent).toContain("Revision requested");
+    // A revised step is re-runnable: the execute action stays available.
+    await waitFor(() => expect(screen.getByTestId("coord-exec-next")).toBeEnabled());
+  });
+
+  async function aggregateAll() {
+    await clickEnabled("coord-exec-next");
+    await clickEnabled("coord-accept-1");
+    await clickEnabled("coord-exec-next");
+    await clickEnabled("coord-accept-2");
+    await screen.findByTestId("coord-aggregate");
+    await clickEnabled("coord-aggregate");
+  }
+
+  it("accepts the consolidated deliverable and completes the run", async () => {
+    globalThis.fetch = coordBackend() as any;
+    await openToExecution();
+    await aggregateAll();
+    await clickEnabled("coord-accept"); // deliverable accept button
+    await waitFor(() =>
+      expect(screen.getByTestId("coord-exec").textContent).toContain("Completed"));
+  });
+
+  it("requests a deliverable revision with selected rework steps", async () => {
+    globalThis.fetch = coordBackend() as any;
+    await openToExecution();
+    await aggregateAll();
+    await screen.findByTestId("coord-rework-1");
+    fireEvent.click(screen.getByTestId("coord-rework-1")); // select step 1 to rework
+    await clickEnabled("coord-revision");
+    // Run returns to running; invalidated step 1 is revision_requested and re-runnable.
+    await screen.findByTestId("coord-revision-notice");
+    await waitFor(() => expect(screen.getByTestId("coord-exec-next")).toBeEnabled());
+  });
+
+  it("rejects the deliverable into a terminal run state", async () => {
+    globalThis.fetch = coordBackend() as any;
+    await openToExecution();
+    await aggregateAll();
+    await clickEnabled("coord-reject");
+    await waitFor(() =>
+      expect(screen.getByTestId("coord-exec").textContent).toContain("Rejected"));
+  });
+
+  it("renders immutable deliverable version history and version detail", async () => {
+    globalThis.fetch = coordBackend() as any;
+    await openToExecution();
+    await aggregateAll();
+    const versionBtn = await screen.findByTestId("coord-version-v1");
+    expect(versionBtn.textContent).toContain("v1");
+    fireEvent.click(versionBtn);
+    const detail = await screen.findByTestId("coord-version-detail");
+    expect(detail.textContent).toContain("Launch brief");
   });
 });

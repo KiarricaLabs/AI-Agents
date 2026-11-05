@@ -387,6 +387,18 @@ class Database:
             )
             apply_ai2_columns(c)
             apply_ai2_tables(c)
+            # T2-C-1: TeamGoal coordination object (additive tables only).
+            from storage.migrations_t2c1 import apply_t2c1_tables
+            apply_t2c1_tables(c)
+            # T2-C-3: authoritative coordination plan snapshot (additive tables only).
+            from storage.migrations_t2c3 import apply_t2c3_tables
+            apply_t2c3_tables(c)
+            # T2-C-4: coordination execution + step outputs (additive tables only).
+            from storage.migrations_t2c4 import apply_t2c4_tables
+            apply_t2c4_tables(c)
+            # T2-C-5: coordination deliverable versioning (additive tables only).
+            from storage.migrations_t2c5 import apply_t2c5_tables
+            apply_t2c5_tables(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))

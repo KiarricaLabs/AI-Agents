@@ -3,6 +3,7 @@ import { diffLines } from "./diff";
 import { Markdown } from "./markdown";
 import { KNOWN_SAMPLE_IDS } from "./knownSamples";
 import { statusLabel, priorityText } from "./uiText";
+import { Coordination } from "./coordination_panel";
 import "./App.css";
 
 const API = (import.meta.env.VITE_API_BASE as string | undefined) || "http://127.0.0.1:8001";
@@ -3743,6 +3744,7 @@ export default function App() {
                 )}
               </div>
             )}
+            <Coordination />
           </section>
         )}
 
@@ -3752,6 +3754,9 @@ export default function App() {
               <div>
                 <h2 className="panel__title">Task Center</h2>
                 <p className="panel__sub">Track every piece of work across your projects — what\u2019s waiting, what\u2019s active, and what needs your input.</p>
+                <button className="btn btn--sm btn--ghost" data-testid="open-coordination" onClick={() => setTab("ai")}>
+                  Open coordination
+                </button>
               </div>
             </div>
             <div className="work-toolbar" style={{ flexWrap: "wrap" }}>

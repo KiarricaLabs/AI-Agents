@@ -1659,3 +1659,23 @@ body {
 .conv-to-task{border:1px dashed var(--border,#cbd5e1);border-radius:10px;padding:14px;margin-top:4px}
 .conv-to-task__head{display:flex;justify-content:space-between;align-items:center}
 .conv-browser__actions{display:inline-flex;gap:6px}
+
+/* == T2-C-6 — Coordination & Deliverable Review panel == */
+.coordination-panel{margin-top:16px;border-top:1px solid var(--border,#e2e8f0);padding-top:16px}
+.coordination-detail{margin-top:12px}
+.coord-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.coord-block{margin:12px 0;padding:12px;background:var(--surface,#f8fafc);border:1px solid var(--border,#e2e8f0);border-radius:10px}
+.coord-actions{display:flex;gap:8px;margin:8px 0}
+.coord-step{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap}
+.coord-step__main{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.coord-step__agent{font-weight:600}
+.coord-step__resp{color:#334155}
+.coord-step__dep{font-size:12px}
+.coord-step__actions{display:inline-flex;gap:6px}
+.deliverable-actions{display:flex;gap:8px;margin:8px 0}
+.deliverable-rework{margin:8px 0}
+.rework-select{margin:10px 0;padding:10px;border:1px dashed var(--border,#cbd5e1);border-radius:8px}
+.rework-option{display:flex;gap:8px;align-items:center;margin:4px 0}
+.version-content{max-height:260px;overflow:auto;background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-word}
+.version-history{margin:12px 0}
+.version-detail{margin:8px 0}
