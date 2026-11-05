@@ -1569,6 +1569,44 @@ body {
   height: 11px;
 }
 
+/* --- Team chat: tablet shell + conversation sidebar + contained thread --- */
+.team-chat-shell {
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.team-chat__sidebar {
+  flex: 0 0 200px;
+  max-height: 520px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-chat__convlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.team-chat__conv {
+  width: 100%; text-align: left; padding: 6px 8px; border-radius: var(--radius);
+  border: 1px solid transparent; background: transparent; color: var(--text);
+  cursor: pointer; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.team-chat__conv:hover { background: var(--surface-2); }
+.team-chat__conv--active { border-color: var(--accent-strong); font-weight: 600; }
+.team-chat { flex: 1 1 auto; min-width: 0; }
+.team-chat .team-chat__list {
+  height: 460px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
 /* --- Pipeline (chat -> deliverable) view --- */
 .pipeline { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
 .pipeline__stages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }

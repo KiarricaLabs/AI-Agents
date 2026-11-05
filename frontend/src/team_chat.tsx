@@ -50,6 +50,8 @@ export function TeamChat() {
   const [propMsg, setPropMsg] = useState("");
   // --- Phase 8 §15: durable team progress feed for this thread ---
   const [progress, setProgress] = useState<any[]>([]);
+  // --- conversation sidebar ---
+  const [conversations, setConversations] = useState<any[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
 
   const ensureThread = useCallback(async () => {
@@ -85,9 +87,24 @@ export function TeamChat() {
     } catch { /* offline */ }
   }, []);
 
+  const loadConversations = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/memory/conversations`);
+      const b = await r.json().catch(() => ({}));
+      setConversations(b.items || []);
+    } catch { /* offline */ }
+  }, []);
+
+  const openConv = (tid: string) => {
+    setThreadId(tid);
+    setMessages([]);
+    setProgress([]);
+    if (typeof localStorage !== "undefined") localStorage.setItem(THREAD_KEY, tid);
+  };
+
   useEffect(() => {
-    (async () => { await ensureThread(); setBooting(false); })();
-  }, [ensureThread]);
+    (async () => { await ensureThread(); setBooting(false); loadConversations(); })();
+  }, [ensureThread, loadConversations]);
 
   useEffect(() => { if (threadId) load(threadId); }, [threadId, load]);
 
@@ -266,7 +283,31 @@ export function TeamChat() {
   };
 
   return (
-    <section className="panel team-chat" data-testid="team-chat">
+    <section className="team-chat-shell" data-testid="team-chat">
+      <aside className="team-chat__sidebar" aria-label="Conversations">
+        <h4 className="section-title">Conversations</h4>
+        <p className="muted">Pick a thread to keep it contained here.</p>
+        {conversations.length === 0 ? (
+          <p className="muted" data-testid="conv-sidebar-empty">No saved conversations yet.</p>
+        ) : (
+          <ul className="team-chat__convlist">
+            {conversations.map((c) => (
+              <li key={c.thread_id}>
+                <button
+                  className={`team-chat__conv${threadId === c.thread_id ? " team-chat__conv--active" : ""}`}
+                  data-testid={`conv-${c.thread_id}`}
+                  onClick={() => openConv(c.thread_id)}
+                  title={c.title || c.thread_id}
+                >
+                  {c.title || c.thread_id}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </aside>
+
+      <div className="panel team-chat">
       <div className="panel__head">
         <div>
           <h3 className="section-title">AI Team chat</h3>
@@ -407,6 +448,7 @@ export function TeamChat() {
               {sending ? "Coordinating…" : "Send to team"}
             </button>
           )}
+        </div>
         </div>
       </div>
     </section>

@@ -2857,6 +2857,24 @@ describe("Team Chat (component)", () => {
     });
   });
 
+  it("lists conversations in the sidebar and lets you switch threads", async () => {
+    localStorage.removeItem("ai-team-shared-thread");
+    const fn = vi.fn(async (url: string) => {
+      if (url.endsWith("/team/threads")) return ok({ thread_id: "team-1" });
+      if (url.includes("/memory/conversations")) return ok({ items: [{ thread_id: "t-other", title: "Launch ideas", agent_id: "strategist" }] });
+      if (url.includes("/memory/conversation?")) return ok({ items: [] });
+      if (url.includes("/team/progress?")) return ok({ items: [] });
+      return ok({ items: [] });
+    });
+    globalThis.fetch = fn as any;
+    render(<TeamChat />);
+    await screen.findByTestId("conv-t-other");
+    fireEvent.click(screen.getByTestId("conv-t-other"));
+    await waitFor(() => {
+      expect(fn.mock.calls.find((c: any) => c[0] && c[0].includes("/memory/conversation?thread_id=t-other"))).toBeTruthy();
+    });
+  });
+
   it("shows the team progress feed for the thread", async () => {
     localStorage.removeItem("ai-team-shared-thread");
     globalThis.fetch = vi.fn(async (url: string) => {
