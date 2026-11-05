@@ -31,6 +31,18 @@ class MessageToPlanTest(unittest.TestCase):
         self.assertEqual([m["title"] for m in d["milestones"]], ["Research", "Onboard"])
         self.assertEqual([x["title"] for x in d["deliverables"]], ["Market brief"])
 
+    def test_parses_task_agent_lines_into_assignments(self):
+        d = MessageToPlan.extract(
+            "plan: Launch\n"
+            "milestone: Research\n"
+            "task strategist: Competitive teardown\n"
+            "milestone: Messaging\n"
+            "task communications: Pillars\n"
+            "deliverable: Brief")
+        self.assertEqual([t["agent"] for t in d["tasks"]], ["strategist", "communications"])
+        self.assertEqual([t["milestone_index"] for t in d["tasks"]], [0, 1])
+        self.assertEqual(d["tasks"][0]["title"], "Competitive teardown")
+
     def test_defaults_when_no_structure_given(self):
         d = MessageToPlan.extract("plan: Just an idea")
         self.assertEqual(len(d["milestones"]), 1)

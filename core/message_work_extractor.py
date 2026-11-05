@@ -211,10 +211,22 @@ class MessageToPlan:
             or _cap(lines[0] if lines else "New plan")
         milestones: List[Dict[str, object]] = []
         deliverables: List[Dict[str, str]] = []
+        tasks: List[Dict[str, object]] = []
+        current_milestone: Optional[int] = None
         for i, ln in enumerate(lines):
             m = re.match(r"^(?:milestone|phase)\s*[:\.\-]?\s*([^,;]+)$", ln, re.I)
             if m and m.group(1).strip():
                 milestones.append({"title": _cap(m.group(1), 200), "order": i})
+                current_milestone = len(milestones) - 1
+                continue
+            # task lines: "task <agent>: <title>" or a bare "<known-agent><:> <title>"
+            t = re.match(r"^(?:task\s+)?([a-z_]+)\s*[:\-]\s*(.+)$", ln, re.I)
+            if t and t.group(1).lower() in AGENT_SLUGS:
+                tasks.append({
+                    "title": _cap(t.group(2), 200),
+                    "agent": t.group(1).lower(),
+                    "milestone_index": current_milestone,
+                })
                 continue
             d = re.match(r"^(?:deliverable|produce|output)\s*[:\.\-]?\s*(.+)$", ln, re.I)
             if d and d.group(1).strip():
@@ -224,7 +236,7 @@ class MessageToPlan:
         if not deliverables:
             deliverables.append({"title": _cap(title, 60) + " deliverable"})
         return {"kind": "plan", "title": title,
-                "milestones": milestones, "deliverables": deliverables,
+                "milestones": milestones, "tasks": tasks, "deliverables": deliverables,
                 "source_context": "conversation"}
 
 

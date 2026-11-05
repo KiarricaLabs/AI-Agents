@@ -2834,7 +2834,7 @@ describe("Team Chat (component)", () => {
     const fn = vi.fn(async (url: string, init?: any) => {
       if (url.endsWith("/team/threads")) return ok({ thread_id: "team-1" });
       if (url.includes("/memory/conversation?")) return ok({ items: [] });
-      if (url.endsWith("/work/extract")) return ok({ kind: "plan", draft: { kind: "plan", title: "Launch", milestones: [{ title: "Phase 1" }], deliverables: [{ title: "Brief" }] }, persisted: false });
+      if (url.endsWith("/work/extract")) return ok({ kind: "plan", draft: { kind: "plan", title: "Launch", milestones: [{ title: "Phase 1" }], tasks: [{ title: "Research", agent: "strategist", milestone_index: 0 }], deliverables: [{ title: "Brief" }] }, persisted: false });
       if (url.endsWith("/team/plans")) return ok({ proposal_id: "pl1", status: "proposed" });
       return ok({ items: [] });
     });
@@ -2852,6 +2852,7 @@ describe("Team Chat (component)", () => {
       expect(call).toBeTruthy();
       const body = JSON.parse(call![1].body);
       expect(body.milestones[0].title).toBe("Phase 1");
+      expect(body.tasks[0].agent).toBe("strategist");
       expect(body.deliverables[0].title).toBe("Brief");
     });
   });

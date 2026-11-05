@@ -229,7 +229,7 @@ export function TeamChat() {
             title: propDraft.title || "New plan",
             milestones: propDraft.milestones || [],
             deliverables: propDraft.deliverables || [],
-            tasks: [],
+            tasks: propDraft.tasks || [],
             success_criteria: [],
             description: propDraft.description || "",
             thread_id: threadId || undefined,
