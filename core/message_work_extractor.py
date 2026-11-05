@@ -160,8 +160,46 @@ class MessageToDeliverable:
         }
 
 
+class MessageToProject:
+    """Phase 4 §7 — parse an idea to build a project into an editable draft."""
+
+    @staticmethod
+    def extract(message: str) -> Dict[str, object]:
+        text = _clean(message)
+        if not text:
+            raise ValueError("message is required")
+        lines = _lines(message)
+        title = _match_first(
+            [(r"^project\s*[:\-]\s*(.+)$"), (r"^(?:build|create|make)\s*(?:a|an)?\s*(.+)$")],
+            lines,
+        ) or _cap(lines[0] if lines else "New project")
+        description = _clean(" ".join(lines[1:])) or None
+        return {"kind": "project", "title": title, "description": description,
+                "source_context": "conversation"}
+
+
+class MessageToGoal:
+    """Phase 4 §8 — parse an objective into an editable goal draft."""
+
+    @staticmethod
+    def extract(message: str) -> Dict[str, object]:
+        text = _clean(message)
+        if not text:
+            raise ValueError("message is required")
+        lines = _lines(message)
+        title = _match_first(
+            [(r"^goal\s*[:\-]\s*(.+)$"), (r"^(?:objective|outcome)\s*[:\-]\s*(.+)$")],
+            lines,
+        ) or _cap(lines[0] if lines else "New goal")
+        description = _clean(" ".join(lines[1:])) or None
+        return {"kind": "goal", "title": title, "description": description,
+                "source_context": "conversation"}
+
+
 # Dispatch so the API can call either extractor by kind.
 EXTRACTORS = {
     "assignment": MessageToAssignment.extract,
     "deliverable": MessageToDeliverable.extract,
+    "project": MessageToProject.extract,
+    "goal": MessageToGoal.extract,
 }

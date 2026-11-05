@@ -240,7 +240,7 @@ def extract_work(req: ExtractWorkReq, request: Request):
         kwargs = {}
         if req.kind == "assignment":
             kwargs["subject_agent"] = req.subject_agent
-        else:
+        elif req.kind == "deliverable":
             kwargs["owner_agent"] = req.owner_agent
         draft = extract(req.message, **kwargs)
     except ValueError as e:

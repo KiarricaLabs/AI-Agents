@@ -17,7 +17,9 @@ from fastapi.testclient import TestClient
 
 from api.app import app  # noqa: E402
 from core.auth import issue_token
-from core.message_work_extractor import MessageToAssignment, MessageToDeliverable
+from core.message_work_extractor import (
+    MessageToAssignment, MessageToDeliverable, MessageToProject, MessageToGoal,
+)
 
 
 class MessageToAssignmentTest(unittest.TestCase):
@@ -79,6 +81,27 @@ class MessageToDeliverableTest(unittest.TestCase):
     def test_empty_message_rejected(self):
         with self.assertRaises(ValueError):
             MessageToDeliverable.extract("")
+
+
+class MessageToProjectAndGoalTest(unittest.TestCase):
+    def test_project_extract_title_description(self):
+        d = MessageToProject.extract("project: Launch a mobile app\nSolo founder building an MVP.")
+        self.assertEqual(d["kind"], "project")
+        self.assertEqual(d["title"], "Launch a mobile app")
+        self.assertIn("MVP", d["description"])
+
+    def test_goal_extract_title_description(self):
+        d = MessageToGoal.extract("goal: Hit 1,000 users by summer\nFocus on referrals.")
+        self.assertEqual(d["kind"], "goal")
+        self.assertEqual(d["title"], "Hit 1,000 users by summer")
+        self.assertIn("referrals", d["description"])
+
+    def test_empty_rejected(self):
+        from core.message_work_extractor import MessageToProject as P, MessageToGoal as G
+        with self.assertRaises(ValueError):
+            P.extract("")
+        with self.assertRaises(ValueError):
+            G.extract("")
 
 
 class ExtractWorkAPITest(unittest.TestCase):
@@ -151,6 +174,27 @@ class ExtractWorkAPITest(unittest.TestCase):
             "message": "task: X\nassign to strategist",
         }, headers=self._h(u, t, role="agent"))
         self.assertEqual(r.status_code, 403)
+
+    def test_extract_project_draft_over_http(self):
+        t, u = ("tw_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+        r = self.client.post("/work/extract", json={
+            "kind": "project",
+            "message": "project: Launch a mobile app",
+        }, headers=self._h(u, t))
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["kind"], "project")
+        self.assertEqual(body["persisted"], False)
+        self.assertEqual(body["draft"]["title"], "Launch a mobile app")
+
+    def test_extract_goal_draft_over_http(self):
+        t, u = ("tw_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+        r = self.client.post("/work/extract", json={
+            "kind": "goal",
+            "message": "goal: Grow to 1,000 users",
+        }, headers=self._h(u, t))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["draft"]["kind"], "goal")
 
 
 if __name__ == "__main__":
