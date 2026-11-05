@@ -347,14 +347,25 @@ export function TeamChat() {
           disabled={booting}
         />
         <div className="team-chat__actions">
-          <button
-            className="btn btn--primary"
-            data-testid="team-chat-send"
-            disabled={booting || sending || !draft.trim()}
-            onClick={send}
-          >
-            {sending ? "Coordinating…" : "Send to team"}
-          </button>
+          {mode === "propose" ? (
+            <button
+              className="btn btn--primary"
+              data-testid="team-chat-propose"
+              disabled={booting || propBusy || !draft.trim()}
+              onClick={extractProposal}
+            >
+              {propBusy ? "Extracting…" : "Extract & propose"}
+            </button>
+          ) : (
+            <button
+              className="btn btn--primary"
+              data-testid="team-chat-send"
+              disabled={booting || sending || !draft.trim()}
+              onClick={send}
+            >
+              {sending ? "Coordinating…" : "Send to team"}
+            </button>
+          )}
         </div>
       </div>
     </section>
