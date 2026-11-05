@@ -2762,6 +2762,38 @@ describe("Team Chat (component)", () => {
     expect(call).toBeTruthy();
     expect(JSON.parse(call![1].body).message).toContain("Research the launch market");
   });
+
+  it("extracts a project draft and files it as a proposal for approval", async () => {
+    localStorage.removeItem("ai-team-shared-thread");
+    const fn = vi.fn(async (url: string, init?: any) => {
+      if (url.endsWith("/team/threads")) return ok({ thread_id: "team-1" });
+      if (url.includes("/memory/conversation?")) return ok({ items: [] });
+      if (url.endsWith("/workspaces")) return ok({ items: [{ id: "w1", name: "Acme" }] });
+      if (url.endsWith("/workspaces/projects")) return ok({ items: [] });
+      if (url.endsWith("/workspaces/goals")) return ok({ items: [] });
+      if (url.endsWith("/work/extract")) return ok({ kind: "project", draft: { kind: "project", title: "Launch a mobile app", description: null }, persisted: false });
+      if (url.endsWith("/work/proposals")) return ok({ ok: true });
+      return ok({ items: [] });
+    });
+    globalThis.fetch = fn as any;
+    render(<TeamChat />);
+    await screen.findByTestId("team-chat-input");
+    fireEvent.click(screen.getByTestId("mode-propose"));
+    fireEvent.change(screen.getByTestId("team-chat-input"), { target: { value: "project: Launch a mobile app" } });
+    fireEvent.click(screen.getByTestId("prop-extract"));
+    await screen.findByTestId("prop-title");
+    expect(screen.getByTestId("prop-title").value).toBe("Launch a mobile app");
+    fireEvent.change(screen.getByTestId("prop-parent"), { target: { value: "w1" } });
+    fireEvent.click(screen.getByTestId("prop-file"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find((c: any) => c[0].endsWith("/work/proposals"));
+      expect(call).toBeTruthy();
+      const body = JSON.parse(call![1].body);
+      expect(body.work_type).toBe("project");
+      expect(body.payload.workspace_id).toBe("w1");
+    });
+    expect(screen.getByTestId("prop-msg").textContent).toMatch(/Proposal created/);
+  });
 });
 
 describe("Team Memory (component)", () => {
