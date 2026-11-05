@@ -41,6 +41,12 @@ def _identity(request: Request):
     return tenant, user
 
 
+def _require_human(request: Request):
+    """Human-only mutation gate (user or admin). Mirrors other routers."""
+    if getattr(request.state, "role", None) not in ("user", "admin"):
+        raise HTTPException(status_code=403, detail="human-only")
+
+
 def _svc(t: str, u: str) -> WorkProposalService:
     return WorkProposalService(db=_db, tenant_id=t, user_id=u)
 
@@ -117,3 +123,70 @@ def conversation_to_task(thread_id: str, req: ToTaskReq, request: Request):
     return {"proposal_id": r["proposal_id"], "status": r["status"],
             "work_type": "assignment", "thread_id": thread_id,
             "goal_id": goal_id, "reused": bool(r.get("reused", False))}
+
+
+@router.delete("/tasks/{task_id}")
+def delete_task(task_id: str, request: Request):
+    """Owner-scoped, human-gated deletion of a Task Center item.
+
+    Task Center items come in two kinds (see core/task_center.py):
+
+      - proposal-backed: ``task_id == "prop:{proposal_id}"``. Removes the
+        originating work proposal and any work_links that reference it.
+      - assignment-backed: ``task_id`` is the assignment id. Removes the
+        assignment, its execution episodes/events, the originating work
+        proposal (and its links), and the conversation work_links.
+
+    The source goal and any project-scoped deliverables are intentionally
+    preserved (deleting a task is not deleting a goal or a deliverable).
+    Unknown or foreign resources return 404; non-human roles return 403.
+    """
+    t, u = _identity(request)
+    _require_human(request)
+
+    if task_id.startswith("prop:"):
+        pid = task_id[len("prop:"):]
+        if not pid or not _db.query(
+                "SELECT id FROM work_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+                (pid, t, u)):
+            raise HTTPException(status_code=404, detail="task not found")
+        _db.execute(
+            "DELETE FROM work_links WHERE tenant_id=? AND work_id=?", (t, pid))
+        _db.execute(
+            "DELETE FROM work_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+            (pid, t, u))
+        return {"ok": True, "deleted": "task", "kind": "proposal"}
+
+    # Assignment-backed task.
+    owned = _db.query(
+        "SELECT id FROM assignments WHERE id=? AND tenant_id=? AND user_id=?",
+        (task_id, t, u))
+    if not owned:
+        raise HTTPException(status_code=404, detail="task not found")
+
+    episode_ids = [r["id"] for r in _db.query(
+        "SELECT id FROM episodes WHERE tenant_id=? AND user_id=? "
+        "AND work_type='assignment' AND work_id=?", (t, u, task_id))]
+    for eid in episode_ids:
+        _db.execute(
+            "DELETE FROM episode_events WHERE episode_id=? AND tenant_id=?", (eid, t))
+    _db.execute(
+        "DELETE FROM episodes WHERE tenant_id=? AND user_id=? "
+        "AND work_type='assignment' AND work_id=?", (t, u, task_id))
+    _db.execute(
+        "DELETE FROM work_links WHERE tenant_id=? AND work_type='assignment' "
+        "AND work_id=?", (t, task_id))
+
+    for p in _db.query(
+            "SELECT id FROM work_proposals WHERE tenant_id=? AND user_id=? "
+            "AND work_type='assignment' AND result_id=?", (t, u, task_id)):
+        _db.execute(
+            "DELETE FROM work_links WHERE tenant_id=? AND work_id=?", (t, p["id"]))
+        _db.execute(
+            "DELETE FROM work_proposals WHERE id=? AND tenant_id=? AND user_id=?",
+            (p["id"], t, u))
+
+    _db.execute(
+        "DELETE FROM assignments WHERE id=? AND tenant_id=? AND user_id=?",
+        (task_id, t, u))
+    return {"ok": True, "deleted": "task", "kind": "assignment"}

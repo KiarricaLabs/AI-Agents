@@ -1139,6 +1139,13 @@ export default function App() {
     } catch { /* offline */ }
   };
 
+  const deleteTask = async (id: string) => {
+    try {
+      await fetch(`${API}/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await loadTasks();
+    } catch { /* offline */ }
+  };
+
   const createWorkspace = async () => {
     if (!name || offline) return;
     await fetch(`${API}/workspaces`, {
@@ -3380,6 +3387,12 @@ export default function App() {
                         {st === "awaiting_assignment" && (
                           <div className="tasks-item__actions">
                             <button className="btn btn--sm btn--ghost" disabled={true} title="Approve via Projects · Proposals">Approve in Projects</button>
+                            <button className="btn btn--sm btn--ghost" data-testid={`delete-task-${t.task_id}`} onClick={() => deleteTask(t.task_id)}>Delete</button>
+                          </div>
+                        )}
+                        {st !== "awaiting_assignment" && (
+                          <div className="tasks-item__actions">
+                            <button className="btn btn--sm btn--ghost" data-testid={`delete-task-${t.task_id}`} onClick={() => deleteTask(t.task_id)}>Delete</button>
                           </div>
                         )}
                       </li>

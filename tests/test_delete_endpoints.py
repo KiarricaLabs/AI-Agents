@@ -115,6 +115,59 @@ class DeleteEndpointsTest(unittest.TestCase):
         r = self.client.delete(f"/workspaces/projects/{uuid.uuid4()}", headers=self._h(u, t, role="agent"))
         self.assertEqual(r.status_code, 403)
 
+    # ------------------------------------------------------------------ tasks
+    def _mk_goal(self, h):
+        ws = self.client.post("/workspaces", json={"name": "Acme"}, headers=h).json()["id"]
+        pid = self.client.post("/workspaces/projects", json={"workspace_id": ws, "name": "Launch"}, headers=h).json()["id"]
+        gid = self.client.post("/workspaces/goals", json={"project_id": pid, "title": "Research"}, headers=h).json()["id"]
+        return gid
+
+    def test_delete_task_assignment_removes_from_center(self):
+        t, u = ("dd_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+        h = self._h(u, t)
+        gid = self._mk_goal(h)
+        aid = self.client.post("/workspaces/assignments",
+                               json={"goal_id": gid, "agent_id": "strategist", "priority": 0}, headers=h).json()["id"]
+        items = self.client.get("/tasks", headers=h).json()["items"]
+        self.assertTrue(any(x["task_id"] == aid for x in items))
+        r = self.client.delete(f"/tasks/{aid}", headers=h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["kind"], "assignment")
+        items = self.client.get("/tasks", headers=h).json()["items"]
+        self.assertFalse(any(x["task_id"] == aid for x in items))
+        # source goal is preserved (deleting a task is not deleting a goal)
+        self.assertTrue(self.client.get("/workspaces/goals", headers=h).json()["items"])
+
+    def test_delete_task_proposal_removes_from_center(self):
+        t, u = ("dd_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+        h = self._h(u, t)
+        gid = self._mk_goal(h)
+        thr = self.client.post("/team/threads", json={"title": "Chat", "thread_type": "team"}, headers=h).json()["thread_id"]
+        pid = self.client.post(f"/conversations/{thr}/to-task",
+                               json={"goal_id": gid, "title": "From chat", "agent_id": "strategist"}, headers=h).json()["proposal_id"]
+        task_id = "prop:" + pid
+        items = self.client.get("/tasks", headers=h).json()["items"]
+        self.assertTrue(any(x["task_id"] == task_id for x in items))
+        r = self.client.delete(f"/tasks/{task_id}", headers=h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["kind"], "proposal")
+        items = self.client.get("/tasks", headers=h).json()["items"]
+        self.assertFalse(any(x["task_id"] == task_id for x in items))
+
+    def test_delete_task_foreign_user_404(self):
+        t, u1 = ("dd_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+        u2 = "fu_%s" % uuid.uuid4().hex[:8]
+        gid = self._mk_goal(self._h(u1, t))
+        aid = self.client.post("/workspaces/assignments",
+                               json={"goal_id": gid, "agent_id": "strategist", "priority": 0}, headers=self._h(u1, t)).json()["id"]
+        r = self.client.delete(f"/tasks/{aid}", headers=self._h(u2, t))
+        self.assertEqual(r.status_code, 404)
+
+    def test_delete_task_non_human_403(self):
+        t, u = ("dd_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
+        r = self.client.delete(f"/tasks/{uuid.uuid4()}", headers=self._h(u, t, role="agent"))
+        self.assertEqual(r.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

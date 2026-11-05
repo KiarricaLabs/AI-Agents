@@ -3009,3 +3009,43 @@ describe("Team Memory (component)", () => {
     expect(screen.getByTestId("tm-note").textContent).toMatch(/must approve/);
   });
 });
+
+describe("Task Center delete", () => {
+  it("deletes a task via DELETE, refreshes, and removes it from the list", async () => {
+    const deleteCalls: string[] = [];
+    const taskRoute = (url: string, opts?: any) => {
+      if (opts?.method === "DELETE") {
+        deleteCalls.push(url);
+        return ok({ ok: true });
+      }
+      // keep showing the item until a delete happens; then the reload is empty,
+      // proving the Task Center refresh removes it after the DELETE succeeds.
+      if (deleteCalls.length > 0) return ok({ items: [] });
+      return ok({
+        items: [{
+          task_id: "a1", kind: "assignment", status: "awaiting_execution",
+          title: "Research market", agent_id: "strategist",
+          project_name: "Launch", goal_title: "Win SF Bay Area",
+          next_action: "Approved. Start execution when ready.",
+        }],
+      });
+    };
+    globalThis.fetch = makeFetch({
+      [`${API}/tasks`]: taskRoute,
+      [`${API}/tasks/a1`]: (url: string, opts?: any) => {
+        deleteCalls.push(url);
+        return ok({ ok: true });
+      },
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Task Center" }));
+    expect(await screen.findByText("Research market")).toBeInTheDocument();
+    const del = screen.getByTestId("delete-task-a1");
+    expect(del).toBeInTheDocument();
+    fireEvent.click(del);
+    await waitFor(() => expect(deleteCalls.length).toBeGreaterThan(0));
+    expect(deleteCalls[0]).toBe(`${API}/tasks/a1`);
+    // refresh after delete reloads the (now empty) task list
+    expect(await screen.findByText(/No tasks yet/)).toBeInTheDocument();
+  });
+});
