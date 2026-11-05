@@ -262,6 +262,61 @@ export function proposeTeamGoal(input: ProposeTeamGoalInput): Promise<ProposeTea
   return post<ProposeTeamGoalResult>(`${API}/team/goals`, input);
 }
 
+export interface TeamGoalDraft {
+  title: string;
+  summary: string | null;
+  expected_deliverable: string | null;
+  coordinator_agent: string;
+  steps: ProposeStepInput[];
+}
+
+// Deterministic, human-only conversation -> editable TeamGoal draft. Returns a
+// preview to edit & then propose; it never persists or authorizes anything.
+export function draftTeamGoalFromMessage(message: string, coordinator_agent: string): Promise<TeamGoalDraft> {
+  return post<TeamGoalDraft>(`${API}/team/goals/draft`, { message, coordinator_agent });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 §13 — Review & Action Center
+// ---------------------------------------------------------------------------
+
+export type ReviewActionType =
+  | "goal_approval"
+  | "plan_authorization"
+  | "step_review"
+  | "deliverable_review"
+  | "blocked_step";
+
+export interface ReviewItem {
+  type: ReviewActionType;
+  goal_id?: string;
+  goal_title?: string;
+  title?: string;
+  coordinator_agent?: string;
+  summary?: string;
+  execution_id?: string;
+  plan_id?: string;
+  seq?: number;
+  agent_id?: string;
+  error?: string;
+}
+
+export interface ReviewCenterResult {
+  items: ReviewItem[];
+  counts: Record<string, number>;
+}
+
+// Read-only aggregate of everything needing the owner's attention. Never
+// approves/authorizes/executes anything itself.
+export function getReviewCenter(): Promise<ReviewCenterResult> {
+  return request<ReviewCenterResult>(`${API}/team/review`);
+}
+
+// Human-only approval of a proposed TeamGoal (a Review Center action).
+export function approveTeamGoal(goalId: string): Promise<any> {
+  return post<any>(`${API}/team/goals/${encodeURIComponent(goalId)}/approve`);
+}
+
 // ---------------------------------------------------------------------------
 // UI helpers
 // ---------------------------------------------------------------------------

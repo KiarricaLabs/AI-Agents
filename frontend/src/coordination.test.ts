@@ -14,6 +14,9 @@ import {
   getDeliverableVersion,
   listProjectGoals,
   proposeTeamGoal,
+  draftTeamGoalFromMessage,
+  getReviewCenter,
+  approveTeamGoal,
   stepStatusLabel,
   execStatusLabel,
   versionStatusLabel,
@@ -165,6 +168,45 @@ describe("coordination API layer", () => {
     await expect(
       proposeTeamGoal({ title: "X", coordinator_agent: "nope" }))
       .rejects.toThrow(/unknown coordinator agent/);
+  });
+
+  it("drafts a team goal from a message via POST", async () => {
+    useFetch((url, init: any) => {
+      expect(url.endsWith("/team/goals/draft")).toBe(true);
+      expect(init.method).toBe("POST");
+      const body = JSON.parse(init.body);
+      expect(body.message).toContain("strategist");
+      expect(body.coordinator_agent).toBe("workspace_architect");
+      return ok({
+        title: "Launch strategy", summary: "research", expected_deliverable: "plan",
+        coordinator_agent: "workspace_architect",
+        steps: [{ seq: 1, agent_id: "strategist", responsibility: "research", depends_on_seq: null }],
+      });
+    });
+    const d = await draftTeamGoalFromMessage("- strategist: research", "workspace_architect");
+    expect(d.title).toBe("Launch strategy");
+    expect(d.steps[0].agent_id).toBe("strategist");
+  });
+
+  it("loads the review & action center items and counts", async () => {
+    useFetch(() => ok({
+      items: [{ type: "goal_approval", goal_id: "tg1", title: "Launch" }],
+      counts: { goal_approval: 1, step_review: 0, blocked_step: 0 },
+    }));
+    const r = await getReviewCenter();
+    expect(r.items[0].type).toBe("goal_approval");
+    expect(r.items[0].goal_id).toBe("tg1");
+    expect(r.counts.goal_approval).toBe(1);
+  });
+
+  it("approves a proposed team goal via POST", async () => {
+    useFetch((url, init: any) => {
+      expect(url).toContain("/team/goals/tg1/approve");
+      expect(init.method).toBe("POST");
+      return ok({ team_goal_id: "tg1", status: "approved" });
+    });
+    const r = await approveTeamGoal("tg1");
+    expect(r.status).toBe("approved");
   });
 
   it("surfaces backend detail on error", async () => {

@@ -4,6 +4,7 @@ import { Markdown } from "./markdown";
 import { KNOWN_SAMPLE_IDS } from "./knownSamples";
 import { statusLabel, priorityText } from "./uiText";
 import { Coordination } from "./coordination_panel";
+import { ReviewCenter } from "./review_center";
 import "./App.css";
 
 const API = (import.meta.env.VITE_API_BASE as string | undefined) || "http://127.0.0.1:8001";
@@ -3745,6 +3746,7 @@ export default function App() {
               </div>
             )}
             <Coordination />
+            <ReviewCenter onOpen={() => setTab("ai")} />
           </section>
         )}
 

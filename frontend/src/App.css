@@ -1686,3 +1686,10 @@ body {
 .coord-field input,.coord-field select,.coord-field textarea{width:100%;box-sizing:border-box}
 .coord-step-editor{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .coord-step-editor__seq{font-weight:600;min-width:22px}
+/* == Phase 7 §13 — Review & Action Center == */
+.review-center-panel{margin-top:16px;border-top:1px solid var(--border,#e2e8f0);padding-top:16px}
+.review-row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.review-row__main{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.review-row__title{font-weight:600}
+.review-row__meta{font-size:13px}
+.review-row__error{display:block;font-size:12px;width:100%}

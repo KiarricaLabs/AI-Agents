@@ -3,6 +3,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import App from "./App";
 import { Coordination } from "./coordination_panel";
+import { ReviewCenter } from "./review_center";
 
 const API = "http://127.0.0.1:8001";
 
@@ -2528,5 +2529,105 @@ describe("Coordination authoring form (component)", () => {
     await fillRequired();
     fireEvent.click(screen.getByTestId("coord-propose"));
     await screen.findByText(/unknown coordinator agent/);
+  });
+
+  it("generates an editable draft from a conversation message", async () => {
+    const fn = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/team/goals")) return ok({ items: [] });
+      if (method === "GET" && url.endsWith("/workspaces/goals")) {
+        return ok({ items: [{ id: "g1", title: "Launch" }] });
+      }
+      if (method === "POST" && url.endsWith("/team/goals/draft")) {
+        return ok({
+          title: "Launch strategy", summary: "research", expected_deliverable: "one-page plan",
+          coordinator_agent: "workspace_architect",
+          steps: [
+            { seq: 1, agent_id: "strategist", responsibility: "research", depends_on_seq: null },
+            { seq: 2, agent_id: "tutor", responsibility: "explain", depends_on_seq: 1 },
+          ],
+        });
+      }
+      return ok({ items: [] });
+    });
+    globalThis.fetch = fn as any;
+    await openForm();
+    fireEvent.change(screen.getByTestId("coord-draft-message"),
+      { target: { value: "- strategist: research\n- tutor: explain" } });
+    fireEvent.click(screen.getByTestId("coord-draft-gen"));
+    await waitFor(() => expect(screen.getByTestId("coord-form-title")).toHaveValue("Launch strategy"));
+    expect(screen.getByTestId("coord-form-deliverable")).toHaveValue("one-page plan");
+    expect(screen.getByTestId("coord-form-coordinator").value).toBe("workspace_architect");
+    // draft pre-fills two editable steps -- and does NOT propose/close the form
+    await screen.findByTestId("coord-step-editor-2");
+    expect(screen.getByTestId("coord-create")).toBeInTheDocument();
+    expect(fn).not.toHaveBeenCalledWith(expect.stringMatching(/\/team\/goals$/), expect.anything());
+  });
+});
+
+describe("Review & Action Center (component)", () => {
+  function reviewBackend(initial: any, onApprove?: () => void) {
+    let state = initial;
+    const fn = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/team/review")) return ok(state);
+      if (method === "POST" && url.includes("/approve")) {
+        if (onApprove) onApprove();
+        return ok({ status: "approved" });
+      }
+      return ok({ items: [], counts: {} });
+    });
+    return fn;
+  }
+
+  it("shows an empty state when nothing needs attention", async () => {
+    globalThis.fetch = reviewBackend({ items: [], counts: {} }) as any;
+    render(<ReviewCenter />);
+    await screen.findByTestId("review-empty");
+    expect(screen.getByTestId("review-center")).toBeInTheDocument();
+  });
+
+  it("renders sections and items from the aggregate", async () => {
+    globalThis.fetch = reviewBackend({
+      items: [
+        { type: "goal_approval", goal_id: "tg1", title: "Launch", coordinator_agent: "workspace_architect" },
+        { type: "step_review", execution_id: "e1", plan_id: "p1", goal_id: "tg1", goal_title: "Launch", seq: 1, agent_id: "strategist" },
+      ],
+      counts: { goal_approval: 1, step_review: 1 },
+    }) as any;
+    render(<ReviewCenter />);
+    await screen.findByTestId("review-section-goal_approval");
+    await screen.findByTestId("review-section-step_review");
+    expect(screen.getAllByTestId("review-item-goal_approval")).toHaveLength(1);
+    expect(screen.getAllByTestId("review-item-step_review")).toHaveLength(1);
+  });
+
+  it("approves a proposed goal inline and reloads", async () => {
+    let state: any = { items: [{ type: "goal_approval", goal_id: "tg1", title: "Launch" }], counts: { goal_approval: 1 } };
+    globalThis.fetch = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/team/review")) return ok(state);
+      if (method === "POST" && url.endsWith("/tg1/approve")) {
+        state = { items: [], counts: {} };  // approve removes the item
+        return ok({ status: "approved" });
+      }
+      return ok({ items: [], counts: {} });
+    }) as any;
+    render(<ReviewCenter />);
+    await screen.findByTestId("review-section-goal_approval");
+    fireEvent.click(screen.getByTestId("review-approve"));
+    await screen.findByTestId("review-empty");
+  });
+
+  it("routes an 'Open in AI Team' action to onOpen", async () => {
+    let opened: string | undefined;
+    globalThis.fetch = reviewBackend({
+      items: [{ type: "plan_authorization", goal_id: "tg9", title: "Auth Me" }],
+      counts: { plan_authorization: 1 },
+    }) as any;
+    render(<ReviewCenter onOpen={(id?: string) => { opened = id; }} />);
+    await screen.findByTestId("review-row-plan_authorization");
+    fireEvent.click(screen.getByTestId("review-open"));
+    expect(opened).toBe("tg9");
   });
 });

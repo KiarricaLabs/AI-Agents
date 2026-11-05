@@ -18,6 +18,7 @@ import {
   listTeamGoals,
   listProjectGoals,
   proposeTeamGoal,
+  draftTeamGoalFromMessage,
   reviewCoordinationPlan,
   authorizeCoordinationPlan,
   initiateExecution,
@@ -41,6 +42,7 @@ import {
   type DeliverableVersion,
   type ProjectGoal,
   type ProposeTeamGoalInput,
+  type TeamGoalDraft,
 } from "./coordination";
 
 function Empty({ text }: { text: string }) {
@@ -109,6 +111,8 @@ export function Coordination() {
   const [formSteps, setFormSteps] = useState<StepDraft[]>([
     { agent_id: "strategist", responsibility: "", depends_on_seq: null },
   ]);
+  const [draftMsg, setDraftMsg] = useState("");
+  const [draftBusy, setDraftBusy] = useState(false);
 
   const loadGoals = useCallback(async () => {
     setGoalsLoading(true);
@@ -146,6 +150,32 @@ export function Coordination() {
     setShowCreate(false);
     setCreateError("");
     setCreateSuccess("");
+  }
+
+  function applyDraft(d: TeamGoalDraft) {
+    setFormTitle(d.title || "");
+    setFormSummary(d.summary || "");
+    setFormDeliverable(d.expected_deliverable || "");
+    setFormCoordinator(d.coordinator_agent || formCoordinator);
+    setFormSteps((d.steps || []).map((s) => ({
+      agent_id: s.agent_id,
+      responsibility: s.responsibility || "",
+      depends_on_seq: s.depends_on_seq != null ? s.depends_on_seq : null,
+    })));
+  }
+
+  async function doGenerateDraft() {
+    if (!draftMsg.trim()) { setCreateError("Enter a discussion or idea to draft from."); return; }
+    setDraftBusy(true);
+    setCreateError("");
+    try {
+      const d = await draftTeamGoalFromMessage(draftMsg, formCoordinator);
+      applyDraft(d);
+    } catch (e) {
+      setCreateError(errMsg(e, "Could not generate a draft."));
+    } finally {
+      setDraftBusy(false);
+    }
   }
 
   function addStep() {
@@ -417,6 +447,19 @@ export function Coordination() {
         <div className="coord-block coord-author-form" data-testid="coord-create">
           <h5 className="section-title">New team goal</h5>
           <ErrorBox msg={createError} />
+
+          <label className="coord-field">
+            <span>Generate from a discussion (optional)</span>
+            <textarea data-testid="coord-draft-message" value={draftMsg}
+              onChange={(e) => setDraftMsg(e.target.value)}
+              placeholder={"Paste a discussion or idea, e.g.\n- strategist: research the market\n- tutor: explain findings\ndeliverable: a one-page plan"} />
+          </label>
+          <div className="coord-actions">
+            <button className="btn btn--sm btn--ghost" data-testid="coord-draft-gen"
+              onClick={doGenerateDraft} disabled={draftBusy}>
+              {draftBusy ? "Drafting…" : "Generate draft"}
+            </button>
+          </div>
 
           <label className="coord-field">
             <span>Project goal</span>

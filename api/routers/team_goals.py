@@ -36,6 +36,7 @@ from core.team_goal import (
     TeamGoalApprovalNotPermitted,
     TeamGoalInvalidTransition,
 )
+from core.message_extractor import MessageToTeamGoal
 from core.coordination_plan import (
     CoordinationPlanService,
     CoordinationPlanNotFound,
@@ -82,6 +83,11 @@ class ProposeStep(BaseModel):
     depends_on_seq: Optional[int] = None
 
 
+class DraftGoalBody(BaseModel):
+    message: str
+    coordinator_agent: str
+
+
 class ProposeGoalBody(BaseModel):
     """Human-authored TeamGoal request. ``steps`` is an ordered list of
     per-agent contributions validated server-side by TeamGoalService.propose."""
@@ -93,6 +99,20 @@ class ProposeGoalBody(BaseModel):
     expected_deliverable: Optional[str] = None
     steps: Optional[List[ProposeStep]] = None
     idempotency_key: Optional[str] = None
+
+
+@router.post("/draft")
+def draft_team_goal_from_message(body: DraftGoalBody, request: Request):
+    """Human-only, deterministic draft generator: turns a discussion/idea message
+    into an editable TeamGoal DRAFT (title, summary, deliverable, coordinator,
+    ordered steps). It NEVER persists or authorizes anything — the result is meant
+    to be edited and then proposed via POST /team/goals."""
+    t, u = _identity(request)
+    _require_human(request)
+    try:
+        return MessageToTeamGoal.extract(body.message, body.coordinator_agent)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.post("")
