@@ -3268,7 +3268,16 @@ export default function App() {
                                 <Icon name="activity" size={16} />
                               </span>
                               <span className="list__name">{statusLabel(ev.status)}</span>
-                              {ev.detail && <span className="badge badge--faint">{ev.detail}</span>}
+                              {(() => {
+                                const raw = ev.detail;
+                                if (!raw) return null;
+                                // Turn a raw coordination-step id into a human label.
+                                const m = raw.match(/coordination_step\s+\S*:(\d+)/);
+                                const label = m
+                                  ? `Coordination step ${m[1]}${episodeDetail?.agent_id ? ` · ${agentLabel(episodeDetail.agent_id)}` : ""} (execution)`
+                                  : raw;
+                                return <span className="badge badge--faint" data-testid="event-detail">{label}</span>;
+                              })()}
                               {evSummary && <span className="badge badge--faint">{evSummary}</span>}
                               <span className="badge badge--faint">{formatStamp(ev.created_at)}</span>
                             </li>
