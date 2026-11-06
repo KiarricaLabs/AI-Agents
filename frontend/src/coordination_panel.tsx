@@ -16,7 +16,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  API,
   listTeamGoals,
+  getTeamGoal,
   listProjectGoals,
   proposeTeamGoal,
   draftTeamGoalFromMessage,
@@ -25,6 +27,7 @@ import {
   initiateExecution,
   runAutonomously,
   approveTeamGoal,
+  approveTeamGoalStep,
   reviewDeliverable,
   validateTeamGoalDraft,
   getExecutionStatus,
@@ -36,6 +39,7 @@ import {
   humanizeAgent,
   AGENT_SLUGS,
   type TeamGoalSummary,
+  type TeamGoalDetail,
   type TeamGoalStep,
   type CoordinationPlan,
   type ReviewPlan,
@@ -45,6 +49,7 @@ import {
   type ProposeTeamGoalInput,
   type TeamGoalDraft,
 } from "./coordination";
+import { Markdown } from "./markdown";
 
 function Empty({ text }: { text: string }) {
   return <div className="empty" role="status">{text}</div>;
@@ -61,6 +66,19 @@ function errMsg(e: unknown, fallback: string): string {
     : fallback);
 }
 
+function goalStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    proposed: "Needs approval · proposed",
+    approved: "Goal approved",
+    rejected: "Rejected",
+    in_progress: "In progress",
+    ready_for_review: "Ready to review",
+    completed: "Complete",
+    revision_requested: "Changes requested",
+  };
+  return labels[status] || status.replaceAll("_", " ");
+}
+
 // A draft step in the authoring form (seq is derived from array order).
 interface StepDraft {
   agent_id: string;
@@ -70,13 +88,16 @@ interface StepDraft {
 
 export function Coordination() {
   const [goals, setGoals] = useState<TeamGoalSummary[]>([]);
+  const [goalPreviews, setGoalPreviews] = useState<Record<string, TeamGoalDetail>>({});
   const [goalsLoading, setGoalsLoading] = useState(false);
   const [goalsError, setGoalsError] = useState("");
 
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
+  const [selectedGoalDetail, setSelectedGoalDetail] = useState<TeamGoalDetail | null>(null);
   const [goalLoading, setGoalLoading] = useState(false);
   const [goalError, setGoalError] = useState("");
   const [goalApproveBusy, setGoalApproveBusy] = useState(false);
+  const [stepApproveBusy, setStepApproveBusy] = useState<number | null>(null);
 
   // Plan state
   const [plan, setPlan] = useState<CoordinationPlan | null>(null);
@@ -97,6 +118,10 @@ export function Coordination() {
   // Rework selection + confirmation
   const [reworkSelected, setReworkSelected] = useState<number[]>([]);
   const [reviewMsg, setReviewMsg] = useState("");
+  const [agentQuestion, setAgentQuestion] = useState("");
+  const [agentReply, setAgentReply] = useState("");
+  const [agentQuestionBusy, setAgentQuestionBusy] = useState(false);
+  const [selectedAgentForChat, setSelectedAgentForChat] = useState<string | null>(null);
 
   // TeamGoal authoring form (T2-C-8-2)
   const [showCreate, setShowCreate] = useState(false);
@@ -121,7 +146,8 @@ export function Coordination() {
     setGoalsError("");
     try {
       const r = await listTeamGoals();
-      setGoals(r.items || []);
+      const items = r.items || [];
+      setGoals(items);
     } catch (e) {
       setGoalsError(errMsg(e, "Could not load team goals."));
     } finally {
@@ -282,12 +308,16 @@ export function Coordination() {
     setGoalError("");
     setPlan(null);
     setReview(null);
+    setSelectedGoalDetail(null);
     setExecution(null);
     setVersions([]);
     setVersionDetail(null);
     setReworkSelected([]);
     setReviewMsg("");
     try {
+      const detail = await getTeamGoal(goalId);
+      setSelectedGoalDetail(detail);
+      setGoalPreviews((prev) => ({ ...prev, [goalId]: detail }));
       const r = await reviewCoordinationPlan(goalId);
       setReview(r);
     } catch (e) {
@@ -312,6 +342,7 @@ export function Coordination() {
       const p = await authorizeCoordinationPlan(selectedGoalId);
       setPlan(p);
       setReview(null);
+      window.dispatchEvent(new CustomEvent("ai-team:workflow-updated"));
     } catch (e) {
       setPlanError(errMsg(e, "Could not authorize the plan."));
     } finally {
@@ -342,6 +373,7 @@ export function Coordination() {
       // leave the "Execute next eligible step" button permanently disabled.
       await loadExecutionStatus(plan.plan_id, e.execution_id);
       await loadVersions(plan.plan_id, e.execution_id);
+      window.dispatchEvent(new CustomEvent("ai-team:workflow-updated"));
     } catch (e) {
       setRevError(errMsg(e, "Could not start execution."));
     } finally {
@@ -360,6 +392,7 @@ export function Coordination() {
       await runAutonomously(plan.plan_id, execution.execution_id);
       await loadExecutionStatus(plan.plan_id, execution.execution_id);
       await loadVersions(plan.plan_id, execution.execution_id);
+      window.dispatchEvent(new CustomEvent("ai-team:workflow-updated"));
     } catch (e) {
       setRevError(errMsg(e, "Could not run the execution."));
     } finally {
@@ -407,6 +440,7 @@ export function Coordination() {
       }
       await loadVersions(plan.plan_id, execution.execution_id);
       await loadExecutionStatus(plan.plan_id, execution.execution_id);
+      window.dispatchEvent(new CustomEvent("ai-team:workflow-updated"));
     } catch (e) {
       setRevError(errMsg(e, "Could not review the deliverable."));
     } finally {
@@ -425,13 +459,76 @@ export function Coordination() {
   }
 
   const planSteps: TeamGoalStep[] = plan?.steps?.length ? plan!.steps : (review?.steps || []);
+  const proposedSteps = selectedGoalDetail?.steps || [];
   const selectedGoal = goals.find((g) => g.id === selectedGoalId);
+
+  async function askAgent(agentId: string) {
+    const question = agentQuestion.trim();
+    if (!question || !selectedGoalDetail || agentQuestionBusy) return;
+    const step = selectedGoalDetail.steps.find((item) => item.agent_id === agentId);
+    const responsibility = step?.responsibility || "the assigned responsibility";
+    const sharedPlan = selectedGoalDetail.steps
+      .map((item) => {
+        const dependency = item.depends_on_seq == null
+          ? "no dependency"
+          : `after step ${item.depends_on_seq}`;
+        return `Step ${item.seq} — ${humanizeAgent(item.agent_id)} — ${item.responsibility || "responsibility not specified"} (${dependency})`;
+      })
+      .join("\n");
+    setAgentQuestionBusy(true);
+    setAgentReply("");
+    try {
+      const r = await fetch(`${API}/team/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: `[Plan review for ${selectedGoalDetail.title}]
+
+SHARED TEAM PLAN — this is the complete plan all agents are reviewing:
+${sharedPlan}
+
+YOUR ASSIGNED RESPONSIBILITY:
+Step ${step?.seq ?? "?"} — ${humanizeAgent(agentId)} — ${responsibility}
+
+Explain how your responsibility fits with the other agents' responsibilities, what you depend on, and what you will hand off or produce next. Use the shared plan above instead of asking the user to repeat it. Stay within your assigned responsibility. Do not invent agents, roles, capabilities, deadlines, tools, credentials, publishing, sending, booking, payments, ad launches, or other work outside this assignment. For this local credential-free review, describe analysis, drafts, recommendations, or simulated local artifacts only.
+
+User question: ${question}`,
+          thread_id: selectedGoalDetail.thread_id || undefined,
+          subject_agent: agentId,
+        }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setAgentReply(body.detail || "The agent could not respond right now.");
+        return;
+      }
+      const response = (body.responses || []).find((item: any) => item.agent === agentId)
+        || (body.responses || [])[0];
+      if (response?.reply) {
+        setAgentReply(response.reply);
+      } else if ((body.errors || []).length) {
+        const detail = (body.errors || [])
+          .map((item: any) => item.detail || item.code || "unknown error")
+          .join("; ");
+        setAgentReply(`The agent could not respond: ${detail}`);
+      } else {
+        setAgentReply("The agent did not return a response. Try the check-in again.");
+      }
+    } catch {
+      setAgentReply("Could not reach the agent. Please try again.");
+    } finally {
+      setAgentQuestionBusy(false);
+    }
+  }
 
   async function doApproveGoal() {
     if (!selectedGoal) return;
     setGoalApproveBusy(true);
     setGoalError("");
     try {
+      for (const step of selectedGoalDetail?.steps || []) {
+        if (step.status !== "approved") await approveTeamGoalStep(selectedGoal.id, step.seq);
+      }
       await approveTeamGoal(selectedGoal.id);
       await loadGoals();
       await openGoal(selectedGoal.id);
@@ -441,14 +538,28 @@ export function Coordination() {
       setGoalApproveBusy(false);
     }
   }
+  async function doApproveStep(seq: number) {
+    if (!selectedGoalId) return;
+    setStepApproveBusy(seq);
+    try {
+      await approveTeamGoalStep(selectedGoalId, seq);
+      const detail = await getTeamGoal(selectedGoalId);
+      setSelectedGoalDetail(detail);
+    } catch (e) {
+      setGoalError(errMsg(e, "Could not approve this agent plan."));
+    } finally {
+      setStepApproveBusy(null);
+    }
+  }
   const blocked = execution ? blockedStep(execution) : null;
+  const phase = workflowPhase(selectedGoal, plan, execution);
 
   return (
     <section className="panel coordination-panel" data-testid="coordination-panel">
       <div className="panel__head">
         <div>
-          <h3 className="section-title">Coordination &amp; Deliverables</h3>
-          <p className="panel__sub">Authorized plans, per-step execution, and deliverable review.</p>
+          <h3 className="section-title">Team workflow</h3>
+          <p className="panel__sub">Review the team’s plan, then choose when work can begin.</p>
         </div>
         <div className="coord-actions">
           <button className="btn btn--sm btn--primary" data-testid="coord-new-goal"
@@ -580,13 +691,31 @@ export function Coordination() {
         <ul className="list" data-testid="coord-goals">
           {goals.map((g) => (
             <li key={g.id} className={`list__item ${selectedGoalId === g.id ? "list__item--selected" : ""}`}>
-              <button
-                className="origin-link"
+              <div className="coord-goal-row">
+                <button
+                  className="origin-link coord-goal-row__open"
                 data-testid={`coord-goal-${g.id}`}
                 onClick={() => openGoal(g.id)}
-              >
-                {g.title} · {humanizeAgent(g.coordinator_agent)} · {g.status}
-              </button>
+                >
+                  <span>{g.title}</span>
+                  <span className={`status-chip status-chip--${g.status}`}>{goalStatusLabel(g.status)}</span>
+                </button>
+                <span className="coord-goal-row__owner">Coordinator: {humanizeAgent(g.coordinator_agent)}</span>
+                <button className="btn btn--sm btn--ghost" onClick={() => openGoal(g.id)}>
+                  View agent plans
+                </button>
+              </div>
+              {goalPreviews[g.id] && (
+                <ol className="coord-goal-preview" aria-label={`Agent plans for ${g.title}`}>
+                  {(goalPreviews[g.id].steps || []).map((step) => (
+                    <li key={step.seq}>
+                      <strong>{humanizeAgent(step.agent_id)}</strong>
+                      <span>{step.responsibility || "Plan responsibility not specified yet."}</span>
+                      <em>{stepStatusLabel(step.status)}</em>
+                    </li>
+                  ))}
+                </ol>
+              )}
             </li>
           ))}
         </ul>
@@ -600,29 +729,104 @@ export function Coordination() {
         <div className="coordination-detail" data-testid="coord-detail">
           <div className="coord-head">
             <h4 className="section-title">{selectedGoal?.title || "Team goal"}</h4>
+            {selectedGoal && (
+              <p className="panel__sub">
+                Owner: {humanizeAgent(selectedGoal.coordinator_agent)} · Review each agent plan below before authorizing work.
+              </p>
+            )}
           </div>
           {goalLoading && <Empty text="Loading goal…" />}
           <ErrorBox msg={goalError} />
+          {selectedGoal && (
+            <div className="coord-flow" data-testid="coord-flow">
+              <div className="coord-flow__steps" aria-label="Workflow progress">
+                {["Review", "Approve", "Begin", "Run", "Result"].map((label, index) => (
+                  <span key={label} className={index + 1 <= phase.number ? "is-active" : ""}>
+                    <b>{index + 1}</b>{label}
+                  </span>
+                ))}
+              </div>
+              <strong>Next: {phase.label}</strong>
+              <span>{phase.hint}</span>
+            </div>
+          )}
 
           {selectedGoal && selectedGoal.status === "proposed" && (
             <div className="coord-block">
-              <p className="muted">This team goal is proposed. Approve it first \u2014 then you can authorize its coordination plan and run the steps.</p>
+              <div className="workflow-next">
+                <strong>Next: approve this goal</strong>
+                <span>Approval lets the coordinator prepare the work plan. Nothing runs yet.</span>
+              </div>
               <button className="btn btn--primary btn--sm" data-testid="coord-approve"
                 onClick={doApproveGoal} disabled={goalApproveBusy}>
-                {goalApproveBusy ? "Approving…" : "Approve team goal"}
+                {goalApproveBusy ? "Approving…" : "Approve all plans"}
               </button>
+            </div>
+          )}
+
+          {selectedGoal && selectedGoal.status === "proposed" && proposedSteps.length > 0 && (
+            <div className="coord-block plan-review-card" data-testid="coord-proposed-plan">
+              <div className="workflow-next">
+                <strong>Plan from the team</strong>
+                <span>Review each responsibility before approving. You can ask an agent to clarify or critique its approach.</span>
+              </div>
+              <ol className="agent-plan-list">
+                {proposedSteps.map((step) => (
+                  <li key={step.seq} className="agent-plan-item">
+                    <div className="agent-plan-item__body">
+                      <strong>Step {step.seq}: {humanizeAgent(step.agent_id)}</strong>
+                      <span>{step.responsibility || "Responsibility not specified."}</span>
+                      {step.depends_on_seq != null && <small>Starts after step {step.depends_on_seq}</small>}
+                      {step.plan && (
+                        <div className="agent-plan-item__plan">
+                          <strong>Agent plan</strong>
+                          <Markdown source={step.plan} />
+                        </div>
+                      )}
+                    </div>
+                    <button className="btn btn--sm btn--ghost" onClick={() => {
+                      setSelectedAgentForChat(step.agent_id);
+                      setAgentQuestion(`What is your approach for step ${step.seq}, and what would you need from me before starting?`);
+                      setAgentReply("");
+                    }}>
+                      Check with {humanizeAgent(step.agent_id)}
+                    </button>
+                    <button className="btn btn--sm btn--primary" disabled={step.status === "approved" || stepApproveBusy === step.seq}
+                      onClick={() => doApproveStep(step.seq)}>
+                      {step.status === "approved" ? "Approved" : stepApproveBusy === step.seq ? "Approving…" : "Approve plan"}
+                    </button>
+                  </li>
+                ))}
+              </ol>
+              {selectedAgentForChat && (
+                <div className="agent-plan-chat" data-testid="coord-agent-chat">
+                  <strong>Check in with {humanizeAgent(selectedAgentForChat)}</strong>
+                  <textarea value={agentQuestion} onChange={(e) => setAgentQuestion(e.target.value)}
+                    placeholder="Ask about the approach, assumptions, or expected result." />
+                  <div className="coord-actions">
+                    <button className="btn btn--sm btn--primary" onClick={() => askAgent(selectedAgentForChat)}
+                      disabled={agentQuestionBusy || !agentQuestion.trim()}>
+                      {agentQuestionBusy ? `Waiting for ${humanizeAgent(selectedAgentForChat)}…` : "Ask agent"}
+                    </button>
+                    <button className="btn btn--sm btn--ghost" onClick={() => setSelectedAgentForChat(null)}>Close</button>
+                  </div>
+                  {agentReply && <div className="agent-plan-chat__reply"><Markdown source={agentReply} /></div>}
+                </div>
+              )}
             </div>
           )}
 
           {!plan && review && review.plan_valid && (
             <div className="coord-block">
-              <p className="muted">
-                Read-only plan preview · Coordinator: {humanizeAgent(review.coordinator)}
-              </p>
+              <div className="workflow-next">
+                <strong>Next: review and authorize the plan</strong>
+                <span>Check who is doing what. Authorizing freezes the plan; it does not run it.</span>
+              </div>
+              <p className="muted">Coordinator: {humanizeAgent(review.coordinator)}</p>
               <StepList steps={planSteps} />
               <button className="btn btn--primary btn--sm" data-testid="coord-authorize"
                 onClick={doAuthorize} disabled={planBusy}>
-                {planBusy ? <><span className="spinner" aria-hidden="true" /> Authorizing…</> : "Authorize coordination plan"}
+                {planBusy ? <><span className="spinner" aria-hidden="true" /> Locking plan…</> : "Lock plan & continue"}
               </button>
               <ErrorBox msg={planError} />
             </div>
@@ -631,15 +835,15 @@ export function Coordination() {
           {plan && (
             <div className="coord-block">
               <div className="coord-plan-head">
-                <p className="muted">
-                  Authorized plan · Coordinator: {humanizeAgent(plan.coordinator)} ·{" "}
-                  {plan.expected_deliverable ? `Expected: ${plan.expected_deliverable}` : "No declared deliverable"}
-                </p>
+                <div className="workflow-next workflow-next--complete">
+                  <strong>Plan authorized</strong>
+                  <span>{plan.expected_deliverable ? `The team will create: ${plan.expected_deliverable}` : "The team is ready to work."} Coordinator: {humanizeAgent(plan.coordinator)}.</span>
+                </div>
               </div>
               {!execution && (
                 <button className="btn btn--primary btn--sm" data-testid="coord-start-exec"
                   onClick={doStartExecution} disabled={execBusy === "start"}>
-                  {execBusy === "start" ? <><span className="spinner" aria-hidden="true" /> Starting…</> : "Start execution"}
+                  {execBusy === "start" ? <><span className="spinner" aria-hidden="true" /> Starting…</> : "Begin work"}
                 </button>
               )}
             </div>
@@ -647,32 +851,35 @@ export function Coordination() {
 
           {plan && execution && (
             <div className="coord-exec" data-testid="coord-exec">
-              <p className="muted">Execution: {execStatusLabel(execution.status)}</p>
-              <div className="coord-actions">
+              <div className="workflow-status">
+                <strong>{execution.status === "ready_for_review" ? "Work completed — review the result" : `Work status: ${execStatusLabel(execution.status)}`}</strong>
+                <span>{execution.status === "ready_for_review" ? "The team’s output is below. Accept it or request changes." : "This runs the approved steps locally. Nothing is published or sent."}</span>
+              </div>
+              {execution.status === "running" && <div className="coord-actions">
                 <button className="btn btn--primary btn--sm" data-testid="coord-run"
                   onClick={doRun} disabled={execBusy !== null || execBusy === "run" ||
-                    execution.status !== "running" || !hasRunnable(execution)}>
-                  {execBusy === "run" ? "Running…" : "Run all steps"}
+                    !hasRunnable(execution)}>
+                  {execBusy === "run" ? "Working…" : "Run team steps"}
                 </button>
-              </div>
+              </div>}
               <StepList steps={planSteps} execution={execution} />
 
               {execution.status === "ready_for_review" && execution.deliverable?.status === "pending" && (
                 <div className="deliverable-review" data-testid="coord-deliv">
-                  <h5 className="section-title">Consolidated deliverable</h5>
+                  <h5 className="section-title">Team result</h5>
                   {execution.deliverable && execution.deliverable.status === "pending" && (
                     <div className="deliverable-actions">
                       <button className="btn btn--sm" data-testid="coord-accept"
                         onClick={() => doReviewDeliverable("accepted")} disabled={revBusy !== null}>
-                        Accept
+                        Accept result
                       </button>
                       <button className="btn btn--sm btn--ghost" data-testid="coord-revision"
                         onClick={() => doReviewDeliverable("revision_requested")} disabled={revBusy !== null}>
-                        Request revision
+                        Request changes
                       </button>
                       <button className="btn btn--sm btn--danger-ghost" data-testid="coord-reject"
                         onClick={() => doReviewDeliverable("rejected")} disabled={revBusy !== null}>
-                        Reject
+                        Reject result
                       </button>
                     </div>
                   )}
@@ -699,7 +906,7 @@ export function Coordination() {
 
           {execution?.deliverable?.status === "pending" && (
             <div className="rework-select" data-testid="coord-rework">
-              <h5 className="section-title">Select steps to rework (for revision)</h5>
+              <h5 className="section-title">What should be redone?</h5>
               {planSteps.map((s) => (
                 <label key={s.seq} className="rework-option">
                   <input
@@ -722,7 +929,7 @@ export function Coordination() {
 
           {plan && execution && versions.length > 0 && (
             <div className="version-history" data-testid="coord-versions">
-              <h5 className="section-title">Deliverable version history</h5>
+              <h5 className="section-title">Previous results</h5>
               <ul className="list">
                 {versions.map((v) => (
                   <li key={v.version_id} className="list__item">
@@ -797,4 +1004,24 @@ function StepList({ steps, execution }: {
       })}
     </ul>
   );
+}
+
+function workflowPhase(goal: { status: string } | null | undefined, plan: CoordinationPlan | null,
+                      execution: ExecutionSummary | null): { number: number; label: string; hint: string } {
+  if (execution?.status === "ready_for_review") {
+    return { number: 5, label: "Review the result", hint: "The team finished. Review the combined result below." };
+  }
+  if (execution?.status === "running") {
+    const active = execution.steps?.find((step) => step.status === "in_progress");
+    return {
+      number: 4,
+      label: active ? `Running step ${active.seq}` : "Run the team steps",
+      hint: "The approved steps run locally in order. Nothing is published or sent.",
+    };
+  }
+  if (plan) return { number: 3, label: "Begin the work", hint: "The plan is locked. Start execution when you are ready." };
+  if (goal?.status === "approved") {
+    return { number: 2, label: "Authorize the plan", hint: "Review the assignments, then lock the plan before work begins." };
+  }
+  return { number: 1, label: "Review and approve the plans", hint: "Read each agent’s plan. Nothing runs until you approve it." };
 }

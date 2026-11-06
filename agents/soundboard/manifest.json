@@ -33,5 +33,8 @@
     "memory:read",
     "brand:read",
     "work:propose:goal_update"
+  ],
+  "delegated_from": [
+    "workspace_architect"
   ]
 }

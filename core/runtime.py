@@ -17,6 +17,7 @@ from core.model_router import ModelRouter
 from core.orchestrator import Orchestrator
 from core.policy import PolicyEngine
 from core.tools import build_registry
+from core.feedback import FeedbackService
 
 AGENTS_DIR = Path(BASE_DIR) / "agents"
 
@@ -84,6 +85,7 @@ def build_runtime(db, tenant_id: str, user_id: str, policy=None) -> Orchestrator
     brand = BrandService(db=db, tenant_id=tenant_id)
     router = ModelRouter()                       # Ollama only (local)
     tools = build_registry(db=db, tenant_id=tenant_id)
+    feedback = FeedbackService(db=db, tenant_id=tenant_id, user_id=user_id)
     return Orchestrator(
         registry=reg,
         policy=policy if policy is not None else build_local_policy(reg),
@@ -92,4 +94,5 @@ def build_runtime(db, tenant_id: str, user_id: str, policy=None) -> Orchestrator
         brand=brand,
         user_id=user_id,
         tools=tools,
+        feedback=feedback,
     )

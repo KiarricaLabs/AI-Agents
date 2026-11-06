@@ -26,6 +26,14 @@ export interface TeamGoalSummary {
   updated_at?: string;
 }
 
+export interface TeamGoalDetail extends TeamGoalSummary {
+  summary?: string | null;
+  goal_id?: string | null;
+  thread_id?: string | null;
+  steps: TeamGoalStep[];
+  approvals?: Array<{ decision?: string; note?: string | null; created_at?: string }>;
+}
+
 export interface TeamGoalStep {
   seq: number;
   agent_id: string;
@@ -37,6 +45,7 @@ export interface TeamGoalStep {
   error: string | null;
   status: string;
   effective_permissions?: string[];
+  plan?: string | null;
 }
 
 export interface CoordinationPlan {
@@ -154,6 +163,10 @@ function post<T>(url: string, payload?: unknown): Promise<T> {
 
 export function listTeamGoals(): Promise<{ items: TeamGoalSummary[] }> {
   return request<{ items: TeamGoalSummary[] }>(`${API}/team/goals`);
+}
+
+export function getTeamGoal(teamGoalId: string): Promise<TeamGoalDetail> {
+  return request<TeamGoalDetail>(`${API}/team/goals/${encodeURIComponent(teamGoalId)}`);
 }
 
 export function reviewCoordinationPlan(teamGoalId: string): Promise<ReviewPlan> {
@@ -363,6 +376,14 @@ export function getReviewCenter(): Promise<ReviewCenterResult> {
 // Human-only approval of a proposed TeamGoal (a Review Center action).
 export function approveTeamGoal(goalId: string): Promise<any> {
   return post<any>(`${API}/team/goals/${encodeURIComponent(goalId)}/approve`);
+}
+
+export function approveTeamGoalStep(goalId: string, seq: number): Promise<any> {
+  return post<any>(`${API}/team/goals/${encodeURIComponent(goalId)}/steps/${seq}/approve`);
+}
+
+export function generateAgentPlans(goalId: string): Promise<any> {
+  return post<any>(`${API}/team/goals/${encodeURIComponent(goalId)}/agent-plans`);
 }
 
 // Human-only, owner-scoped hiding of one review item WITHOUT deleting the

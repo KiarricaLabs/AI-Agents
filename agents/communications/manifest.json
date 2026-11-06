@@ -27,6 +27,9 @@
     "approval_required": true
   },
   "tools": [
+    "simulate_email",
+    "simulate_social_campaign",
+    "save_local_artifact",
     "work_propose_deliverable",
     "work_propose_deliverable_version"
   ],
@@ -35,5 +38,8 @@
     "brand:read",
     "work:propose:deliverable",
     "work:propose:deliverable_version"
+  ],
+  "delegated_from": [
+    "workspace_architect"
   ]
 }

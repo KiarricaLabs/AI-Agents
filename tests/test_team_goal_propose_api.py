@@ -212,11 +212,12 @@ class ProposeAPITest(unittest.TestCase):
         self.assertEqual([s["valid"] for s in body["steps"]], [True, True])
 
     def test_validate_draft_flags_undeclared_delegation(self):
-        # communications is NOT delegable from workspace_architect -> invalid,
-        # with no valid candidate (no delegable agent has 'draft' capability).
+        # executive_assistant owns the 'schedule' capability, but is NOT delegable
+        # from workspace_architect -> invalid; no delegable agent
+        # (strategist/communications/soundboard) owns 'schedule', so no suggestion.
         r = self.client.post("/team/goals/validate", headers=self._h(), json={
             "coordinator_agent": "workspace_architect",
-            "steps": [{"seq": 1, "agent_id": "communications", "responsibility": "Draft messaging"}]})
+            "steps": [{"seq": 1, "agent_id": "executive_assistant", "responsibility": "Schedule the campaign timeline"}]})
         self.assertEqual(r.status_code, 200, r.text)
         st = r.json()["steps"][0]
         self.assertFalse(st["valid"])

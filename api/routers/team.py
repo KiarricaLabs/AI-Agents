@@ -82,6 +82,7 @@ class TeamMessageReq(BaseModel):
     message: str
     thread_id: Optional[str] = None
     project_id: Optional[str] = None
+    subject_agent: Optional[str] = None
 
 
 class ParticipantReq(BaseModel):
@@ -170,6 +171,11 @@ def team_message(req: TeamMessageReq, request: Request):
         MemoryService(db=_db, tenant_id=t).add_conversation(u, content, role, tid)
 
     router_ctx: Dict[str, Any] = {"thread_id": req.thread_id}
+    if req.subject_agent:
+        subject = req.subject_agent.strip().lower()
+        if subject not in reg.list():
+            raise HTTPException(status_code=422, detail="unknown agent")
+        router_ctx["subject_agent"] = subject
     if req.project_id:
         owned = _db.query(
             "SELECT id, name FROM projects WHERE id=? AND tenant_id=? AND user_id=?",

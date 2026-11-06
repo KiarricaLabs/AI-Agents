@@ -33,24 +33,43 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
+def _unwrap_transcript(text: str) -> str:
+    """Recover the original request when a rendered team transcript is pasted.
+
+    Agent replies and validation errors are evidence, not new assignments. The
+    chat UI can include them when a user asks to capture an earlier discussion,
+    so prefer the first explicit delegated request in that transcript.
+    """
+    raw = str(text or "")
+    match = re.search(
+        r"\[Delegated to team\]\s*([^\r\n]+)",
+        raw,
+        re.I,
+    )
+    if match:
+        return match.group(1).strip()
+    return raw
+
+
 class MessageToTeamGoal:
     @staticmethod
     def extract(message: str, coordinator_agent: str) -> Dict[str, object]:
         coordinator = str(coordinator_agent or "").strip().lower()
         if coordinator not in AGENT_SLUGS:
             raise ValueError(f"unknown coordinator agent: {coordinator}")
-        text = _clean(message)
+        normalized_message = _unwrap_transcript(message)
+        text = _clean(normalized_message)
         if not text:
             raise ValueError("message is required")
 
-        raw_lines = [l.strip() for l in str(message).splitlines() if l.strip()]
+        raw_lines = [l.strip() for l in str(normalized_message).splitlines() if l.strip()]
         if not raw_lines:
             raw_lines = [text]
 
         title, body_lines = _split_title(raw_lines)
         summary = _clean(" ".join(body_lines)) or None
         deliverable = _extract_deliverable("\n".join(raw_lines))
-        steps = _extract_steps(body_lines, coordinator)
+        steps = _extract_steps([title, *body_lines], coordinator)
 
         return {
             "title": title,
@@ -122,7 +141,22 @@ def _extract_steps(body_lines: List[str], coordinator: str) -> List[Dict[str, ob
         steps.append({"agent_id": agent, "responsibility": task})
 
     if not steps:
-        steps.append({"agent_id": coordinator, "responsibility": "Coordinate and deliver the goal"})
+        context = " ".join(body_lines).lower()
+        if any(term in context for term in ("marketing", "campaign", "instagram", "social media", "new users", "followers")):
+            steps.extend([
+                {"agent_id": "strategist", "responsibility": "Prioritize the audience, positioning, objectives, and success metrics"},
+                {"agent_id": "communications", "responsibility": "Draft channel-specific content ideas, hooks, captions, and calls to action"},
+                {"agent_id": "soundboard", "responsibility": "Reflect on the concept, challenge assumptions, and add creative angles, risks, and improvement ideas"},
+                {"agent_id": "workspace_architect", "responsibility": "Organize the contributions into an ordered campaign plan with dependencies and deliverables"},
+            ])
+        elif any(term in context for term in ("strategy", "roadmap", "long-term", "long term", "growth")):
+            steps.extend([
+                {"agent_id": "strategist", "responsibility": "Define strategic priorities, opportunities, risks, and measurable outcomes"},
+                {"agent_id": "workspace_architect", "responsibility": "Organize the strategy into phases, dependencies, and concrete deliverables"},
+                {"agent_id": "soundboard", "responsibility": "Stress-test the assumptions and identify alternative approaches"},
+            ])
+        else:
+            steps.append({"agent_id": coordinator, "responsibility": "Coordinate and deliver the goal"})
 
     norm = []
     for i, s in enumerate(steps):

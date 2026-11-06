@@ -233,6 +233,30 @@ class TeamGoalService:
         self._set_status(team_goal_id, "approved", approver_user_id)
         return {"team_goal_id": team_goal_id, "status": "approved", "reused": False}
 
+    def approve_step(self, team_goal_id: str, seq: int, approver_user_id: str) -> Dict[str, Any]:
+        if approver_user_id != self.user_id:
+            raise TeamGoalApprovalNotPermitted("only the goal owner may approve a step")
+        rows = self.db.query(
+            "SELECT id, status FROM team_goal_steps WHERE team_goal_id=? AND seq=? "
+            "AND tenant_id=? AND user_id=?",
+            (team_goal_id, int(seq), self.tenant_id, self.user_id))
+        if not rows:
+            raise TeamGoalNotFound("team goal step not found")
+        self.db.execute(
+            "UPDATE team_goal_steps SET status='approved', updated_at=? "
+            "WHERE team_goal_id=? AND seq=? AND tenant_id=? AND user_id=?",
+            (_now(), team_goal_id, int(seq), self.tenant_id, self.user_id))
+        return {"team_goal_id": team_goal_id, "step": int(seq), "status": "approved"}
+
+    def save_step_plan(self, team_goal_id: str, seq: int, plan: str) -> None:
+        if not self._owned("team_goals", team_goal_id):
+            raise TeamGoalNotFound("team goal not found")
+        self.db.execute(
+            "UPDATE team_goal_steps SET plan=?, updated_at=? "
+            "WHERE team_goal_id=? AND seq=? AND tenant_id=? AND user_id=?",
+            (str(plan or "").strip() or None, _now(), team_goal_id, int(seq),
+             self.tenant_id, self.user_id))
+
     # ---------------------------------------------------------------- reads
     def get(self, team_goal_id: str, include_steps: bool = True) -> Optional[Dict[str, Any]]:
         rows = self.db.query(

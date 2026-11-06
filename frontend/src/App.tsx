@@ -3,13 +3,12 @@ import { diffLines } from "./diff";
 import { Markdown } from "./markdown";
 import { KNOWN_SAMPLE_IDS } from "./knownSamples";
 import { statusLabel, priorityText } from "./uiText";
-import { Coordination } from "./coordination_panel";
-import { TeamStatus } from "./team_status";
-import { ReviewCenter } from "./review_center";
 import { proposeTeamGoal, validateTeamGoalDraft } from "./coordination";
 import { TeamMemory } from "./team_memory";
 import { TeamChat } from "./team_chat";
-import { Pipeline } from "./pipeline";
+import { CommandCenterSidebar } from "./command_center_sidebar";
+import { WorkflowOverview } from "./workflow_overview";
+import { StructuredProjects } from "./structured_projects";
 import "./App.css";
 
 const API = (import.meta.env.VITE_API_BASE as string | undefined) || "http://127.0.0.1:8001";
@@ -31,6 +30,14 @@ const NAV: { id: Tab; icon: string; label: string }[] = [
   { id: "activity", icon: "activity", label: "Activity" },
   { id: "settings", icon: "gear", label: "Settings" },
 ];
+
+const NAV_HINTS: Record<Tab, string> = {
+  home: "Chat",
+  projects: "Plans",
+  tasks: "Review",
+  activity: "Execute",
+  settings: "Learn",
+};
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const children: Record<string, ReactNode> = {
@@ -2037,7 +2044,10 @@ export default function App() {
             aria-label={n.label}
           >
             <Icon name={n.icon} />
-            <span className="nav__label">{n.label}</span>
+            <span className="nav__copy">
+              <span className="nav__label">{n.label}</span>
+              <span className="nav__hint">{NAV_HINTS[n.id]}</span>
+            </span>
           </button>
         ))}
       </nav>
@@ -2079,12 +2089,14 @@ export default function App() {
 
       <main className="content">
         {tab === "home" && (
-          <section className="panel">
-            <div className="panel__head">
+          <section className="command-center">
+            <div className="command-center__welcome">
               <div>
-                <h2 className="panel__title">Home</h2>
-                <p className="panel__sub">Your AI team's command center — what's happening and what to do next.</p>
+                <span className="eyebrow">ON US AI TEAM · COMMAND CENTER</span>
+                <h2>Good morning. What are we working on?</h2>
+                <p>Your AI team's command center: send one message to the room. The coordinator will bring in the right teammates, explain the plan, and wait for your approval.</p>
               </div>
+              <div className="command-center__status"><span /> Local and ready</div>
             </div>
 
             <div className="stats">
@@ -2093,77 +2105,55 @@ export default function App() {
               <Stat icon="inbox" label="Awaiting your review" value={(feed || []).filter((p) => p && p.status === "proposed").length} />
               <Stat icon="layers" label="Proposals" value={(feed || []).length} />
             </div>
+            <div className="flow-legend" aria-label="Approval flow">
+              <span className="flow-legend__active">Chat</span><i>›</i><span>Plans</span><i>›</i><span>Review</span><i>›</i><span>Execute</span><i>›</i><span>Learn</span>
+            </div>
 
-            <TeamChat onOpenTasks={() => setTab("tasks")} />
+            <div className="command-center__layout">
+              <div className="command-center__main">
+                <div className="workspace-label"><span>01</span><div><strong>Group chat</strong><small>Coordinate with your whole AI team</small></div></div>
+                <TeamChat onOpenTasks={() => setTab("tasks")} />
 
-            {/* D4.3-B: coordinated status — one assistant view of what awaits you. */}
-            {(() => {
-              const pendingApprovals = (feed || []).filter((p) => p && p.status === "proposed").length;
-              const runningEps = (episodes || []).filter((e) => e && e.status === "running").length;
-              const doneEps = (episodes || []).filter((e) => e && e.status === "done").length;
-              const ownedBy: Record<string, number> = {};
-              (assignments || []).forEach((a: any) => {
-                ownedBy[a.agent_id || "?"] = (ownedBy[a.agent_id || "?"] || 0) + 1;
-              });
-              return (
-                <div className="coord-status" data-testid="coord-status">
-                  <div className="coord-status__head">
-                    <h3 className="section-title">Your AI team right now</h3>
-                    <span className="muted">Nothing runs automatically — every action below waits on you.</span>
-                  </div>
-                  <div className="coord-status__rows">
-                    <div className="coord-status__item">
-                      <span className="coord-status__label">Awaiting your approval</span>
-                      <span className="coord-status__value" data-testid="coord-pending">{pendingApprovals}</span>
-                      {pendingApprovals > 0 && (
-                        <button className="btn btn--sm btn--ghost" data-testid="coord-goto-work" onClick={() => { setTab("projects"); loadFeed(); }}>
-                          Review proposals
-                        </button>
-                      )}
+                {(() => {
+                  const pendingApprovals = (feed || []).filter((p) => p && p.status === "proposed").length;
+                  const runningEps = (episodes || []).filter((e) => e && e.status === "running").length;
+                  const doneEps = (episodes || []).filter((e) => e && e.status === "done").length;
+                  const ownedBy: Record<string, number> = {};
+                  (assignments || []).forEach((a: any) => {
+                    ownedBy[a.agent_id || "?"] = (ownedBy[a.agent_id || "?"] || 0) + 1;
+                  });
+                  return (
+                    <div className="command-status" data-testid="coord-status">
+                      <span className="command-status__label">Your command center</span>
+                      <span><b data-testid="coord-pending">{pendingApprovals}</b> awaiting approval</span>
+                      <span><b data-testid="coord-running">{runningEps}</b> in progress</span>
+                      <span><b data-testid="coord-done">{doneEps}</b> completed</span>
+                      {Object.entries(ownedBy).map(([slug, n]) => (
+                        <span key={slug} data-testid={`coord-owner-${slug}`}>{agentDisplay(slug)} · {n}</span>
+                      ))}
                     </div>
-                    <div className="coord-status__item">
-                      <span className="coord-status__label">Work in progress (needs your evidence)</span>
-                      <span className="coord-status__value" data-testid="coord-running">{runningEps}</span>
-                      {runningEps > 0 && (
-                        <button className="btn btn--sm btn--ghost" onClick={() => setTab("activity")}>
-                          View activity
-                        </button>
-                      )}
-                    </div>
-                    <div className="coord-status__item">
-                      <span className="coord-status__label">Completed episodes</span>
-                      <span className="coord-status__value" data-testid="coord-done">{doneEps}</span>
-                    </div>
-                    <div className="coord-status__item coord-status__team">
-                      <span className="coord-status__label">Team workload (assignments by owner)</span>
-                      <div className="coord-status__chips">
-                        {Object.keys(ownedBy).length === 0 && <span className="muted">No assignments yet.</span>}
-                        {Object.entries(ownedBy).map(([slug, n]) => (
-                          <span key={slug} className="chip" data-testid={`coord-owner-${slug}`}>
-                            {agentDisplay(slug)} · {n}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
+                  );
+                })()}
 
-            <Pipeline onJump={setTab} />
-            <Coordination />
-            <TeamStatus />
-            <ReviewCenter onOpen={() => setTab("home")} />
+                <div className="workspace-label workspace-label--plans"><span>02</span><div><strong>Structured project workflow</strong><small>Review the plan, run approved tasks, and review drafts</small></div></div>
+                <StructuredProjects />
+              </div>
+              <div className="command-center__rail">
+                <CommandCenterSidebar />
+              </div>
+            </div>
           </section>
         )}
 
         {tab === "projects" && projectsSection === "browse" && (
           <section className="panel">
+            <StructuredProjects />
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Projects</h2>
-                <p className="panel__sub">Work organized by project. Workspaces act as containers holding related projects.</p>
+                <h2 className="panel__title">Plans &amp; projects</h2>
+                <p className="panel__sub">Turn a team conversation into an organized plan. Workspaces keep related work together.</p>
               </div>
+              <WorkflowOverview stage="plans" onOpenCoordination={() => setTab("home")} />
               <div className="seg-group">
                 <button className={`seg-btn${(projectsSection as string) === "browse" ? " seg-btn--active" : ""}`} data-testid="projects-browse-tab" onClick={() => setProjectsSection("browse")}>Browse</button>
                 <button className={`seg-btn${(projectsSection as string) === "proposals" ? " seg-btn--active" : ""}`} data-testid="projects-proposals-tab" onClick={() => { setProjectsSection("proposals"); loadFeed(); }}>Proposals</button>
@@ -2532,13 +2522,15 @@ export default function App() {
             <div className="panel__head">
               <div>
                 <h2 className="panel__title">Proposals &amp; approvals</h2>
-                <p className="panel__sub">Review proposed work and approve what the team should do.</p>
+                <p className="panel__sub">Review team plans and legacy proposed work. Nothing runs until you approve it.</p>
               </div>
               <div className="seg-group">
                 <button className={`seg-btn${(projectsSection as string) === "browse" ? " seg-btn--active" : ""}`} data-testid="projects-browse-tab" onClick={() => setProjectsSection("browse")}>Browse</button>
                 <button className={`seg-btn${(projectsSection as string) === "proposals" ? " seg-btn--active" : ""}`} data-testid="projects-proposals-tab" onClick={() => { setProjectsSection("proposals"); loadFeed(); }}>Proposals</button>
               </div>
             </div>
+
+            <WorkflowOverview stage="review" onOpenCoordination={() => setTab("home")} />
 
             {/* Deterministic proposal composer for all work types. */}
             <div className="subsection" data-testid="proposal-composer">
@@ -2637,7 +2629,7 @@ export default function App() {
               {proposalError && <p className="error">Error: {proposalError}</p>}
               {allApproveMsg && <p className="success" role="status">{allApproveMsg}</p>}
               {feed.length === 0 ? (
-                <Empty text="No proposals yet. Ask an agent to propose work, then approve it here." />
+                <Empty text="No legacy proposals yet. New requests are managed as team plans above; review and approve them in Delegated work awaiting review." />
               ) : (
                 <ul className="list approvals-list">
                   {feed.map((p) => {
@@ -3256,9 +3248,10 @@ export default function App() {
           <section className="panel">
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Activity</h2>
-                <p className="panel__sub">A readable history of what your AI team has done.</p>
+                <h2 className="panel__title">Execution &amp; evidence</h2>
+                <p className="panel__sub">Watch approved work run, inspect evidence, and review what each agent produced.</p>
               </div>
+              <WorkflowOverview stage="execute" onOpenCoordination={() => setTab("home")} />
             </div>
             {visibleEpisodes.length === 0 ? (
               <Empty text="No agent activity yet. Runs appear here when you ask an agent to do work." />
@@ -3416,13 +3409,14 @@ export default function App() {
           <section className="panel">
             <div className="panel__head">
               <div>
-                <h2 className="panel__title">Task Center</h2>
-                <p className="panel__sub">Track every piece of work across your projects — what's waiting, what's active, and what needs your input.</p>
-                <button className="btn btn--sm btn--ghost" data-testid="open-coordination" onClick={() => setTab("home")}>
-                  Open coordination
+                <h2 className="panel__title">Review queue</h2>
+                <p className="panel__sub">Approve, revise, or reject proposed work before it can move into execution.</p>
+                <button className="btn btn--sm btn--ghost" data-testid="open-coordination" onClick={() => setTab("projects")}>
+                  Open structured projects
                 </button>
               </div>
             </div>
+            <WorkflowOverview stage="review" onOpenCoordination={() => setTab("home")} />
             <div className="work-toolbar" style={{ flexWrap: "wrap" }}>
               <select className="select select--small" value={taskStatusFilter} onChange={(e) => setTaskStatusFilter(e.target.value)} aria-label="Task status filter" data-testid="task-status-filter">
                 <option value="">All statuses</option>
@@ -3505,8 +3499,9 @@ export default function App() {
             <div className="panel__head">
               <div>
                 <h2 className="panel__title">Settings</h2>
-                <p className="panel__sub">Brand context, memory, sample data, and preferences.</p>
+                <p className="panel__sub">Shape how the team learns and prepare secure connections for a future phase.</p>
               </div>
+              <WorkflowOverview stage="learn" onOpenCoordination={() => setTab("home")} />
             </div>
 
             <div className="subsection">

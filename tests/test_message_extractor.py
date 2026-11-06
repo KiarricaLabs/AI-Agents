@@ -76,6 +76,22 @@ class MessageToTeamGoalTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             MessageToTeamGoal.extract("", "strategist")
 
+    def test_pasted_team_transcript_uses_original_delegated_request(self):
+        draft = MessageToTeamGoal.extract(
+            """TEAM PLAN FROM YOUR MESSAGE
+            Could not delegate: step 9: agent 'workspace_architect' lacks a relevant capability.
+            [Delegated to team] Create an Instagram marketing campaign for On Us to grow Bay Area users
+            Strategist: define the audience and success metrics
+            Communications: draft captions and hooks
+            """,
+            "workspace_architect")
+        self.assertEqual(
+            draft["title"],
+            "Create an Instagram marketing campaign for On Us to grow Bay Area users")
+        self.assertEqual(
+            [step["agent_id"] for step in draft["steps"]],
+            ["strategist", "communications", "soundboard", "workspace_architect"])
+
 
 class DraftEndpointTest(unittest.TestCase):
     @classmethod

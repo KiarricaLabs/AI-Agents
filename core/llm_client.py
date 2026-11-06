@@ -16,10 +16,14 @@ class LLMClient:
         self.base_url = base_url or AI_BASE_URL
         self.api_key = api_key if api_key is not None else AI_API_KEY
 
-    def complete(self, prompt: str, system: str = "", timeout: int = 120, format_json: bool = False) -> str:
+    def complete(self, prompt: str, system: str = "", timeout: int = 120,
+                 format_json: bool = False, json_schema: Optional[dict] = None) -> str:
         if self.provider == "ollama":
             payload = {"model": self.model, "prompt": prompt, "system": system, "stream": False}
-            if format_json:
+            if json_schema is not None:
+                payload["format"] = json_schema
+                payload["options"] = {"temperature": 0, "num_predict": 1800}
+            elif format_json:
                 # Ollama JSON mode: constrain the model to emit a JSON object.
                 payload["format"] = "json"
             req = urllib.request.Request(

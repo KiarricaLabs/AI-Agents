@@ -129,6 +129,26 @@ class CoordinationPlanServiceTest(unittest.TestCase):
         self.assertEqual(len(self.db.query("SELECT id FROM coordination_plans")), 1)
         self.assertEqual(len(self.db.query("SELECT id FROM coordination_plan_steps")), 1)
 
+    def test_authorize_allows_coordinator_owned_step(self):
+        svc = TeamGoalService(self.db, "t1", "u1")
+        ids = _scaffold(self.db)
+        tg = svc.propose(
+            "Coordinator work",
+            "workspace_architect",
+            goal_id=ids["gid"],
+            steps=[{
+                "seq": 1,
+                "agent_id": "workspace_architect",
+                "responsibility": "organize the campaign plan",
+            }],
+        )["team_goal_id"]
+        svc.approve(tg, "u1")
+        result = self.svc.authorize(tg, "u1")
+        self.assertEqual(result["status"], "authorized")
+        self.assertEqual(result["steps"][0]["agent_id"], "workspace_architect")
+        self.assertTrue(result["steps"][0]["delegation_ok"])
+        self.assertTrue(result["steps"][0]["effective_permissions"])
+
     def test_authorize_idempotent_no_duplicate_steps(self):
         tg, _ = _valid_goal(self.db)
         first = self.svc.authorize(tg, "u1")

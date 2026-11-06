@@ -132,11 +132,13 @@ class CoordinationPlanBuilder:
                 continue
 
             capability_ok = self._has_relevant_capability(agent, responsibility)
-            delegation_ok = self._delegable(coordinator, agent)
+            # The coordinator may own an orchestration step; delegation is only
+            # required when work is assigned to another agent.
+            delegation_ok = agent == coordinator or self._delegable(coordinator, agent)
 
             candidates = [
                 a for a in AGENT_SLUGS
-                if self._delegable(coordinator, a)
+                if (a == coordinator or self._delegable(coordinator, a))
                 and self._has_relevant_capability(a, responsibility)
             ]
             valid = capability_ok and delegation_ok
@@ -204,16 +206,18 @@ class CoordinationPlanBuilder:
 
             capability_ok = self._has_relevant_capability(agent, responsibility)
             # SEPARATE fail-closed delegation check.
-            delegation_ok = False
+            # A coordinator can perform its own step without delegating it.
+            delegation_ok = agent == coordinator
             delegation_reason = None
-            try:
-                ok, info = self.delegation.can_delegate(coordinator, agent)
-                delegation_ok = bool(ok)
-                if not ok:
-                    delegation_reason = str(info)
-            except Exception as e:  # pragma: no cover
-                delegation_ok = False
-                delegation_reason = f"delegation check failed: {e}"
+            if not delegation_ok:
+                try:
+                    ok, info = self.delegation.can_delegate(coordinator, agent)
+                    delegation_ok = bool(ok)
+                    if not ok:
+                        delegation_reason = str(info)
+                except Exception as e:  # pragma: no cover
+                    delegation_ok = False
+                    delegation_reason = f"delegation check failed: {e}"
 
             step_valid = capability_ok and delegation_ok
             err = None

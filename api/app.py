@@ -11,6 +11,10 @@ from api.routers import team_goals  # noqa: E402
 from api.routers import team_goals_execution  # noqa: E402
 from api.routers import review_center  # noqa: E402
 from api.routers import agent_comm, progress as progress_api  # noqa: E402
+from api.routers import feedback  # noqa: E402
+from api.routers import evaluations  # noqa: E402
+from api.routers import projects  # noqa: E402
+from api.routers import actions  # noqa: E402
 from config.settings import DEFAULT_TENANT, LOCAL_MODE, LOCAL_USER  # noqa: E402
 from core.auth import verify_token, validate_auth_secret  # noqa: E402
 from core.ratelimit import RateLimiter  # noqa: E402
@@ -73,6 +77,10 @@ app.include_router(team_goals_execution.router)
 app.include_router(review_center.router)
 app.include_router(agent_comm.router)
 app.include_router(progress_api.router)
+app.include_router(feedback.router)
+app.include_router(evaluations.router)
+app.include_router(projects.router)
+app.include_router(actions.router)
 
 
 @app.get("/metrics")

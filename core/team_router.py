@@ -128,6 +128,15 @@ class TeamRouter:
                 # A named agent joins the shortlist even with no keyword score.
                 score = max(score, 1)
             scored.append((score, slug))
+        # A shared conversation should never leave a human message unanswered.
+        # If no capability is a clear match, the configured coordinator gives a
+        # conversational response and can explain which specialist should handle
+        # the next step. Empty messages still return no route above.
+        if not scored:
+            fallback = self.coordinator if self.coordinator in self.registry.list() else None
+            if fallback:
+                scored.append((1, fallback))
+
         # Deterministic: highest score first, then stable slug ordering.
         scored.sort(key=lambda pair: (-pair[0], pair[1]))
         return [slug for _score, slug in scored][: self.max_responders]
@@ -142,7 +151,8 @@ class TeamRouter:
         with per-agent responses and an honest coordination flag.
         """
         ctx = context or {}
-        shortlist = self.relevant(message)
+        subject = str(ctx.get("subject_agent") or "").strip().lower()
+        shortlist = [subject] if subject else self.relevant(message)
         responses: List[Dict[str, Any]] = []
         errors: List[Dict[str, Any]] = []
         for slug in shortlist:

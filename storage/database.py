@@ -408,6 +408,10 @@ class Database:
             # T2-E Review Center: non-destructive dismissal ledger (additive).
             from storage.migrations_review import apply_review_tables
             apply_review_tables(c)
+            from storage.migrations_feedback import apply_feedback_tables
+            apply_feedback_tables(c)
+            from storage.migrations_agent_projects import apply_agent_project_tables
+            apply_agent_project_tables(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))
@@ -432,6 +436,7 @@ class Database:
             "ALTER TABLE goals ADD COLUMN is_synthetic INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE deliverables ADD COLUMN is_synthetic INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE assignments ADD COLUMN is_synthetic INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE team_goal_steps ADD COLUMN plan TEXT",
         ]
         for m in migrations:
             try:

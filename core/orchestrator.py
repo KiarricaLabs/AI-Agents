@@ -28,7 +28,7 @@ def _agent_classes():
 
 class Orchestrator:
     def __init__(self, registry: AgentRegistry, policy=None, router=None, memory=None,
-                 user_id=None, tools=None, brand=None):
+                 user_id=None, tools=None, brand=None, feedback=None):
         self.policy = policy
         self.registry = registry
         self.router = router if router is not None else ModelRouter()
@@ -36,6 +36,7 @@ class Orchestrator:
         self.user_id = user_id
         self.tools = tools
         self.brand = brand
+        self.feedback = feedback
 
     def _build_agent(self, agent_name: str):
         manifest = self.registry.get(agent_name)
@@ -46,7 +47,7 @@ class Orchestrator:
             raise ValueError(f"No implementation for {agent_name}")
         return cls(memory=self.memory, router=self.router, manifest=manifest,
                    user_id=self.user_id, tools=self.tools, policy=self.policy,
-                   brand=self.brand)
+                   brand=self.brand, feedback=self.feedback)
 
     def dispatch(self, agent_name: str, task: str, context: Optional[Dict[str, Any]] = None):
         from core.tracing import start_span, end_span

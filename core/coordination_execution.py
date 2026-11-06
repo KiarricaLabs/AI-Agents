@@ -319,6 +319,41 @@ class CoordinationExecutionService:
         orch = self._restricted_orchestrator(agent, set(effective_permissions))
         return orch.dispatch(agent, responsibility or "", {"accepted_step_outputs": context})
 
+    def _execution_task(self, plan_id: str, seq: int, agent: str,
+                        responsibility: str, accepted_context: Dict[str, Any]) -> str:
+        """Build the complete, assignment-specific execution brief.
+
+        The authorized coordination snapshot is the source of truth for the
+        assignment; the original TeamGoal step plan adds the concrete outputs
+        the agent already prepared during review.
+        """
+        plan_rows = self.db.query(
+            "SELECT team_goal_id FROM coordination_plans WHERE id=? AND tenant_id=? AND user_id=?",
+            (plan_id, self.tenant_id, self.user_id))
+        goal_id = plan_rows[0]["team_goal_id"] if plan_rows else None
+        goal = self.db.query(
+            "SELECT title, summary, expected_deliverable FROM team_goals "
+            "WHERE id=? AND tenant_id=? AND user_id=?",
+            (goal_id, self.tenant_id, self.user_id)) if goal_id else []
+        step = self.db.query(
+            "SELECT plan FROM team_goal_steps WHERE team_goal_id=? AND seq=? "
+            "AND tenant_id=? AND user_id=?",
+            (goal_id, seq, self.tenant_id, self.user_id)) if goal_id else []
+        goal_row = goal[0] if goal else {}
+        approved_plan = step[0].get("plan") if step else None
+        return (
+            f"Execute your approved contribution for the team goal: {goal_row.get('title') or 'team goal'}.\n"
+            f"Goal context: {goal_row.get('summary') or 'Use the stated campaign objective.'}\n"
+            f"Expected deliverable: {goal_row.get('expected_deliverable') or 'a concrete local deliverable'}\n\n"
+            f"Your assigned responsibility: {responsibility}\n"
+            f"Your reviewed plan:\n{approved_plan or 'Produce a concrete output for the responsibility.'}\n\n"
+            f"Accepted upstream outputs:\n{json.dumps(accepted_context, ensure_ascii=False)}\n\n"
+            "Return the actual concrete work product for your assignment, not a generic "
+            "description of what an agent could do. Build on accepted upstream outputs. "
+            "Remain local and credential-free; do not claim to publish, send, book, pay, "
+            "launch ads, or access external accounts."
+        )
+
     # ------------------------------------------------------------------ execute
     def execute_step(self, execution_id: str, approver_user_id: str) -> Dict[str, Any]:
         """Human explicitly executes the next eligible step (one at a time).
@@ -374,7 +409,10 @@ class CoordinationExecutionService:
             except (TypeError, ValueError):
                 ceiling = []
         try:
-            result = self._dispatch(agent, responsibility, accepted_context,
+            task = (responsibility if self._dispatcher is not None else
+                    self._execution_task(run["plan_id"], seq, agent,
+                                             responsibility, accepted_context))
+            result = self._dispatch(agent, task, accepted_context,
                                     effective_permissions=ceiling)
         except Exception as e:
             self._mark_step(run["plan_id"], execution_id, seq, "failed",
@@ -432,7 +470,10 @@ class CoordinationExecutionService:
                     f"step {seq} was already claimed/executed; no duplicate dispatch")
         accepted_context = self._accepted_context(plan_id, execution_id)
         try:
-            result = self._dispatch(agent, responsibility, accepted_context,
+            task = (responsibility if self._dispatcher is not None else
+                    self._execution_task(plan_id, seq, agent, responsibility,
+                                         accepted_context))
+            result = self._dispatch(agent, task, accepted_context,
                                     effective_permissions=ceiling)
         except Exception as e:
             self._mark_step(plan_id, execution_id, seq, "failed",

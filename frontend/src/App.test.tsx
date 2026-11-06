@@ -2191,9 +2191,9 @@ describe("Phase 4 — Task Center, Settings, conversation-to-task", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Task Center" }));
     const link = await screen.findByTestId("open-coordination");
-    expect(link.textContent).toContain("Open coordination");
+    expect(link.textContent).toContain("Open structured projects");
     fireEvent.click(link);
-    expect(await screen.findByTestId("coordination-panel")).toBeInTheDocument();
+    expect(await screen.findByTestId("structured-projects")).toBeInTheDocument();
   });
 
   it("opens the originating conversation from a task in the Task Center", async () => {
@@ -3032,28 +3032,13 @@ describe("Team Chat (component)", () => {
     expect(screen.getByText(/plan ready/)).toBeInTheDocument();
   });
 
-  it("delegates a message into a proposed TeamGoal (approve/authorize/run stay separate)", async () => {
+  it("delegates a message into a structured plan (approve/authorize/run stay separate)", async () => {
     localStorage.removeItem("ai-team-shared-thread");
     const fn = vi.fn(async (url: string, init?: any) => {
       if (url.endsWith("/team/threads")) return ok({ thread_id: "team-1" });
       if (url.includes("/memory/conversation?")) return ok({ items: [] });
-      if (url.endsWith("/team/goals/draft")) {
-        return ok({
-          title: "Launch plan", coordinator_agent: "workspace_architect",
-          summary: null, expected_deliverable: "Launch brief",
-          steps: [{ seq: 1, agent_id: "strategist", responsibility: "Research the Bay Area", depends_on_seq: null }],
-        });
-      }
-      if (url.endsWith("/team/goals/validate")) {
-        return ok({
-          coordinator: "workspace_architect",
-          steps: [{ seq: 1, agent_id: "strategist", responsibility: "Research the Bay Area",
-            capability_ok: true, delegation_ok: true, valid: true, error: null }],
-          plan_valid: true, errors: [],
-        });
-      }
-      if (url.endsWith("/team/goals") && init?.method === "POST") {
-        return ok({ team_goal_id: "tg-d", status: "proposed", reused: false });
+      if (url.endsWith("/projects") && init?.method === "POST") {
+        return ok({ id: "prj-1", status: "awaiting_plan_approval" });
       }
       return ok({ items: [] });
     });
@@ -3064,8 +3049,7 @@ describe("Team Chat (component)", () => {
     fireEvent.change(screen.getByTestId("team-chat-input"), { target: { value: "goal: Launch the On Us platform in the Bay Area" } });
     fireEvent.click(screen.getByTestId("team-chat-delegate"));
     const msg = await screen.findByTestId("delegate-msg");
-    expect(msg.textContent).toContain("proposed");
-    expect(screen.getByTestId("delegate-draft").textContent).toContain("Launch plan");
+    expect(msg.textContent).toContain("Structured plan created");
     // Intent only: delegation must NOT approve, authorize a plan, or run.
     const urls = fn.mock.calls.map((c: any) => c[0] || "");
     expect(urls.some((u: string) => u.includes("/approve"))).toBe(false);
@@ -3073,33 +3057,14 @@ describe("Team Chat (component)", () => {
     expect(urls.some((u: string) => u.endsWith("/run"))).toBe(false);
   });
 
-  it("auto-reassigns an invalid delegated step to a capable agent before proposing", async () => {
+  it("shows an explicit failure on structured planning error instead of falling back to TeamGoals", async () => {
     localStorage.removeItem("ai-team-shared-thread");
-    let proposedSteps: any = null;
     const fn = vi.fn(async (url: string, init?: any) => {
       if (url.endsWith("/team/threads")) return ok({ thread_id: "team-1" });
       if (url.includes("/memory/conversation?")) return ok({ items: [] });
-      if (url.endsWith("/team/goals/draft")) {
-        return ok({
-          title: "Launch plan", coordinator_agent: "workspace_architect",
-          summary: null, expected_deliverable: "Launch brief",
-          steps: [{ seq: 1, agent_id: "communications", responsibility: "Prioritize the launch", depends_on_seq: null }],
-        });
-      }
-      if (url.endsWith("/team/goals/validate")) {
-        // communications undeclared -> suggest strategist (capable + delegable).
-        return ok({
-          coordinator: "workspace_architect",
-          steps: [{ seq: 1, agent_id: "communications", responsibility: "Prioritize the launch",
-            capability_ok: false, delegation_ok: false, valid: false,
-            error: "step 1: delegation not authorized",
-            valid_agent_ids: ["strategist"], suggested_agent_id: "strategist" }],
-          plan_valid: false, errors: ["step 1: delegation not authorized"],
-        });
-      }
-      if (url.endsWith("/team/goals") && init?.method === "POST") {
-        proposedSteps = JSON.parse(init.body).steps;
-        return ok({ team_goal_id: "tg-d", status: "proposed", reused: false });
+      if (url.endsWith("/projects") && init?.method === "POST") {
+        // no .id -> treated as a planning failure; must NOT fall back to TeamGoal.
+        return ok({ detail: "structured planner returned HTTP 502" });
       }
       return ok({ items: [] });
     });
@@ -3107,15 +3072,16 @@ describe("Team Chat (component)", () => {
     render(<TeamChat />);
     await screen.findByTestId("team-chat-input");
     fireEvent.click(screen.getByTestId("mode-delegate"));
-    fireEvent.change(screen.getByTestId("team-chat-input"), { target: { value: "goal: Launch the plan" } });
+    fireEvent.change(screen.getByTestId("team-chat-input"), { target: { value: "goal: Draft a strategy" } });
     fireEvent.click(screen.getByTestId("team-chat-delegate"));
     const msg = await screen.findByTestId("delegate-msg");
-    expect(msg.textContent).toContain("proposed");
-    expect(msg.textContent).toMatch(/auto-assigned/i);
-    // Proposed step was reassigned to the suggested capable agent.
-    expect(proposedSteps).toBeTruthy();
-    expect(proposedSteps[0].agent_id).toBe("strategist");
+    expect(msg.textContent).toContain("Could not delegate");
+    expect(msg.textContent).toContain("No plan was saved");
+    const urls = fn.mock.calls.map((c: any) => c[0] || "");
+    // The silent legacy fallback must not fire.
+    expect(urls.some((u: string) => u.includes("/team/goals/draft"))).toBe(false);
   });
+
 });
 
 describe("Pipeline (component)", () => {

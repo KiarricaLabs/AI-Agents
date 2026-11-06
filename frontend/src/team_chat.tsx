@@ -7,11 +7,19 @@
 // (same shared thread, human-initiated). Nothing runs automatically and no
 // agent is dispatched after a single send beyond the existing routing.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API, humanizeAgent, proposeTeamGoal,
-  draftTeamGoalFromMessage, validateTeamGoalDraft, type TeamGoalDraft } from "./coordination";
+import { API, humanizeAgent, type TeamGoalDraft } from "./coordination";
 import { Markdown } from "./markdown";
 
 const THREAD_KEY = "ai-team-shared-thread";
+const CONTACTS = [
+  { id: "team", label: "AI Team", subtitle: "Group chat · everyone", avatar: undefined },
+  { id: "strategist", label: "Strategist", subtitle: "Audience, positioning & strategy", avatar: "strategist" },
+  { id: "communications", label: "Communications", subtitle: "Posts, emails & launch copy", avatar: "communications" },
+  { id: "tutor", label: "Tutor", subtitle: "Learning & exam preparation", avatar: "tutor" },
+  { id: "executive_assistant", label: "Executive Assistant", subtitle: "Planning & coordination", avatar: "executive_assistant" },
+  { id: "workspace_architect", label: "Workspace Architect", subtitle: "Plans, tasks & organization", avatar: "workspace_architect" },
+  { id: "soundboard", label: "Soundboard", subtitle: "Ideas, creativity & feedback", avatar: "soundboard" },
+] as const;
 
 // Agent photos (fall back to a colored initial when no photo is mapped).
 import tutorUrl from "./assets/agents/tutor.jpg";
@@ -95,6 +103,7 @@ function stamp(iso?: string): string {
 
 export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   const [threadId, setThreadId] = useState<string>(() => (typeof localStorage !== "undefined" ? localStorage.getItem(THREAD_KEY) || "" : ""));
+  const [activeContact, setActiveContact] = useState("team");
   const [booting, setBooting] = useState(true);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [draft, setDraft] = useState("");
@@ -120,17 +129,23 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   const [conversations, setConversations] = useState<any[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const ensureThread = useCallback(async () => {
-    if (typeof localStorage !== "undefined" && localStorage.getItem(THREAD_KEY)) return;
+  const threadStorageKey = (contact: string) => contact === "team" ? THREAD_KEY : `ai-team-contact-thread-${contact}`;
+
+  const ensureThread = useCallback(async (contact = "team") => {
+    const storageKey = threadStorageKey(contact);
+    if (typeof localStorage !== "undefined" && localStorage.getItem(storageKey)) {
+      setThreadId(localStorage.getItem(storageKey) || "");
+      return;
+    }
     try {
       const r = await fetch(`${API}/team/threads`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "Team chat", thread_type: "team" }),
+        body: JSON.stringify({ title: contact === "team" ? "AI Team" : `${humanizeAgent(contact)} chat`, thread_type: "team" }),
       });
       const b = await r.json().catch(() => ({}));
       if (r.ok && b.thread_id) {
-        if (typeof localStorage !== "undefined") localStorage.setItem(THREAD_KEY, b.thread_id);
+        if (typeof localStorage !== "undefined") localStorage.setItem(storageKey, b.thread_id);
         setThreadId(b.thread_id);
       }
     } catch { /* backend unavailable — chat remains read-only */ }
@@ -190,10 +205,26 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   };
 
   useEffect(() => {
-    (async () => { await ensureThread(); setBooting(false); loadConversations(); })();
+    (async () => { await ensureThread("team"); setBooting(false); loadConversations(); })();
   }, [ensureThread, loadConversations]);
 
   useEffect(() => { if (threadId) load(threadId); }, [threadId, load]);
+
+  const selectContact = async (contact: string) => {
+    if (contact === activeContact && threadId) return;
+    setBooting(true);
+    setActiveContact(contact);
+    setMessages([]);
+    setProgress([]);
+    setWorkLinks([]);
+    setDelegDraft(null);
+    setDelegMsg("");
+    const key = threadStorageKey(contact);
+    const saved = typeof localStorage !== "undefined" ? localStorage.getItem(key) || "" : "";
+    if (saved) setThreadId(saved);
+    else await ensureThread(contact);
+    setBooting(false);
+  };
 
   useEffect(() => {
     const el = listRef.current;
@@ -204,13 +235,39 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   const send = async () => {
     const text = draft.trim();
     if (!text || sending || booting) return;
-    const full = mode === "team" ? text : `${MODE_META[mode].prefix}${text}`;
+    const asksToCapturePlan = /\b(?:capture|save|turn)\b[\s\S]{0,30}\b(?:as|into)\b[\s\S]{0,12}\bplan\b/i.test(text);
+    const asksToDelegate = (mode === "team" || mode === "task") && (
+      /\b(delegate|assign|break\s+(?:this|it)\s+into\s+tasks|have\s+\w+\s+(?:draft|research|define|write)|(?:create|build|launch)\s+(?:a\s+)?campaign|marketing campaign|campaign strategy|long[-\s]term strategy|strategy for)\b/i.test(text) ||
+      /\b(?:i\s+(?:need|want)|help me with|create|develop|build|make)\b[\s\S]{0,50}\b(?:plan|strategy|roadmap|campaign)\b/i.test(text)
+    );
+    if (asksToDelegate || asksToCapturePlan) {
+      const recentDiscussion = messages
+        .filter((message) => message.role === "assistant")
+        .slice(-3)
+        .map((message) => message.content)
+        .join("\n\n")
+        .slice(-6000);
+      const planRequest = asksToCapturePlan && recentDiscussion
+        ? `Create an approval-gated team plan from this discussion. Preserve the useful objectives and constraints, assign work only to registered agents, and do not execute anything yet.\n\nDISCUSSION:\n${recentDiscussion}`
+        : text;
+      setMode("delegate");
+      setActiveContact("team");
+      setDraft("");
+      await delegateToTeam(planRequest);
+      return;
+    }
+    const full = activeContact !== "team"
+      ? `@${activeContact} ${mode === "team" ? text : `${MODE_META[mode].prefix}${text}`}`
+      : mode === "team"
+        ? text
+        : `${MODE_META[mode].prefix}${text}`;
     setDraft("");
     setError("");
     setSending(true);
     setMessages((prev) => [...prev, { role: "user", content: full, created_at: new Date().toISOString() }]);
     try {
       const body: any = { message: full, thread_id: threadId || undefined };
+      if (activeContact !== "team") body.subject_agent = activeContact;
       const r = await fetch(`${API}/team/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -369,67 +426,29 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
     return propParents.projects.map((p) => ({ id: p.id, label: p.name }));
   };
 
-  async function delegateToTeam() {
-    if (!draft.trim()) return;
+  async function delegateToTeam(message?: string) {
+    const request = (message ?? draft).trim();
+    if (!request) return;
     setDelegBusy(true);
     setDelegMsg("");
     setDelegDraft(null);
     try {
-      let parsed = await draftTeamGoalFromMessage(draft, "workspace_architect");
-      if (!parsed || !parsed.title || !(parsed.steps || []).length) {
-        setDelegMsg("Could not turn that into a team plan (no steps found). Try phrasing it as a goal with actions.");
-        return;
-      }
-      setDelegDraft(parsed);
-
-      // Capability/delegation validation BEFORE proposing (closes the T2-C-8
-      // gap): auto-reassign invalid steps to a suggested capability-matched,
-      // delegable agent, and be explicit when a step can\u2019t be fulfilled.
-      const coordinator = parsed.coordinator_agent || "workspace_architect";
-      let steps = parsed.steps;
-      let note = "";
-      try {
-        const val = await validateTeamGoalDraft(coordinator, parsed.steps);
-        if (!val.plan_valid) {
-          const reassignments: string[] = [];
-          let blocking = "";
-          steps = val.steps.map((vs) => {
-            if (vs.valid) return { seq: vs.seq, agent_id: vs.agent_id,
-              responsibility: vs.responsibility, depends_on_seq: (vs as any).depends_on_seq ?? null };
-            if (vs.suggested_agent_id) {
-              reassignments.push(`step ${vs.seq}: ${humanizeAgent(vs.agent_id)} \u2192 ${humanizeAgent(vs.suggested_agent_id)}`);
-              return { seq: vs.seq, agent_id: vs.suggested_agent_id, responsibility: vs.responsibility,
-                depends_on_seq: (vs as any).depends_on_seq ?? null };
-            }
-            blocking = vs.error || `step ${vs.seq} cannot be assigned`;
-            return { seq: vs.seq, agent_id: vs.agent_id, responsibility: vs.responsibility,
-              depends_on_seq: (vs as any).depends_on_seq ?? null };
-          });
-          if (blocking) {
-            setDelegMsg(`Could not delegate: ${blocking}. No agent the coordinator (${humanizeAgent(coordinator)}) can delegate to has that capability. Pick a different coordinator or split the goal.`);
-            return;
-          }
-          if (reassignments.length) {
-            parsed = { ...parsed, steps: steps };
-            note = `Auto-assigned ${reassignments.length} ${reassignments.length === 1 ? "step" : "steps"} to capable agents (${humanizeAgent(coordinator)} can delegate to them): ${reassignments.join("; ")}. `;
-          }
-        }
-      } catch { /* validation unavailable — propose as-is; plan review will still enforce */ }
-
-      const created = await proposeTeamGoal({
-        title: parsed.title,
-        coordinator_agent: coordinator,
-        thread_id: threadId || undefined,
-        summary: parsed.summary ?? undefined,
-        expected_deliverable: parsed.expected_deliverable ?? undefined,
-        steps,
+      const structured = await fetch(`${API}/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal: request }),
       });
-      // Tell the coordination + review panels to refresh so the new goal shows up.
-      window.dispatchEvent(new CustomEvent("ai-team:goal-created"));
-      setDelegMsg(note +
-        (created.status === "proposed"
-          ? "TeamGoal proposed (status: proposed). In the AI Team panel: approve it, authorize the plan, then \u201cRun all\u201d \u2014 agents run their steps and you approve the final deliverable."
-          : `TeamGoal created (${created.status}). Open the AI Team panel to authorize and run.`));
+      const structuredBody = await structured.json().catch(() => ({}));
+      if (!structured.ok || !structuredBody.id) {
+        const detail = typeof structuredBody.detail === "string"
+          ? structuredBody.detail
+          : `structured planner returned HTTP ${structured.status}`;
+        throw new Error(`Structured planning failed: ${detail}. No plan was saved.`);
+      }
+      window.dispatchEvent(new CustomEvent("ai-team:structured-project-created", {
+        detail: { projectId: structuredBody.id },
+      }));
+      setDelegMsg("Structured plan created. Review and approve it before any task runs.");
     } catch (e) {
       const detail = (e as any)?.message || (e as any)?.detail;
       setDelegMsg(detail ? `Could not delegate: ${detail}` : "Could not delegate. Please try again.");
@@ -441,44 +460,72 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   return (
     <section className="team-chat-shell" data-testid="team-chat">
       <aside className="team-chat__sidebar" aria-label="Conversations">
-        <h4 className="section-title">Conversations</h4>
-        <p className="muted">Pick a thread to keep it contained here.</p>
-        {conversations.length === 0 ? (
-          <p className="muted" data-testid="conv-sidebar-empty">No saved conversations yet.</p>
-        ) : (
-          <ul className="team-chat__convlist">
-            {conversations.map((c) => (
-              <li key={c.thread_id}>
-                <div className="team-chat__convrow">
-                  <button
-                    className={`team-chat__conv${threadId === c.thread_id ? " team-chat__conv--active" : ""}`}
-                    data-testid={`conv-${c.thread_id}`}
-                    onClick={() => openConv(c.thread_id)}
-                    title={c.title || c.thread_id}
-                  >
-                    {c.title || c.thread_id}
-                  </button>
-                  <button
-                    className="team-chat__del"
-                    data-testid={`del-conv-${c.thread_id}`}
-                    aria-label={`Delete ${c.title || "conversation"}`}
-                    title="Delete conversation"
-                    onClick={() => deleteConv(c.thread_id)}
-                  >×</button>
-                </div>
-              </li>
-            ))}
-          </ul>
+        <div className="team-chat__inbox-head">
+          <div>
+            <h4 className="section-title">Messages</h4>
+            <p className="muted">Your AI team</p>
+          </div>
+          <span className="team-chat__online-dot" aria-label="Online" />
+        </div>
+        <ul className="team-chat__contacts">
+          {CONTACTS.map((contact) => (
+            <li key={contact.id}>
+              <button
+                className={`team-chat__contact${activeContact === contact.id ? " team-chat__contact--active" : ""}`}
+                data-testid={`contact-${contact.id}`}
+                onClick={() => selectContact(contact.id)}
+              >
+                <span className="team-chat__contact-avatar">
+                  {contact.id === "team"
+                    ? <span className="team-chat__mini-stack"><AgentAvatar slug="strategist" size={22} /><AgentAvatar slug="communications" size={22} /></span>
+                    : <AgentAvatar slug={contact.avatar} size={36} />}
+                </span>
+                <span className="team-chat__contact-copy">
+                  <strong>{contact.label}</strong>
+                  <small>{contact.subtitle}</small>
+                </span>
+                {activeContact === contact.id && <span className="team-chat__contact-check">✓</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+        {conversations.length > 0 && (
+          <details className="team-chat__other" open>
+            <summary>Recent conversations</summary>
+            <ul className="team-chat__convlist">
+              {conversations.map((c) => (
+                <li key={c.thread_id}>
+                  <div className="team-chat__convrow">
+                    <button className={`team-chat__conv${threadId === c.thread_id ? " team-chat__conv--active" : ""}`}
+                      data-testid={`conv-${c.thread_id}`} onClick={() => openConv(c.thread_id)}>
+                      {c.title || c.thread_id}
+                    </button>
+                    <button className="team-chat__del" data-testid={`del-conv-${c.thread_id}`}
+                      aria-label={`Delete ${c.title || "conversation"}`} onClick={() => deleteConv(c.thread_id)}>×</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
       </aside>
 
       <div className="panel team-chat">
       <div className="panel__head">
-        <div>
-          <h3 className="section-title">AI Team chat</h3>
-          <p className="panel__sub">One shared conversation with all of your agents. Only you can start or run work.</p>
+        <div className="team-chat__title">
+          {activeContact === "team" ? (
+            <div className="team-chat__avatar-stack" aria-hidden="true">
+              <AgentAvatar slug="strategist" size={34} />
+              <AgentAvatar slug="communications" size={34} />
+              <AgentAvatar slug="tutor" size={34} />
+            </div>
+          ) : <AgentAvatar slug={activeContact} size={44} />}
+          <div>
+            <h3 className="section-title">{CONTACTS.find((c) => c.id === activeContact)?.label || "AI Team"}</h3>
+            <p className="panel__sub"><span className="team-chat__online-dot" /> {activeContact === "team" ? "Everyone · On Us workspace" : "Available · Private conversation"}</p>
+          </div>
         </div>
-        <span className="badge badge--faint">{mode === "team" ? "Any agent may reply" : MODE_META[mode].label}</span>
+        <span className="team-chat__mode-label">{mode === "team" ? "Team chat" : MODE_META[mode].label}</span>
         {workLinks.length > 0 && onOpenTasks && (
           <button className="btn btn--sm btn--ghost" data-testid="chat-open-tasks"
             onClick={onOpenTasks}>
@@ -487,21 +534,27 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
         )}
       </div>
 
-      <div className="team-chat__modes" role="group" aria-label="Compose mode">
-        {(Object.keys(MODE_META) as Mode[]).map((m) => (
-          <button
-            key={m}
-            className={`btn btn--sm${mode === m ? " btn--primary" : " btn--ghost"}`}
-            data-testid={`mode-${m}`}
-            aria-pressed={mode === m}
-            onClick={() => setMode(m)}
-          >
-            {MODE_META[m].label}
-          </button>
-        ))}
+      <div className="team-chat__auto-mode">
+        <span className="team-chat__mode-label">Automatic team workflow</span>
+        <span className="muted">Ask naturally. The team will reply or prepare a plan when work is needed.</span>
       </div>
-
-      <div className="team-chat__hint muted">{MODE_META[mode].hint}</div>
+      <details className="team-chat__advanced">
+        <summary>More ways to work</summary>
+        <div className="team-chat__modes" role="group" aria-label="Compose mode">
+          {(Object.keys(MODE_META) as Mode[]).map((m) => (
+            <button
+              key={m}
+              className={`btn btn--sm${mode === m ? " btn--primary" : " btn--ghost"}`}
+              data-testid={`mode-${m}`}
+              aria-pressed={mode === m}
+              onClick={() => setMode(m)}
+            >
+              {MODE_META[m].label}
+            </button>
+          ))}
+        </div>
+        <div className="team-chat__hint muted">{MODE_META[mode].hint}</div>
+      </details>
 
       {mode === "delegate" && (delegDraft || delegMsg) && (
         <div className="extract-panel" data-testid="delegate-panel">
@@ -577,7 +630,7 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
           messages.map((m, i) => (
             <div key={i} className={`chat-bubble chat-bubble--${m.role === "user" ? "user" : "agent"}`}>
               <div className="chat-bubble__head">
-                {m.role !== "user" && <AgentAvatar slug={m.agent} />}
+                <AgentAvatar slug={m.role === "user" ? undefined : m.agent} size={m.role === "user" ? 30 : 34} />
                 <span className="chat-bubble__role">
                   {m.role === "user" ? "You" : m.agent ? humanizeAgent(m.agent) : "Team"}
                 </span>
@@ -623,7 +676,7 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
               className="btn btn--primary"
               data-testid="team-chat-delegate"
               disabled={booting || delegBusy || !draft.trim()}
-              onClick={delegateToTeam}
+              onClick={() => delegateToTeam()}
             >
               {delegBusy ? "Delegating…" : "Delegate to team"}
             </button>

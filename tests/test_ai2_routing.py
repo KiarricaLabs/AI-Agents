@@ -100,6 +100,18 @@ class TeamRouterTest(unittest.TestCase):
     def test_empty_message_no_routing(self):
         self.assertEqual(self.router.relevant("   "), [])
 
+    def test_unmatched_message_routes_to_coordinator(self):
+        relevant = self.router.relevant("hello, how are you today?")
+        self.assertEqual(relevant, ["strategist"])
+
+    def test_subject_agent_overrides_shared_relevance(self):
+        result = self.router.dispatch_team(
+            "delegate task to each agent",
+            {"subject_agent": "strategist"},
+        )
+        self.assertEqual(result["routed_to"], ["strategist"])
+        self.assertEqual(self.orch.calls, ["strategist"])
+
     def test_dispatch_only_calls_relevant_agents(self):
         res = self.router.dispatch_team("draft an announcement", {})
         self.assertIn("communications", res["routed_to"])

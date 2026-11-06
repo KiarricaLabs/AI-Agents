@@ -187,10 +187,17 @@ class CoordinationPlanService:
         step_effective: Dict[int, List[str]] = {}
         for s in plan["steps"]:
             agent = s["agent_id"]
-            try:
-                ok, info = self.delegation.can_delegate(coordinator, agent)
-            except Exception as e:  # pragma: no cover
-                ok, info = False, f"delegation re-check failed: {e}"
+            # A coordinator-owned step is local work, not a delegation edge.
+            # DelegationService deliberately rejects self-delegation as circular,
+            # so use the coordinator's own permissions for this step.
+            if agent == coordinator:
+                manifest = self.builder.registry.get(coordinator) or {}
+                ok, info = True, manifest.get("permissions", []) or []
+            else:
+                try:
+                    ok, info = self.delegation.can_delegate(coordinator, agent)
+                except Exception as e:  # pragma: no cover
+                    ok, info = False, f"delegation re-check failed: {e}"
             if not ok:
                 errors.append(
                     f"step {s['seq']}: delegation from '{coordinator}' to "

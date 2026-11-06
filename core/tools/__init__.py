@@ -143,8 +143,20 @@ def build_registry(db=None, tenant_id: Optional[str] = None, timeout: float = 5.
     reg = ToolRegistry(db=db, tenant_id=tenant_id, default_timeout=timeout)
     from core.tools.local.now import NowTool
     from core.tools.local.calculate import CalculateTool
+    from core.tools.local.simulations import (
+        SaveLocalArtifactTool,
+        SimulateEmailTool,
+        SimulateResearchTool,
+        SimulateSocialCampaignTool,
+        SimulateTravelTool,
+    )
     reg.register(NowTool())
     reg.register(CalculateTool())
+    reg.register(SimulateEmailTool())
+    reg.register(SimulateSocialCampaignTool())
+    reg.register(SimulateResearchTool())
+    reg.register(SimulateTravelTool())
+    reg.register(SaveLocalArtifactTool())
     from core.tools.work_propose import ALL_PROPOSE_TOOLS
     for tool in ALL_PROPOSE_TOOLS:
         reg.register(tool())

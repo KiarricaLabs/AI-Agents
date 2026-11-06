@@ -1,0 +1,137 @@
+"""Plain-code dependency runner for structured agent projects."""
+from __future__ import annotations
+
+import json
+import os
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict
+
+from config.settings import BASE_DIR
+from core.runtime import build_runtime, load_registry
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class ProjectRunner:
+    def __init__(self, db, tenant_id: str, user_id: str):
+        self.db = db
+        self.tenant_id = tenant_id
+        self.user_id = user_id
+        self.profile = (Path(BASE_DIR) / "business_profile.md").read_text(
+            encoding="utf-8").strip()
+        self.registry = load_registry()
+
+    def _project(self, project_id: str):
+        rows = self.db.query(
+            "SELECT * FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?",
+            (project_id, self.tenant_id, self.user_id))
+        if not rows:
+            raise ValueError("project not found")
+        return rows[0]
+
+    def _tasks(self, project_id: str):
+        return self.db.query(
+            "SELECT * FROM agent_tasks WHERE project_id=? AND tenant_id=? AND user_id=? "
+            "ORDER BY rowid",
+            (project_id, self.tenant_id, self.user_id))
+
+    def _log(self, agent: str, event: str, details: Dict[str, Any]):
+        self.db.execute(
+            "INSERT INTO activity_log "
+            "(id,tenant_id,user_id,timestamp,agent,event,details) VALUES (?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), self.tenant_id, self.user_id, _now(), agent,
+             event, json.dumps(details)))
+
+    def run(self, project_id: str) -> Dict[str, Any]:
+        project = self._project(project_id)
+        if project["status"] != "running":
+            raise ValueError("project must be approved before it can run")
+        if os.getenv("PAT_AGENT_KILL_SWITCH", "").lower() in {"1", "true", "yes", "on"}:
+            raise ValueError("agent runner is halted by the global kill switch")
+
+        tasks = [dict(row) for row in self._tasks(project_id)]
+        by_id = {task["id"]: task for task in tasks}
+        runtime = build_runtime(self.db, self.tenant_id, self.user_id)
+        completed: Dict[str, Any] = {
+            task["id"]: task["output"] for task in tasks
+            if task["status"] == "done" and task["output"]
+        }
+        while True:
+            if os.getenv("PAT_AGENT_KILL_SWITCH", "").lower() in {"1", "true", "yes", "on"}:
+                raise ValueError("agent runner halted by the global kill switch")
+            runnable = [
+                task for task in tasks
+                if task["status"] == "pending"
+                and all(dep in completed for dep in json.loads(task["depends_on"] or "[]"))
+            ]
+            if not runnable:
+                break
+            task = runnable[0]
+            agent = task["agent"]
+            if agent not in self.registry.list():
+                self._fail(project_id, task["id"], f"unknown agent: {agent}")
+                raise ValueError(f"unknown agent: {agent}")
+            dependencies = json.loads(task["depends_on"] or "[]")
+            prompt = (
+                f"Execute one focused task for this project: {project['goal']}\n\n"
+                f"YOUR TASK:\n{task['instruction']}\n\n"
+                f"DELIVERABLE TYPE:\n{task['deliverable_type']}\n\n"
+                f"ACCEPTANCE CRITERIA:\n{task['acceptance_criteria']}\n\n"
+                f"BUSINESS PROFILE:\n{self.profile}\n\n"
+                f"COMPLETED DEPENDENCY OUTPUTS:\n{json.dumps({d: completed[d] for d in dependencies}, ensure_ascii=False)}\n\n"
+                "Produce only the local draft, research, or artifact for this task. "
+                "Do not send email, post, DM, pay, book, or perform any outward action."
+            )
+            now = _now()
+            self.db.execute(
+                "UPDATE agent_tasks SET status='running', updated_at=? "
+                "WHERE id=? AND project_id=? AND tenant_id=? AND user_id=? AND status='pending'",
+                (now, task["id"], project_id, self.tenant_id, self.user_id))
+            self._log(agent, "task_started", {"project_id": project_id, "task_id": task["id"]})
+            try:
+                result = runtime.dispatch(agent, prompt, {
+                    "project_id": project_id,
+                    "task_id": task["id"],
+                    "accepted_dependency_outputs": dependencies,
+                })
+                output = str(result.get("reply") or "").strip()
+                if not output:
+                    raise ValueError("agent returned empty output")
+                self.db.execute(
+                    "UPDATE agent_tasks SET status='done', review_status='pending', output=?, updated_at=? "
+                    "WHERE id=? AND project_id=? AND tenant_id=? AND user_id=?",
+                    (output, _now(), task["id"], project_id, self.tenant_id, self.user_id))
+                completed[task["id"]] = output
+                self._log(agent, "task_completed", {"project_id": project_id, "task_id": task["id"]})
+                task["status"] = "done"
+            except Exception as exc:
+                self._fail(project_id, task["id"], str(exc))
+                raise
+
+        remaining = [task for task in tasks if task["status"] == "pending"]
+        if remaining:
+            self.db.execute(
+                "UPDATE agent_projects SET status='failed', updated_at=? WHERE id=? AND tenant_id=? AND user_id=?",
+                (_now(), project_id, self.tenant_id, self.user_id))
+            raise ValueError("project has unresolved task dependencies")
+        self.db.execute(
+            "UPDATE agent_projects SET status='awaiting_review', updated_at=? "
+            "WHERE id=? AND tenant_id=? AND user_id=?",
+            (_now(), project_id, self.tenant_id, self.user_id))
+        return {"project_id": project_id, "status": "awaiting_review", "outputs": completed}
+
+    def _fail(self, project_id: str, task_id: str, error: str):
+        self.db.execute(
+            "UPDATE agent_tasks SET status='failed', output=?, updated_at=? "
+            "WHERE id=? AND project_id=? AND tenant_id=? AND user_id=?",
+            (f"Task failed: {error[:500]}", _now(), task_id, project_id,
+             self.tenant_id, self.user_id))
+        self.db.execute(
+            "UPDATE agent_projects SET status='failed', updated_at=? "
+            "WHERE id=? AND tenant_id=? AND user_id=?",
+            (_now(), project_id, self.tenant_id, self.user_id))
+        self._log("runner", "task_failed", {"project_id": project_id, "task_id": task_id, "error": error[:500]})

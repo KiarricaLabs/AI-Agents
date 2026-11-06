@@ -66,6 +66,7 @@ class ModelRouter:
         model_spec: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
         json_format: bool = False,
+        json_schema: Optional[Dict[str, Any]] = None,
     ) -> ModelResult:
         # OPT-IN deterministic mock (testing agent responses without a live model).
         if _mock_enabled():
@@ -85,7 +86,8 @@ class ModelRouter:
                     f"Provider '{provider}' is not available in M8 (local-only Ollama). "
                     "No cloud routing or fallback is enabled."
                 )
-            text = self._generate_with_retry(model, prompt, system, json_format=json_format)
+            text = self._generate_with_retry(
+                model, prompt, system, json_format=json_format, json_schema=json_schema)
             location = f"local:{provider}:{model}"
             result = ModelResult(text=text, provider=provider, model=model, location=location)
             span["attrs"]["location"] = location
@@ -106,12 +108,15 @@ class ModelRouter:
         model = spec.get("model") or AI_MODEL
         return provider, model
 
-    def _generate_with_retry(self, model: str, prompt: str, system: str, json_format: bool = False) -> str:
+    def _generate_with_retry(self, model: str, prompt: str, system: str,
+                             json_format: bool = False,
+                             json_schema: Optional[Dict[str, Any]] = None) -> str:
         last_err: Optional[Exception] = None
         for _attempt in range(self.retries):
             try:
                 if json_format:
-                    text = self._generate_once(model, prompt, system, json_format=True)
+                    text = self._generate_once(
+                        model, prompt, system, json_format=True, json_schema=json_schema)
                 else:
                     text = self._generate_once(model, prompt, system)
                 # Empty/whitespace-only output is a failure, never a successful
@@ -131,10 +136,14 @@ class ModelRouter:
             f"Ollama generation failed after {self.retries} attempts"
         ) from None
 
-    def _generate_once(self, model: str, prompt: str, system: str, json_format: bool = False) -> str:
+    def _generate_once(self, model: str, prompt: str, system: str,
+                       json_format: bool = False,
+                       json_schema: Optional[Dict[str, Any]] = None) -> str:
         from core.llm_client import LLMClient
 
         client = LLMClient(provider="ollama", model=model, base_url=self.base_url)
+        if json_schema is not None:
+            return client.complete(prompt, system, timeout=self.timeout, json_schema=json_schema)
         if json_format:
             return client.complete(prompt, system, timeout=self.timeout, format_json=True)
         return client.complete(prompt, system, timeout=self.timeout)

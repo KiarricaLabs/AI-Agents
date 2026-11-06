@@ -58,7 +58,11 @@ export function ReviewCenter({ onOpen }: { onOpen?: (goalId?: string) => void })
   useEffect(() => {
     const onCreated = () => load();
     window.addEventListener("ai-team:goal-created", onCreated);
-    return () => window.removeEventListener("ai-team:goal-created", onCreated);
+    window.addEventListener("ai-team:workflow-updated", onCreated);
+    return () => {
+      window.removeEventListener("ai-team:goal-created", onCreated);
+      window.removeEventListener("ai-team:workflow-updated", onCreated);
+    };
   }, [load]);
 
   async function doApprove(item: ReviewItem) {
