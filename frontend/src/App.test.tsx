@@ -3096,6 +3096,41 @@ describe("Pipeline (component)", () => {
     fireEvent.click(screen.getByTestId("pipeline-goto-tasks"));
     expect(jumped).toBe("tasks");
   });
+
+  it("renders the coordination (team goal) ladder and jumps to Coordination when a plan awaits authorization", async () => {
+    let jumped: string | undefined;
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/team/goals"))
+        return ok({ items: [{ id: "g1", title: "Launch On Us", status: "approved", plan_authorized: false, has_execution: false, deliverable_accepted: false, materialized: false }] });
+      return ok({ items: [] });
+    });
+    render(<Pipeline onJump={(t) => { jumped = t; }} />);
+    fireEvent.click(screen.getByTestId("pipeline-mode-goals"));
+    await screen.findByTestId("pipeline-goal-stages");
+    // Approved goal, plan not yet authorized => next action is the plan stage.
+    expect(screen.getByTestId("pipeline-goal-approved")).toHaveClass("pipeline__stage--done");
+    expect(screen.getByTestId("pipeline-goal-plan")).toHaveClass("pipeline__stage--now");
+    expect(screen.getByTestId("pipeline-goal-projects")).toHaveClass("pipeline__stage--upcoming");
+    fireEvent.click(screen.getByTestId("pipeline-goto-coord-plan"));
+    expect(jumped).toBe("home");
+  });
+
+  it("marks the coordination ladder through materialization and routes to Projects", async () => {
+    let jumped: string | undefined;
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/team/goals"))
+        return ok({ items: [{ id: "g2", title: "Launch On Us", status: "approved", plan_authorized: true, has_execution: true, deliverable_accepted: true, materialized: true }] });
+      return ok({ items: [] });
+    });
+    render(<Pipeline onJump={(t) => { jumped = t; }} />);
+    fireEvent.click(screen.getByTestId("pipeline-mode-goals"));
+    await screen.findByTestId("pipeline-goal-stages");
+    expect(screen.getByTestId("pipeline-goal-execute")).toHaveClass("pipeline__stage--done");
+    expect(screen.getByTestId("pipeline-goal-deliverable")).toHaveClass("pipeline__stage--done");
+    expect(screen.getByTestId("pipeline-goal-projects")).toHaveClass("pipeline__stage--done");
+    fireEvent.click(screen.getByTestId("pipeline-goto-goal-projects"));
+    expect(jumped).toBe("projects");
+  });
 });
 
 describe("Team Memory (component)", () => {

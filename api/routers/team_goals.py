@@ -180,8 +180,37 @@ def propose_team_goal(body: ProposeGoalBody, request: Request):
 
 @router.get("")
 def list_team_goals(request: Request, status: Optional[str] = None):
+    """Owner-scoped list of TeamGoals. Adds coordination-pipeline flags so the
+    UI can render the from-chat-to-deliverable ladder for the coordination path
+    without N+1 round-trips: plan_authorized / has_execution /
+    deliverable_accepted / materialized."""
     t, u = _identity(request)
-    return {"items": _goal_svc(t, u).list(status)}
+    items = _goal_svc(t, u).list(status) or []
+    enriched = []
+    for it in items:
+        gid = it.get("id")
+        plan = _db.query(
+            "SELECT 1 FROM coordination_plans WHERE team_goal_id=? AND tenant_id=? "
+            "AND user_id=? AND status='authorized' LIMIT 1", (gid, t, u))
+        exec_rows = _db.query(
+            "SELECT 1 FROM coordination_executions WHERE team_goal_id=? AND tenant_id=? "
+            "AND user_id=? LIMIT 1", (gid, t, u))
+        deliv = _db.query(
+            "SELECT 1 FROM coordination_deliverables cd "
+            "JOIN coordination_executions ce ON ce.id=cd.execution_id "
+            "WHERE ce.team_goal_id=? AND ce.tenant_id=? AND ce.user_id=? "
+            "AND cd.status='accepted' LIMIT 1", (gid, t, u))
+        mat = _db.query(
+            "SELECT 1 FROM deliverables d "
+            "JOIN coordination_executions ce ON ce.id=d.coordination_execution_id "
+            "WHERE ce.team_goal_id=? AND ce.tenant_id=? AND ce.user_id=? LIMIT 1",
+            (gid, t, u))
+        enriched.append({**it,
+                         "plan_authorized": bool(plan),
+                         "has_execution": bool(exec_rows),
+                         "deliverable_accepted": bool(deliv),
+                         "materialized": bool(mat)})
+    return {"items": enriched}
 
 
 @router.get("/{team_goal_id}")

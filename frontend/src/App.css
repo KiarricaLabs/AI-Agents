@@ -1618,6 +1618,9 @@ body {
 
 /* --- Pipeline (chat -> deliverable) view --- */
 .pipeline { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+.pipeline__modes { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+.pipeline__modes .btn { border: 0; }
+.pipeline__modes .btn.is-active { background: var(--accent-strong); color: var(--surface); }
 .pipeline__toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .team-chat__convrow { display: flex; align-items: center; gap: 4px; }
 .team-chat__convrow .team-chat__conv { flex: 1 1 auto; min-width: 0; }
