@@ -273,8 +273,8 @@ export function proposeTeamGoal(input: ProposeTeamGoalInput): Promise<ProposeTea
 
 export interface TeamGoalDraft {
   title: string;
-  summary: string | null;
-  expected_deliverable: string | null;
+  summary?: string | null;
+  expected_deliverable?: string | null;
   coordinator_agent: string;
   steps: ProposeStepInput[];
 }

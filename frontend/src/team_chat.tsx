@@ -7,7 +7,8 @@
 // (same shared thread, human-initiated). Nothing runs automatically and no
 // agent is dispatched after a single send beyond the existing routing.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API, humanizeAgent } from "./coordination";
+import { API, humanizeAgent, proposeTeamGoal,
+  draftTeamGoalFromMessage, type TeamGoalDraft } from "./coordination";
 import { Markdown } from "./markdown";
 
 const THREAD_KEY = "ai-team-shared-thread";
@@ -77,12 +78,13 @@ interface Msg {
   created_at?: string;
 }
 
-type Mode = "team" | "task" | "propose";
+type Mode = "team" | "task" | "propose" | "delegate";
 
 const MODE_META: Record<Mode, { label: string; hint: string; prefix: string }> = {
   team: { label: "Ask the team", hint: "Any relevant agent replies.", prefix: "" },
   task: { label: "Designate a task", hint: "The message is treated as an assignment for the most relevant agents.", prefix: "[Designated task] " },
   propose: { label: "Request a proposal", hint: "Ask the team to draft a proposal for your approval.", prefix: "[Proposal request] " },
+  delegate: { label: "Delegate to the team", hint: "Turn this into a runnable team plan; agents run their steps, you approve the final deliverable.", prefix: "[Delegated to team] " },
 };
 
 function stamp(iso?: string): string {
@@ -106,6 +108,10 @@ export function TeamChat() {
   const [propParents, setPropParents] = useState<{ workspaces: any[]; projects: any[]; goals: any[] }>({ workspaces: [], projects: [], goals: [] });
   const [propBusy, setPropBusy] = useState(false);
   const [propMsg, setPropMsg] = useState("");
+  // --- Delegate-to-the-team: message -> TeamGoal proposal -> approve/authorize/run ---
+  const [delegBusy, setDelegBusy] = useState(false);
+  const [delegMsg, setDelegMsg] = useState("");
+  const [delegDraft, setDelegDraft] = useState<TeamGoalDraft | null>(null);
   // --- Phase 8 §15: durable team progress feed for this thread ---
   const [progress, setProgress] = useState<any[]>([]);
   // --- conversation sidebar ---
@@ -355,6 +361,39 @@ export function TeamChat() {
     return propParents.projects.map((p) => ({ id: p.id, label: p.name }));
   };
 
+  async function delegateToTeam() {
+    if (!draft.trim()) return;
+    setDelegBusy(true);
+    setDelegMsg("");
+    setDelegDraft(null);
+    try {
+      const parsed = await draftTeamGoalFromMessage(draft, "workspace_architect");
+      if (!parsed || !parsed.title || !(parsed.steps || []).length) {
+        setDelegMsg("Could not turn that into a team plan (no steps found). Try phrasing it as a goal with actions.");
+        return;
+      }
+      setDelegDraft(parsed);
+      const created = await proposeTeamGoal({
+        title: parsed.title,
+        coordinator_agent: parsed.coordinator_agent || "workspace_architect",
+        thread_id: threadId || undefined,
+        summary: parsed.summary ?? undefined,
+        expected_deliverable: parsed.expected_deliverable ?? undefined,
+        steps: parsed.steps,
+      });
+      setDelegMsg(
+        created.status === "proposed"
+          ? "TeamGoal proposed (status: proposed). In the AI Team panel: approve it, authorize the plan, then \u201cRun all\u201d \u2014 agents run their steps and you approve the final deliverable."
+          : `TeamGoal created (${created.status}). Open the AI Team panel to authorize and run.`,
+      );
+    } catch (e) {
+      const detail = (e as any)?.message || (e as any)?.detail;
+      setDelegMsg(detail ? `Could not delegate: ${detail}` : "Could not delegate. Please try again.");
+    } finally {
+      setDelegBusy(false);
+    }
+  }
+
   return (
     <section className="team-chat-shell" data-testid="team-chat">
       <aside className="team-chat__sidebar" aria-label="Conversations">
@@ -413,6 +452,28 @@ export function TeamChat() {
       </div>
 
       <div className="team-chat__hint muted">{MODE_META[mode].hint}</div>
+
+      {mode === "delegate" && (delegDraft || delegMsg) && (
+        <div className="extract-panel" data-testid="delegate-panel">
+          <div className="extract-panel__head">
+            <span className="result__heading">Team plan from your message</span>
+            <span className="badge badge--faint">intent only — your approval gates run</span>
+          </div>
+          {delegDraft && (
+            <div className="muted" data-testid="delegate-draft">
+              <p><strong>{delegDraft.title}</strong></p>
+              <ul className="list">
+                {(delegDraft.steps || []).map((s, i) => (
+                  <li key={s.seq ?? i} className="list__item">
+                    {humanizeAgent(s.agent_id)} · {s.responsibility || "—"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {delegMsg && <p className="success" role="status" data-testid="delegate-msg">{delegMsg}</p>}
+        </div>
+      )}
 
       {mode === "propose" && (
         <div className="extract-panel" data-testid="propose-panel">
@@ -520,6 +581,15 @@ export function TeamChat() {
               onClick={extractProposal}
             >
               {propBusy ? "Extracting…" : "Extract & propose"}
+            </button>
+          ) : mode === "delegate" ? (
+            <button
+              className="btn btn--primary"
+              data-testid="team-chat-delegate"
+              disabled={booting || delegBusy || !draft.trim()}
+              onClick={delegateToTeam}
+            >
+              {delegBusy ? "Delegating…" : "Delegate to team"}
             </button>
           ) : (
             <button
