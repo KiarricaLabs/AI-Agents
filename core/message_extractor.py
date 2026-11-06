@@ -97,7 +97,12 @@ def _extract_deliverable(text: str):
 def _extract_steps(body_lines: List[str], coordinator: str) -> List[Dict[str, object]]:
     """Only explicit '<word>: task' / '<word> - task' lines become steps.
     A recognized slug is kept as its owner; an unknown prefix falls back to the
-    coordinator. Free-text prose (no colon/dash) is ignored here (kept as summary)."""
+    coordinator. Free-text prose (no colon/dash) is ignored here (kept as summary).
+    Metadata labels (summary/context/description/etc.) are NOT steps."""
+    # Labels that describe the goal (not a per-agent responsibility): a line
+    # prefixed with one of these is kept as summary context, not a step.
+    _META = {"summary", "context", "background", "note", "notes",
+             "description", "desc", "goal", "objective"}
     pattern = re.compile(r"^[\-\*#\d\.\)\s]*(\w+)\s*[:\-]\s*(.+)$", re.I)
     steps: List[Dict[str, object]] = []
     for line in body_lines:
@@ -108,6 +113,8 @@ def _extract_steps(body_lines: List[str], coordinator: str) -> List[Dict[str, ob
         if not m:
             continue
         agent_raw = m.group(1).lower()
+        if agent_raw in _META:
+            continue  # metadata/summary line, not a step
         task = _clean(m.group(2))
         if len(task) < 3:
             continue

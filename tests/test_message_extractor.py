@@ -38,6 +38,22 @@ class MessageToTeamGoalTest(unittest.TestCase):
         self.assertIsNone(draft["steps"][0]["depends_on_seq"])
         self.assertEqual(draft["steps"][1]["depends_on_seq"], 1)
 
+    def test_summary_metadata_line_is_not_a_step(self):
+        # A 'summary:' line (with a colon) must be kept as context, NOT become
+        # an invalid coordinator step that would leave the plan unpopulated.
+        draft = MessageToTeamGoal.extract(
+            "title: Launch On Us in the Bay Area\n"
+            "summary: Research the Oakland and SF market.\n"
+            "strategist: Plan the competitive market research\n"
+            "strategist: Prioritize the growth opportunities\n",
+            "workspace_architect")
+        self.assertEqual(draft["title"], "Launch On Us in the Bay Area")
+        self.assertEqual([s["agent_id"] for s in draft["steps"]],
+                         ["strategist", "strategist"])
+        self.assertEqual([s["responsibility"] for s in draft["steps"]],
+                         ["Plan the competitive market research",
+                          "Prioritize the growth opportunities"])
+
     def test_prose_stays_as_summary_not_steps(self):
         draft = MessageToTeamGoal.extract(
             "We should expand into Europe. Research the market for our launch.", "strategist")
