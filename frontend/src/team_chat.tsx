@@ -579,20 +579,6 @@ export function TeamChat() {
         )}
       </div>
 
-      {progress.length > 0 && (
-        <div className="team-progress" data-testid="team-progress">
-          <span className="section-title">Recent activity ({progress.length})</span>
-          <ul className="list">
-            {progress.slice(0, 6).map((p, i) => (
-              <li key={`${p.id || i}`} className="list__item team-progress__item" data-testid={`progress-${i}`}>
-                <span className="badge badge--faint">{humanizeAgent(p.agent_id)} · {p.status}</span>
-                {p.detail && <span className="muted"> — {p.detail.slice(0, 140)}</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
       {error && <p className="error" role="alert" data-testid="team-chat-error">{error}</p>}
 
       <div className="team-chat__composer">
@@ -637,6 +623,21 @@ export function TeamChat() {
           )}
         </div>
         </div>
+
+        {progress.length > 0 && (
+          <div className="team-progress" data-testid="team-progress">
+            <span className="team-progress__title">Recent activity ({progress.length})</span>
+            <ul className="team-progress__list">
+              {progress.slice(0, 3).map((p, i) => (
+                <li key={`${p.id || i}`} className="team-progress__item" data-testid={`progress-${i}`}>
+                  <span className="team-progress__agent">{humanizeAgent(p.agent_id)}</span>
+                  <span className="team-progress__status">{p.status}</span>
+                  {p.detail && <span className="team-progress__detail"> — {p.detail.slice(0, 100)}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     </section>
   );
