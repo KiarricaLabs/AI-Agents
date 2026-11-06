@@ -36,6 +36,17 @@ def _identity(request: Request):
     return tenant, user
 
 
+_HUMAN_ROLES = {"user", "admin"}
+
+
+def _require_human(request: Request):
+    """Only a human may approve/reject/edit/execute an outward action. The
+    model can only queue a pending action; it can never execute it."""
+    role = getattr(request.state, "role", "user")
+    if role not in _HUMAN_ROLES:
+        raise HTTPException(status_code=403, detail="human approval required")
+
+
 def _action(tenant, user, action_id):
     rows = _db.query(
         "SELECT * FROM pending_actions WHERE id=? AND tenant_id=? AND user_id=?",
@@ -86,6 +97,7 @@ def create_action(body: CreateActionRequest, request: Request):
 
 @router.post("/{action_id}/approve")
 def approve_action(action_id: str, request: Request):
+    _require_human(request)
     tenant, user = _identity(request)
     item = _action(tenant, user, action_id)
     if item["status"] != "pending":
@@ -108,6 +120,7 @@ def approve_action(action_id: str, request: Request):
 
 @router.post("/{action_id}/reject")
 def reject_action(action_id: str, request: Request):
+    _require_human(request)
     tenant, user = _identity(request)
     item = _action(tenant, user, action_id)
     if item["status"] != "pending":

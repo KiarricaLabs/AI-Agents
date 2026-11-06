@@ -57,8 +57,23 @@ def _identity(request: Request):
     return tenant, user
 
 
+_HUMAN_ROLES = {"user", "admin"}
+
+
+def _require_human(request: Request):
+    """Human-only gate for mutations. Identity and role come from request.state,
+    never from the body. Agents may propose drafts but cannot approve, run,
+    review, or edit the plan themselves."""
+    role = getattr(request.state, "role", "user")
+    if role not in _HUMAN_ROLES:
+        raise HTTPException(status_code=403, detail="human approval required")
+
+
+
+
 @router.post("")
 def create_project(req: CreateProjectRequest, request: Request):
+    _require_human(request)
     tenant, user = _identity(request)
     try:
         plan = StructuredProjectPlanner(_db, tenant, user).plan(req.goal)
@@ -169,6 +184,7 @@ def list_projects(request: Request):
 
 @router.post("/{project_id}/plan/approve")
 def approve_plan(project_id: str, request: Request):
+    _require_human(request)
     tenant, user = _identity(request)
     project = _project(tenant, user, project_id)
     if project["status"] != "awaiting_plan_approval":
@@ -182,6 +198,7 @@ def approve_plan(project_id: str, request: Request):
 
 @router.post("/{project_id}/plan/reject")
 def reject_plan(project_id: str, body: RejectPlanRequest, request: Request):
+    _require_human(request)
     tenant, user = _identity(request)
     project = _project(tenant, user, project_id)
     if project["status"] != "awaiting_plan_approval":
@@ -200,6 +217,7 @@ def reject_plan(project_id: str, body: RejectPlanRequest, request: Request):
 
 @router.post("/{project_id}/plan/edit")
 def edit_plan(project_id: str, body: EditPlanRequest, request: Request):
+    _require_human(request)
     tenant, user = _identity(request)
     project = _project(tenant, user, project_id)
     if project["status"] != "awaiting_plan_approval":
@@ -232,6 +250,7 @@ def edit_plan(project_id: str, body: EditPlanRequest, request: Request):
 
 @router.post("/{project_id}/run")
 def run_project(project_id: str, request: Request):
+    _require_human(request)
     tenant, user = _identity(request)
     try:
         return ProjectRunner(_db, tenant, user).run(project_id)
@@ -243,6 +262,7 @@ def run_project(project_id: str, request: Request):
 
 @router.post("/tasks/{task_id}/review")
 def review_task(task_id: str, body: ReviewTaskRequest, request: Request):
+    _require_human(request)
     tenant, user = _identity(request)
     rows = _db.query(
         "SELECT * FROM agent_tasks WHERE id=? AND tenant_id=? AND user_id=?",
@@ -299,6 +319,7 @@ def review_task(task_id: str, body: ReviewTaskRequest, request: Request):
 
 @router.post("/tasks/{task_id}/rework")
 def rework_task(task_id: str, body: ReworkTaskRequest, request: Request):
+    _require_human(request)
     tenant, user = _identity(request)
     rows = _db.query(
         "SELECT * FROM agent_tasks WHERE id=? AND tenant_id=? AND user_id=?",
