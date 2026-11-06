@@ -5,6 +5,7 @@ import { KNOWN_SAMPLE_IDS } from "./knownSamples";
 import { statusLabel, priorityText } from "./uiText";
 import { Coordination } from "./coordination_panel";
 import { ReviewCenter } from "./review_center";
+import { proposeTeamGoal, validateTeamGoalDraft } from "./coordination";
 import { TeamMemory } from "./team_memory";
 import { TeamChat } from "./team_chat";
 import { Pipeline } from "./pipeline";
@@ -427,6 +428,9 @@ export default function App() {
   const [planFiling, setPlanFiling] = useState<number | null>(null);
   const [planAllBusy, setPlanAllBusy] = useState(false);
   const [planAllMsg, setPlanAllMsg] = useState<string | null>(null);
+  // Delegate the generated plan as a runnable coordination TeamGoal.
+  const [planDelegateBusy, setPlanDelegateBusy] = useState(false);
+  const [planDelegateMsg, setPlanDelegateMsg] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -983,6 +987,63 @@ export default function App() {
     }
     setPlanAllBusy(false);
     setPlanAllMsg(idxs.length ? "Plan submitted for approval — review each step in Work · Approvals." : "");
+  };
+
+  // Bridge the Generated team plan into the coordination pipeline: build a
+  // TeamGoal from the plan steps (validated + auto-reassigned like chat
+  // delegation), propose it, and refresh the coordination/review panels. This
+  // unifies Projects' "New Objective" and the chat's "Delegate" entry points.
+  const delegatePlanToTeam = async () => {
+    const steps = planResult?.steps || [];
+    if (!steps.length || planDelegateBusy) return;
+    const coordinator = planResult?.coordinator || "workspace_architect";
+    setPlanDelegateBusy(true);
+    setPlanDelegateMsg(null);
+    try {
+      let teamSteps = steps.map((s: any, idx: number) => ({
+        seq: idx + 1,
+        agent_id: (s.owner || s.suggested_agent || "workspace_architect"),
+        responsibility: ((s.title || "").trim()) || `Step ${idx + 1}`,
+        depends_on_seq: idx === 0 ? null : idx,
+      }));
+      // Validate + auto-reassign invalid steps to a capable delegable agent.
+      try {
+        const val = await validateTeamGoalDraft(coordinator, teamSteps);
+        if (!val.plan_valid) {
+          const reassigned: string[] = [];
+          let blocking = "";
+          teamSteps = val.steps.map((vs: any) => {
+            if (vs.valid || !vs.suggested_agent_id) {
+              if (!vs.valid) blocking = blocking || (vs.error || `step ${vs.seq} cannot be assigned`);
+              return { seq: vs.seq, agent_id: vs.suggested_agent_id || vs.agent_id, responsibility: vs.responsibility, depends_on_seq: vs.depends_on_seq ?? null };
+            }
+            reassigned.push(`step ${vs.seq}: ${vs.agent_id} → ${vs.suggested_agent_id}`);
+            return { seq: vs.seq, agent_id: vs.suggested_agent_id, responsibility: vs.responsibility, depends_on_seq: vs.depends_on_seq ?? null };
+          });
+          if (blocking) {
+            setPlanDelegateMsg(`Could not create a team goal: ${blocking}. Fix the plan steps or choose a different coordinator.`);
+            return;
+          }
+          if (reassigned.length) setPlanDelegateMsg(`Auto-assigned ${reassigned.length} ${reassigned.length === 1 ? "step" : "steps"} to capable agents (${reassigned.join("; ")}). `);
+        }
+      } catch { /* validation unavailable — propose as-is */ }
+      const created = await proposeTeamGoal({
+        title: (planResult?.title || planObjective.trim() || "Team goal").slice(0, 120),
+        coordinator_agent: coordinator,
+        summary: planObjective.trim() || undefined,
+        steps: teamSteps,
+      });
+      window.dispatchEvent(new CustomEvent("ai-team:goal-created"));
+      setPlanDelegateMsg((planDelegateMsg ? planDelegateMsg + " " : "") +
+        (created.status === "proposed"
+          ? "TeamGoal proposed (proposed). On Home: approve → authorize → Run all → accept, and it materializes into Projects."
+          : `TeamGoal created (${created.status}).`));
+    } catch (e) {
+      const detail = (e as any)?.message || (e as any)?.detail;
+      setPlanDelegateMsg(detail ? `Could not create team goal: ${detail}` : "Could not create team goal.");
+    } finally {
+      setPlanDelegateBusy(false);
+    }
   };
 
   // Shared POST handler. `payload.retry` tells the backend not to persist a
@@ -2703,8 +2764,18 @@ export default function App() {
                     >
                       {planAllBusy ? "Filing…" : `Approve all pending (${(planResult.steps || []).filter((x: any) => !x.approved && !x.rejected && !x.error).length})`}
                     </button>
+                    <button
+                      className="btn btn--sm btn--ghost"
+                      data-testid="plan-delegate"
+                      disabled={planDelegateBusy || planBusy || !(planResult.steps || []).length}
+                      onClick={delegatePlanToTeam}
+                      title="Create this as a runnable coordination TeamGoal so it runs through Home's Coordination panel."
+                    >
+                      {planDelegateBusy ? "Creating…" : "Create as team goal (Run & review)"}
+                    </button>
                   </div>
                   {planAllMsg && <p className="success" role="status">{planAllMsg}</p>}
+                  {planDelegateMsg && <p className="success" role="status" data-testid="plan-delegate-msg">{planDelegateMsg}</p>}
                   <ul className="list plan-steps">
                     {(planResult.steps || []).map((s: any, i: number) => (
                       <li key={i} className="list__item plan-step" data-testid={`plan-step-${i}`}>

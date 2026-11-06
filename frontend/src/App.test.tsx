@@ -1493,6 +1493,41 @@ describe("D4.3-A2 plan approval bridge", () => {
     expect(await screen.findByTestId("plan-done-0")).toBeInTheDocument();
   });
 
+  it("creates the generated plan as a coordination TeamGoal (Projects \u2192 pipeline)", async () => {
+    let proposed: any = null;
+    const fn = makeFetch({
+      ...a2Fixture,
+      [`${API}/team/goals/validate`]: (url: string, init: any) => {
+        const stepsFrom = (a2Fixture[`${API}/agents/plan`]() as any).steps;
+        return ok({
+          coordinator: "strategist", plan_valid: true, errors: [],
+          steps: stepsFrom.map((s: any, i: number) => ({
+            seq: i + 1, agent_id: s.suggested_agent, responsibility: s.title,
+            capability_ok: true, delegation_ok: true, valid: true, error: null,
+          })),
+        });
+      },
+      [`${API}/team/goals`]: (url: string, init: any) => {
+        proposed = JSON.parse(init.body);
+        return ok({ team_goal_id: "tg-x", status: "proposed", reused: false });
+      },
+    });
+    globalThis.fetch = fn as any;
+    render(<App />);
+    await openPlan();
+    fireEvent.click(screen.getByTestId("plan-delegate"));
+    await waitFor(() => {
+      const call = fn.mock.calls.find((c: any) =>
+        c[0] === `${API}/team/goals` && ((c[1]?.method || "GET").toUpperCase() === "POST"));
+      expect(call).toBeTruthy();
+    });
+    expect(proposed).toBeTruthy();
+    expect(proposed.steps.length).toBe(3);
+    expect(proposed.steps[0].agent_id).toBe("strategist");
+    expect(proposed.coordinator_agent).toBe("strategist");
+    expect(await screen.findByTestId("plan-delegate-msg")).toBeInTheDocument();
+  });
+
   it("rejects one step; approve-all skips it and unsupported steps", async () => {
     const fn = makeFetch({ ...a2Fixture, [`${API}/work/proposals`]: () => ok({ proposal_id: "pr" }) });
     globalThis.fetch = fn as any;
