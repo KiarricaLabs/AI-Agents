@@ -118,9 +118,9 @@ def list_deliverables(project_id: Optional[str] = None, request: Request = None)
         " FROM deliverables d"
     )
     if project_id:
-        rows = _db.query(base + " WHERE d.tenant_id=? AND d.project_id=?", (t, project_id))
+        rows = _db.query(base + " WHERE d.tenant_id=? AND d.project_id=? AND d.is_synthetic != 1", (t, project_id))
     else:
-        rows = _db.query(base + " WHERE d.tenant_id=?", (t,))
+        rows = _db.query(base + " WHERE d.tenant_id=? AND d.is_synthetic != 1", (t,))
     return {"items": rows}
 
 @router.post("/deliverables/{did}/versions")

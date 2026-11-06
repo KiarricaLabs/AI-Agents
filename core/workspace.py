@@ -20,7 +20,8 @@ class WorkspaceService:
                         (wid, self.tenant_id, self.user_id, name, _now()))
         return wid
     def list(self):
-        return self.db.query("SELECT * FROM workspaces WHERE tenant_id=? AND user_id=?", (self.tenant_id, self.user_id))
+        return self.db.query("SELECT * FROM workspaces WHERE tenant_id=? AND user_id=? AND is_synthetic != 1",
+                             (self.tenant_id, self.user_id))
 
 
 class ProjectService:
@@ -33,9 +34,10 @@ class ProjectService:
         return pid
     def list(self, workspace_id=None):
         if workspace_id:
-            return self.db.query("SELECT * FROM projects WHERE tenant_id=? AND user_id=? AND workspace_id=?",
+            return self.db.query("SELECT * FROM projects WHERE tenant_id=? AND user_id=? AND workspace_id=? AND is_synthetic != 1",
                                  (self.tenant_id, self.user_id, workspace_id))
-        return self.db.query("SELECT * FROM projects WHERE tenant_id=? AND user_id=?", (self.tenant_id, self.user_id))
+        return self.db.query("SELECT * FROM projects WHERE tenant_id=? AND user_id=? AND is_synthetic != 1",
+                             (self.tenant_id, self.user_id))
 
 
 GOAL_STATUS_TRANSITIONS = {
@@ -85,9 +87,9 @@ class GoalService:
 
     def list(self, project_id=None):
         if project_id:
-            return self.db.query("SELECT * FROM goals WHERE tenant_id=? AND user_id=? AND project_id=? ORDER BY priority DESC",
+            return self.db.query("SELECT * FROM goals WHERE tenant_id=? AND user_id=? AND project_id=? AND is_synthetic != 1 ORDER BY priority DESC",
                                  (self.tenant_id, self.user_id, project_id))
-        return self.db.query("SELECT * FROM goals WHERE tenant_id=? AND user_id=? ORDER BY priority DESC",
+        return self.db.query("SELECT * FROM goals WHERE tenant_id=? AND user_id=? AND is_synthetic != 1 ORDER BY priority DESC",
                              (self.tenant_id, self.user_id))
 
     def list_all(self):
@@ -248,9 +250,9 @@ class AssignmentService:
         return aid
     def list(self, goal_id=None):
         if goal_id:
-            return self.db.query("SELECT * FROM assignments WHERE tenant_id=? AND user_id=? AND goal_id=? ORDER BY priority DESC",
+            return self.db.query("SELECT * FROM assignments WHERE tenant_id=? AND user_id=? AND goal_id=? AND is_synthetic != 1 ORDER BY priority DESC",
                                  (self.tenant_id, self.user_id, goal_id))
-        return self.db.query("SELECT * FROM assignments WHERE tenant_id=? AND user_id=? ORDER BY priority DESC",
+        return self.db.query("SELECT * FROM assignments WHERE tenant_id=? AND user_id=? AND is_synthetic != 1 ORDER BY priority DESC",
                              (self.tenant_id, self.user_id))
 
 
