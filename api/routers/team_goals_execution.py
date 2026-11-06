@@ -68,6 +68,54 @@ def _svc(t: str, u: str):
     return CoordinationExecutionService(_db, t, u)
 
 
+def _thread_for_execution(t: str, u: str, execution_id: str) -> Optional[str]:
+    """Resolve a coordination execution back to its source chat thread (if any)
+    so execution progress lands in the same group-chat feed the work came from.
+    Owner-scoped read; additive, never used for authorization."""
+    rows = _db.query(
+        "SELECT tg.thread_id FROM coordination_executions ce "
+        "JOIN coordination_plans p ON p.id=ce.plan_id "
+        "JOIN team_goals tg ON tg.id=p.team_goal_id "
+        "WHERE ce.id=? AND ce.tenant_id=? AND ce.user_id=?",
+        (execution_id, t, u))
+    return rows[0]["thread_id"] if rows else None
+
+
+def _record_progress(t: str, u: str, execution_id: str, agent_id: str,
+                     status: str, detail: str) -> None:
+    """Phase 8 §15: write a durable, owner-scoped progress ledger entry so the
+    command center can show what the team did during coordination execution
+    (not just chat delegation). Pure side-effect; never changes execution flow."""
+    if not agent_id:
+        return
+    thread_id = _thread_for_execution(t, u, execution_id)
+    if not thread_id:
+        return
+    try:
+        from core.progress import ProgressService
+        ProgressService(_db, t, u).record(thread_id, agent_id, status, detail)
+    except ValueError:
+        pass
+
+
+def _record_run_progress(t: str, u: str, execution_id: str) -> None:
+    """Phase 8 §15: after an autonomous run, record a completed ledger entry per
+    distinct step-agent from the frozen plan snapshot so execution shows up in
+    the source thread's progress feed. Pure side-effect; additive."""
+    try:
+        steps = _db.query(
+            "SELECT ps.seq, ps.agent_id FROM coordination_plan_steps ps "
+            "JOIN coordination_executions ce ON ce.plan_id = ps.plan_id "
+            "WHERE ce.id=? AND ce.tenant_id=? AND ce.user_id=? ORDER BY ps.seq",
+            (execution_id, t, u))
+    except Exception:
+        return
+    for s in steps:
+        seq = s.get("seq")
+        _record_progress(t, u, execution_id, s.get("agent_id"), "completed",
+                         f"step {seq} completed (run) — awaiting your review")
+
+
 class DecisionBody(BaseModel):
     decision: str
     note: Optional[str] = None
@@ -96,7 +144,10 @@ def run_autonomously(plan_id: str, execution_id: str, request: Request):
     t, u = _identity(request)
     _require_human(request)
     try:
-        return _svc(t, u).run_autonomously(execution_id, u)
+        r = _svc(t, u).run_autonomously(execution_id, u)
+        # Phase 8 §15: surface the completed run in the source thread's ledger.
+        _record_run_progress(t, u, execution_id)
+        return r
     except ReviewNotPermitted:
         raise HTTPException(status_code=403, detail="not permitted to run this execution")
     except CoordinationExecutionNotFound:
@@ -114,7 +165,12 @@ def execute_next_step(plan_id: str, execution_id: str, request: Request):
     t, u = _identity(request)
     _require_human(request)
     try:
-        return _svc(t, u).execute_step(execution_id, u)
+        r = _svc(t, u).execute_step(execution_id, u)
+        # Phase 8 §15: reflect the completed step in the source thread's progress
+        # feed so the command center shows execution progress, not only delegation.
+        _record_progress(t, u, execution_id, r.get("agent_id"), "completed",
+                         f"step {r.get('step')} completed — awaiting your review")
+        return r
     except ReviewNotPermitted:
         raise HTTPException(status_code=403, detail="not permitted to execute a step")
     except CoordinationExecutionNotFound:
