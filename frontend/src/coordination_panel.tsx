@@ -133,6 +133,14 @@ export function Coordination() {
     loadGoals();
   }, [loadGoals]);
 
+  // Refresh the goal list when a goal is created elsewhere (e.g. via the chat
+  // "Delegate to the team" action) so the new goal is visible immediately.
+  useEffect(() => {
+    const onCreated = () => loadGoals();
+    window.addEventListener("ai-team:goal-created", onCreated);
+    return () => window.removeEventListener("ai-team:goal-created", onCreated);
+  }, [loadGoals]);
+
   async function openCreate() {
     setShowCreate(true);
     setCreateError("");
@@ -251,6 +259,7 @@ export function Coordination() {
         }
       } catch { /* server unavailable — fall through to submit; plan review still enforces */ }
       const r = await proposeTeamGoal(payload);
+      window.dispatchEvent(new CustomEvent("ai-team:goal-created"));
       setCreateSuccess(
         `Team goal \u201c${formTitle.trim()}\u201d proposed (${r.status}). Approval is a separate human step.`);
       await loadGoals();

@@ -416,6 +416,8 @@ export function TeamChat() {
         expected_deliverable: parsed.expected_deliverable ?? undefined,
         steps,
       });
+      // Tell the coordination + review panels to refresh so the new goal shows up.
+      window.dispatchEvent(new CustomEvent("ai-team:goal-created"));
       setDelegMsg(note +
         (created.status === "proposed"
           ? "TeamGoal proposed (status: proposed). In the AI Team panel: approve it, authorize the plan, then \u201cRun all\u201d \u2014 agents run their steps and you approve the final deliverable."

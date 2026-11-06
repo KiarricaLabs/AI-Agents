@@ -53,6 +53,14 @@ export function ReviewCenter({ onOpen }: { onOpen?: (goalId?: string) => void })
 
   useEffect(() => { load(); }, [load]);
 
+  // Refresh when a new goal is created elsewhere (chat delegation / panel) so
+  // the pending-approval list reflects it immediately.
+  useEffect(() => {
+    const onCreated = () => load();
+    window.addEventListener("ai-team:goal-created", onCreated);
+    return () => window.removeEventListener("ai-team:goal-created", onCreated);
+  }, [load]);
+
   async function doApprove(item: ReviewItem) {
     if (!item.goal_id) return;
     setBusy(item.goal_id);
