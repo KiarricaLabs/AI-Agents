@@ -120,7 +120,8 @@ describe("Projects", () => {
     }) as any;
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Projects" }));
-    fireEvent.click(await screen.findByText("Acme"));
+    // Open the workspace from the workspace LIST (the recent-projects overview also mentions Acme).
+    fireEvent.click((await screen.findAllByText("Acme"))[1]);
     expect(await screen.findByText(/Launch/)).toBeInTheDocument();
     expect(screen.getByText(/Active/)).toBeInTheDocument();
   });
@@ -153,8 +154,9 @@ describe("Overview", () => {
     }) as any;
     render(<App />);
     expect(await screen.findByText(/your AI team's command center/i)).toBeInTheDocument();
-    expect(screen.getAllByText("Open goals").length).toBeGreaterThan(0);
-    expect(screen.getByText("Launch")).toBeInTheDocument();
+    // Home is the team/command center: Recent projects & Open goals moved to Projects.
+    expect(screen.queryByText("Recent projects")).not.toBeInTheDocument();
+    expect(screen.queryByText("Open goals")).not.toBeInTheDocument();
   });
 });
 
@@ -170,7 +172,8 @@ describe("Project Detail", () => {
     }) as any;
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Projects" }));
-    fireEvent.click(await screen.findByText("Acme"));
+    // Open the workspace from the workspace LIST (the overview also mentions Acme).
+    fireEvent.click((await screen.findAllByText("Acme"))[1]);
     fireEvent.click(await screen.findByText("Launch"));
 
     expect((await screen.findAllByText("Ship v1")).length).toBeGreaterThan(0);
@@ -974,8 +977,8 @@ describe("UI Cleanup & sample-data handling", () => {
         ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1", status: "active" }] }),
     }) as any;
     render(<App />);
-    await screen.findByText(/Launch/);
-    fireEvent.click(screen.getByText(/Launch/));
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(await screen.findByText(/Launch/));
     expect(await screen.findByText(/No goals for this project yet/)).toBeInTheDocument();
   });
 

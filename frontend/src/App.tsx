@@ -2080,54 +2080,6 @@ export default function App() {
               );
             })()}
 
-            {visibleWorkspaces.length === 0 ? (
-              <Empty text="No workspaces yet. Open the Workspaces section to create your first workspace and start organizing projects." />
-            ) : (
-              <div className="overview-grid">
-                <div className="overview-col">
-                  <h3 className="section-title">Recent projects</h3>
-                  {recentProjects.length === 0 ? (
-                    <Empty text="No projects yet — create one inside a workspace." />
-                  ) : (
-                    <ul className="list">
-                      {recentProjects.map((p) => (
-                        <li
-                          key={p.id}
-                          className="list__item list__item--clickable"
-                          onClick={() => goToProject(p.id)}
-                        >
-                          <span className="list__icon"><Icon name="briefcase" size={16} /></span>
-                          <span className="list__name">{p.name}</span>
-                          <span className="badge badge--faint">{workspaceName(p.workspace_id)}</span>
-                          <span className={`badge badge--${p.status || "neutral"}`}>{statusLabel(p.status)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <div className="overview-col">
-                  <h3 className="section-title">Open goals</h3>
-                  {openGoals.length === 0 ? (
-                    <Empty text="No open goals yet." />
-                  ) : (
-                    <ul className="list">
-                      {openGoals.map((g) => (
-                        <li
-                          key={g.id}
-                          className="list__item list__item--clickable"
-                          onClick={() => goToGoal(g.id)}
-                        >
-                          <span className="list__icon"><Icon name="target" size={16} /></span>
-                          <span className="list__name">{g.title}</span>
-                          <span className={`badge badge--${g.status || "open"}`}>{statusLabel(g.status)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-            )}
-
             <Pipeline onJump={setTab} />
             <Coordination />
             <ReviewCenter onOpen={() => setTab("home")} />
@@ -2175,6 +2127,52 @@ export default function App() {
                   </>
                 )}
               </nav>
+            )}
+
+            {!selectedWorkspaceId && (
+              <div className="overview-grid">
+                <div className="overview-col">
+                  <h3 className="section-title">Recent projects</h3>
+                  {recentProjects.length === 0 ? (
+                    <Empty text="No projects yet — create one inside a workspace." />
+                  ) : (
+                    <ul className="list">
+                      {recentProjects.map((p) => (
+                        <li
+                          key={p.id}
+                          className="list__item list__item--clickable"
+                          onClick={() => goToProject(p.id)}
+                        >
+                          <span className="list__icon"><Icon name="briefcase" size={16} /></span>
+                          <span className="list__name">{p.name}</span>
+                          <span className="badge badge--faint">{workspaceName(p.workspace_id)}</span>
+                          <span className={`badge badge--${p.status || "neutral"}`}>{statusLabel(p.status)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="overview-col">
+                  <h3 className="section-title">Open goals</h3>
+                  {openGoals.length === 0 ? (
+                    <Empty text="No open goals yet." />
+                  ) : (
+                    <ul className="list">
+                      {openGoals.map((g) => (
+                        <li
+                          key={g.id}
+                          className="list__item list__item--clickable"
+                          onClick={() => goToGoal(g.id)}
+                        >
+                          <span className="list__icon"><Icon name="target" size={16} /></span>
+                          <span className="list__name">{g.title}</span>
+                          <span className={`badge badge--${g.status || "open"}`}>{statusLabel(g.status)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
             )}
 
             <div className="inline-form">
