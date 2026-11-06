@@ -3327,7 +3327,7 @@ export default function App() {
             <div className="panel__head">
               <div>
                 <h2 className="panel__title">Task Center</h2>
-                <p className="panel__sub">Track every piece of work across your projects — what\u2019s waiting, what\u2019s active, and what needs your input.</p>
+                <p className="panel__sub">Track every piece of work across your projects — what's waiting, what's active, and what needs your input.</p>
                 <button className="btn btn--sm btn--ghost" data-testid="open-coordination" onClick={() => setTab("home")}>
                   Open coordination
                 </button>
@@ -3429,7 +3429,7 @@ export default function App() {
 
             <div className="subsection">
               <div className="subsection__head"><h3 className="section-title">Preferences</h3></div>
-              <p className="muted">Other preference controls will appear here as they\u2019re added.</p>
+              <p className="muted">Other preference controls will appear here as they're added.</p>
             </div>
           </section>
         )}
