@@ -93,7 +93,7 @@ function stamp(iso?: string): string {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString();
 }
 
-export function TeamChat() {
+export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   const [threadId, setThreadId] = useState<string>(() => (typeof localStorage !== "undefined" ? localStorage.getItem(THREAD_KEY) || "" : ""));
   const [booting, setBooting] = useState(true);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -114,6 +114,8 @@ export function TeamChat() {
   const [delegDraft, setDelegDraft] = useState<TeamGoalDraft | null>(null);
   // --- Phase 8 §15: durable team progress feed for this thread ---
   const [progress, setProgress] = useState<any[]>([]);
+  // --- Task Center <-> chat linkage: work this thread produced ---
+  const [workLinks, setWorkLinks] = useState<any[]>([]);
   // --- conversation sidebar ---
   const [conversations, setConversations] = useState<any[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
@@ -149,6 +151,11 @@ export function TeamChat() {
       const pb = await pr.json().catch(() => ({}));
       setProgress(pb.items || []);
     } catch { /* offline */ }
+    try {
+      const wl = await fetch(`${API}/work/links?thread_id=${encodeURIComponent(tid)}`);
+      const wd = await wl.json().catch(() => ({}));
+      setWorkLinks(wd.items || []);
+    } catch { /* offline */ }
   }, []);
 
   const loadConversations = useCallback(async () => {
@@ -163,6 +170,7 @@ export function TeamChat() {
     setThreadId(tid);
     setMessages([]);
     setProgress([]);
+    setWorkLinks([]);
     if (typeof localStorage !== "undefined") localStorage.setItem(THREAD_KEY, tid);
   };
 
@@ -471,6 +479,12 @@ export function TeamChat() {
           <p className="panel__sub">One shared conversation with all of your agents. Only you can start or run work.</p>
         </div>
         <span className="badge badge--faint">{mode === "team" ? "Any agent may reply" : MODE_META[mode].label}</span>
+        {workLinks.length > 0 && onOpenTasks && (
+          <button className="btn btn--sm btn--ghost" data-testid="chat-open-tasks"
+            onClick={onOpenTasks}>
+            View {workLinks.length} in Task Center
+          </button>
+        )}
       </div>
 
       <div className="team-chat__modes" role="group" aria-label="Compose mode">

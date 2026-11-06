@@ -2196,6 +2196,26 @@ describe("Phase 4 — Task Center, Settings, conversation-to-task", () => {
     expect(await screen.findByTestId("coordination-panel")).toBeInTheDocument();
   });
 
+  it("opens the originating conversation from a task in the Task Center", async () => {
+    globalThis.fetch = makeFetch({
+      [`${API}/tasks`]: () =>
+        ok({ items: [
+          { task_id: "t9", kind: "assignment", status: "awaiting_execution", title: "Draft launch copy", agent_id: "communications", goal_id: "g1", goal_title: "Launch", project_name: "Launch", next_action: "Approved.", deliverable: null, deliverables: [], thread_ids: ["thr-abc"], needs_approval: false },
+        ] }),
+      [`${API}/team/threads`]: () => ok({ thread_id: "fresh" }),
+      [`${API}/memory/conversations`]: () => ok({ items: [] }),
+    }) as any;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Task Center" }));
+    const btn = await screen.findByTestId("task-open-chat-t9");
+    expect(btn.textContent).toContain("Open in chat");
+    fireEvent.click(btn);
+    expect(localStorage.getItem("ai-team-shared-thread")).toBe("thr-abc");
+    // navigates back to Home (the group chat)
+    expect(await screen.findByTestId("team-chat-list")).toBeInTheDocument();
+    localStorage.removeItem("ai-team-shared-thread");
+  });
+
   it("filters tasks by status in the Task Center", async () => {
     globalThis.fetch = makeFetch({
       [`${API}/tasks`]: () =>
@@ -2846,6 +2866,32 @@ describe("Team Chat (component)", () => {
     globalThis.fetch = chatBackend() as any;
     render(<TeamChat />);
     await screen.findByTestId("team-chat-empty");
+  });
+
+  it("links the current thread to the Task Center when it produced work", async () => {
+    localStorage.setItem("ai-team-shared-thread", "team-1");
+    const fn = vi.fn(async (url: string) => {
+      if (url.includes("/memory/conversation?")) return ok({ items: [] });
+      if (url.includes("/work/links?")) return ok({ items: [{ id: "w1" }, { id: "w2" }] });
+      return ok({ items: [] });
+    });
+    globalThis.fetch = fn as any;
+    let opened = 0;
+    render(<TeamChat onOpenTasks={() => { opened += 1; }} />);
+    const btn = await screen.findByTestId("chat-open-tasks");
+    expect(btn.textContent).toContain("2");
+    fireEvent.click(btn);
+    expect(opened).toBe(1);
+    localStorage.removeItem("ai-team-shared-thread");
+  });
+
+  it("hides the Task Center link on a thread with no produced work", async () => {
+    localStorage.setItem("ai-team-shared-thread", "team-empty");
+    globalThis.fetch = chatBackend() as any; // /work/links returns empty items
+    render(<TeamChat onOpenTasks={() => { /* noop */ }} />);
+    await screen.findByTestId("team-chat-input");
+    expect(screen.queryByTestId("chat-open-tasks")).toBeNull();
+    localStorage.removeItem("ai-team-shared-thread");
   });
 
   it("sends to the team and renders per-agent bubbles", async () => {

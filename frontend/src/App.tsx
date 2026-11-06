@@ -269,6 +269,14 @@ function Stat({ icon, label, value }: { icon: string; label: string; value: numb
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("home");
+  // Task Center <-> chat linkage: open a conversation thread in the group chat.
+  // The group chat reads its active thread from localStorage on mount.
+  const openThreadInChat = (threadId: string) => {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("ai-team-shared-thread", threadId);
+    }
+    setTab("home");
+  };
   // Projects tab is segmented: "browse" (workspaces/projects) vs "proposals".
   const [projectsSection, setProjectsSection] = useState<"browse" | "proposals">("browse");
   const [health, setHealth] = useState("checking...");
@@ -2086,7 +2094,7 @@ export default function App() {
               <Stat icon="layers" label="Proposals" value={(feed || []).length} />
             </div>
 
-            <TeamChat />
+            <TeamChat onOpenTasks={() => setTab("tasks")} />
 
             {/* D4.3-B: coordinated status — one assistant view of what awaits you. */}
             {(() => {
@@ -3454,7 +3462,14 @@ export default function App() {
                         <div className="tasks-item__meta">
                           {t.project_name && <span className="muted">{t.project_name}</span>}
                           {t.goal_title && <span className="muted"> · {t.goal_title}</span>}
-                          {t.thread_ids?.length ? <span className="muted"> · from conversation</span> : null}
+                          {t.thread_ids?.length ? (
+                            <span className="muted"> · from conversation{" "}
+                              <button className="origin-link" data-testid={`task-open-chat-${t.task_id}`}
+                                onClick={() => openThreadInChat(t.thread_ids[0])}>
+                                Open in chat
+                              </button>
+                            </span>
+                          ) : null}
                         </div>
                         {t.description && <p className="muted">{t.description}</p>}
                         <p className="muted"><em>{t.next_action}</em></p>
