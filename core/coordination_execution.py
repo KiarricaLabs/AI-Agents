@@ -789,9 +789,109 @@ class CoordinationExecutionService:
                 "UPDATE coordination_executions SET status=?, updated_at=? "
                 "WHERE id=? AND tenant_id=? AND user_id=?",
                 (run_st, now, execution_id, self.tenant_id, self.user_id))
+        materialized = None
+        if d_st == STEP_TERMINAL_ACCEPTED:
+            content_obj: Dict[str, Any] = {}
+            try:
+                content_obj = json.loads(rows[0]["content_json"] or "{}")
+            except (TypeError, ValueError):
+                content_obj = {}
+            try:
+                materialized = self._materialize_project_records(
+                    execution_id, run, rows[0]["title"] or "Deliverable", content_obj, now)
+            except Exception as e:  # keep the acceptance even if materialization fails
+                _log.exception("project materialization failed for execution %s: %s",
+                               execution_id, e)
         return {"execution_id": execution_id, "decision": d_st, "run_status": run_st,
                 "version_id": version_id, "version": latest["version"],
-                "approval": recorded.get("approvals", [])}
+                "approval": recorded.get("approvals", []),
+                "materialized": materialized}
+
+    # ---------------------------------------------------------- materialize
+    def _insert_deliverable_version(self, c, deliverable_id, content, version, now,
+                                   status: str = "approved"):
+        c.execute(
+            "INSERT INTO deliverable_versions "
+            "(id,tenant_id,deliverable_id,version,content,status,requested_changes,created_at) "
+            "VALUES (?,?,?,?,?,?,0,?)",
+            (str(uuid.uuid4()), self.tenant_id, deliverable_id, version,
+             json.dumps(content, default=str), status, now))
+
+    def _append_deliverable_version(self, deliverable_id: str, content, now) -> int:
+        rows = self.db.query(
+            "SELECT MAX(version) AS v FROM deliverable_versions "
+            "WHERE deliverable_id=? AND tenant_id=?",
+            (deliverable_id, self.tenant_id))
+        ver = int(rows[0]["v"] or 0) + 1
+        with self.db.transaction() as c:
+            self._insert_deliverable_version(c, deliverable_id, content, ver, now)
+        return ver
+
+    def _materialize_project_records(self, execution_id: str, run: Dict[str, Any],
+                                     title: str, content, now: str) -> Dict[str, Any]:
+        """Persist an accepted coordination deliverable into the project graph
+        (workspace -> project -> goal -> deliverable + version) so accepted work
+        shows up under Projects and the Task Center.
+
+        Idempotent per execution (linked via ``deliverables.coordination_execution_id``):
+        the first acceptance creates the records; a later accepted re-aggregation
+        appends a new version to the same project deliverable.
+        """
+        t, u = self.tenant_id, self.user_id
+        existing = self.db.query(
+            "SELECT id FROM deliverables WHERE tenant_id=? AND user_id=? "
+            "AND coordination_execution_id=?", (t, u, execution_id))
+        if existing:
+            ver = self._append_deliverable_version(existing[0]["id"], content, now)
+            return {"deliverable_id": existing[0]["id"], "version_added": True,
+                    "version": ver, "created": False}
+
+        tg = self.db.query(
+            "SELECT goal_id, title FROM team_goals WHERE id=? AND tenant_id=? AND user_id=?",
+            (run["team_goal_id"], t, u))
+        goal_id = tg[0]["goal_id"] if tg else None
+        label = ((tg[0]["title"] if tg else "") or "").strip() or (title or "Deliverable")
+
+        project_id = None
+        if goal_id:
+            pr = self.db.query(
+                "SELECT project_id FROM goals WHERE id=? AND tenant_id=? AND user_id=?",
+                (goal_id, t, u))
+            if pr:
+                project_id = pr[0]["project_id"]
+        if not project_id:
+            ws = self.db.query(
+                "SELECT id FROM workspaces WHERE tenant_id=? AND user_id=? "
+                "ORDER BY created_at DESC LIMIT 1", (t, u))
+            workspace_id = ws[0]["id"] if ws else str(uuid.uuid4())
+            if not ws:
+                self.db.execute(
+                    "INSERT INTO workspaces (id,tenant_id,user_id,name,created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (workspace_id, t, u, "AI Team Workspace", now))
+            project_id = str(uuid.uuid4())
+            self.db.execute(
+                "INSERT INTO projects (id,tenant_id,workspace_id,user_id,name,status,created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (project_id, t, workspace_id, u, label, "active", now))
+        if not goal_id:
+            goal_id = str(uuid.uuid4())
+            self.db.execute(
+                "INSERT INTO goals (id,tenant_id,project_id,user_id,title,version,status,progress,created_at) "
+                "VALUES (?,?,?,?,?,0,'open',0,?)",
+                (goal_id, t, project_id, u, label, now))
+
+        deliverable_id = str(uuid.uuid4())
+        with self.db.transaction() as c:
+            c.execute(
+                "INSERT INTO deliverables "
+                "(id,tenant_id,project_id,user_id,title,coordination_execution_id,created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (deliverable_id, t, project_id, u, label, execution_id, now))
+            self._insert_deliverable_version(c, deliverable_id, content, 1, now,
+                                             status="approved")
+        return {"deliverable_id": deliverable_id, "project_id": project_id,
+                "goal_id": goal_id, "created": True, "version": 1}
 
     # ------------------------------------------------------------------ reads
     def status(self, execution_id: str) -> Dict[str, Any]:

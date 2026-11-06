@@ -172,6 +172,31 @@ class CoordinationExecutionServiceTest(unittest.TestCase):
             self.assertEqual(self.svc._step_output(run, seq)["status"], "accepted")
         self.assertEqual(self.svc._get_execution(run)["status"], "ready_for_review")
 
+    # ---------------------------------------------------------- materialize
+    def test_accept_materializes_project_records(self):
+        tg, ids, plan_id, run = self._start_run_and_multi()
+        self.svc.run_autonomously(run, "u1")
+        res = self.svc.review_deliverable(run, "accepted", "u1")
+        self.assertIsNotNone(res.get("materialized"))
+        self.assertTrue(res["materialized"]["created"])
+        # A project-scoped deliverable was created linked to this execution.
+        d = self.db.query(
+            "SELECT id, coordination_execution_id FROM deliverables "
+            "WHERE tenant_id='t1' AND user_id='u1'")
+        self.assertEqual(len(d), 1)
+        self.assertEqual(d[0]["coordination_execution_id"], run)
+        self.assertEqual(self.db.query(
+            "SELECT COUNT(*) AS n FROM deliverable_versions WHERE deliverable_id=?",
+            (d[0]["id"],))[0]["n"], 1)
+        # A second materialization appends a version instead of duplicating.
+        r2 = self.svc._materialize_project_records(
+            run, self.svc._get_execution(run), "D", {"seq": 2},
+            "2026-01-01T00:00:00Z")
+        self.assertTrue(r2["version_added"])
+        self.assertEqual(r2["version"], 2)
+        self.assertEqual(self.db.query(
+            "SELECT COUNT(*) AS n FROM deliverables")[0]["n"], 1)
+
     def test_eligibility_only_after_dependencies_accepted(self):
         tg, ids, plan_id, run = self._start_run_and_multi()
         # step 2 depends on step 1; step 1 runs first, then step 2 runs.

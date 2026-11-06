@@ -423,6 +423,7 @@ class Database:
             "ALTER TABLE goals ADD COLUMN progress INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE goals ADD COLUMN updated_at TEXT",
             "ALTER TABLE goals ADD COLUMN version INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE deliverables ADD COLUMN coordination_execution_id TEXT",
         ]
         for m in migrations:
             try:
