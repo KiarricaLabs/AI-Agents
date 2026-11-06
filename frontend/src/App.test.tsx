@@ -2398,6 +2398,36 @@ describe("Coordination panel (component)", () => {
     expect(screen.queryByTestId("coord-exec-next")).not.toBeInTheDocument();
   });
 
+  it("approves a proposed goal inline, then authorizes the plan", async () => {
+    let goalStatus = "proposed";
+    globalThis.fetch = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/team/goals")) {
+        return ok({ items: [{ ...GOAL, status: goalStatus }] });
+      }
+      if (method === "GET" && url.endsWith("/coordination-plan")) {
+        return goalStatus === "proposed"
+          ? fail({ detail: "not eligible" }, 422)
+          : ok(REVIEW);
+      }
+      if (method === "POST" && url.endsWith(`/team/goals/${GOAL.id}/approve`)) {
+        goalStatus = "approved";
+        return ok({ status: "approved" });
+      }
+      return ok({ items: [] });
+    }) as any;
+    render(<Coordination />);
+    fireEvent.click(await screen.findByTestId("coord-goal-g1"));
+    // A proposed goal now exposes an inline Approve, so the flow is reachable
+    // right here instead of only in the buried Review Center.
+    const approve = await screen.findByTestId("coord-approve");
+    expect(approve).toBeInTheDocument();
+    fireEvent.click(approve);
+    // Approving reveals the plan preview + Authorize control in the same panel.
+    await screen.findByTestId("coord-authorize");
+    expect(screen.queryByTestId("coord-approve")).not.toBeInTheDocument();
+  });
+
   async function runAll() {
     await clickEnabled("coord-run");
     await screen.findByTestId("coord-deliv");

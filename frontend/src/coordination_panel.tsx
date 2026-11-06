@@ -24,6 +24,7 @@ import {
   authorizeCoordinationPlan,
   initiateExecution,
   runAutonomously,
+  approveTeamGoal,
   reviewDeliverable,
   validateTeamGoalDraft,
   getExecutionStatus,
@@ -75,6 +76,7 @@ export function Coordination() {
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
   const [goalLoading, setGoalLoading] = useState(false);
   const [goalError, setGoalError] = useState("");
+  const [goalApproveBusy, setGoalApproveBusy] = useState(false);
 
   // Plan state
   const [plan, setPlan] = useState<CoordinationPlan | null>(null);
@@ -415,6 +417,21 @@ export function Coordination() {
 
   const planSteps: TeamGoalStep[] = plan?.steps?.length ? plan!.steps : (review?.steps || []);
   const selectedGoal = goals.find((g) => g.id === selectedGoalId);
+
+  async function doApproveGoal() {
+    if (!selectedGoal) return;
+    setGoalApproveBusy(true);
+    setGoalError("");
+    try {
+      await approveTeamGoal(selectedGoal.id);
+      await loadGoals();
+      await openGoal(selectedGoal.id);
+    } catch (e) {
+      setGoalError(errMsg(e, "Could not approve the team goal."));
+    } finally {
+      setGoalApproveBusy(false);
+    }
+  }
   const blocked = execution ? blockedStep(execution) : null;
 
   return (
@@ -577,6 +594,16 @@ export function Coordination() {
           </div>
           {goalLoading && <Empty text="Loading goal…" />}
           <ErrorBox msg={goalError} />
+
+          {selectedGoal && selectedGoal.status === "proposed" && (
+            <div className="coord-block">
+              <p className="muted">This team goal is proposed. Approve it first \u2014 then you can authorize its coordination plan and run the steps.</p>
+              <button className="btn btn--primary btn--sm" data-testid="coord-approve"
+                onClick={doApproveGoal} disabled={goalApproveBusy}>
+                {goalApproveBusy ? "Approving…" : "Approve team goal"}
+              </button>
+            </div>
+          )}
 
           {!plan && review && review.plan_valid && (
             <div className="coord-block">
