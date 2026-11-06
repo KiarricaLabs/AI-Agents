@@ -36,7 +36,9 @@ export default defineConfig({
     {
       // Isolated backend (dedicated E2E DB, local mode, never the real app DB).
       // reuseExistingServer is false so a real backend can never be reused.
-      command: `PAT_DB_PATH='${E2E_DB}' PAT_LOCAL_MODE=1 PAT_AUTH_SECRET='${E2E_AUTH_SECRET}' '${PYTHON}' -m uvicorn api.app:app --host 127.0.0.1 --port ${BACKEND_PORT}`,
+      // PAT_MOCK_AGENTS=1 makes group-chat replies scripted (no Ollama), so the
+      // E2E is deterministic and can never depend on a live model.
+      command: `PAT_DB_PATH='${E2E_DB}' PAT_LOCAL_MODE=1 PAT_MOCK_AGENTS=1 PAT_AUTH_SECRET='${E2E_AUTH_SECRET}' '${PYTHON}' -m uvicorn api.app:app --host 127.0.0.1 --port ${BACKEND_PORT}`,
       url: `http://127.0.0.1:${BACKEND_PORT}/health`,
       reuseExistingServer: false,
       cwd: ROOT,

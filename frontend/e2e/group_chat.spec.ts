@@ -27,8 +27,10 @@ test("a chat message never auto-dispatches or auto-advances work", async ({ page
   await expect(page.getByTestId("team-chat-input")).toBeVisible();
   await page.getByTestId("team-chat-input").fill("Plan a launch strategy and draft the announcement");
   await page.getByTestId("team-chat-send").click();
+  // Wait for the mock agent reply to settle (draft is cleared after send, so the
+  // send button re-disables — that is expected, not a failure).
+  await expect(page.getByTestId("team-chat-list").getByText(/tradeoffs worth weighing/)).toBeVisible();
   // A message alone must not surface a dispatch/run or approval action.
-  await expect(page.getByTestId("team-chat-send")).toBeEnabled();
   await expect(page.getByTestId("run-agent-button")).toHaveCount(0);
   await expect(page.getByTestId("extract-assignment")).not.toBeAttached();
 });
