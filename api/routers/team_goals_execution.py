@@ -88,6 +88,27 @@ def initiate_execution(plan_id: str, request: Request):
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@router.post("/{plan_id}/execution/{execution_id}/run")
+def run_autonomously(plan_id: str, execution_id: str, request: Request):
+    """Autonomous run (replaces per-step execution): runs every eligible step in
+    dependency order (auto-accept), then aggregates the consolidated deliverable
+    for the owner\u2019s final review. Human-launched, owner-scoped, one action."""
+    t, u = _identity(request)
+    _require_human(request)
+    try:
+        return _svc(t, u).run_autonomously(execution_id, u)
+    except ReviewNotPermitted:
+        raise HTTPException(status_code=403, detail="not permitted to run this execution")
+    except CoordinationExecutionNotFound:
+        raise HTTPException(status_code=404, detail="execution not found")
+    except StepAlreadyClaimed as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except (ExecutionNotRunnable, NotAllStepsAccepted) as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except AgentOutputInvalid as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.post("/{plan_id}/execution/{execution_id}/step/execute")
 def execute_next_step(plan_id: str, execution_id: str, request: Request):
     t, u = _identity(request)

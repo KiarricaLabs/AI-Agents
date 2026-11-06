@@ -4,11 +4,12 @@
 // T2-C-3/4/5 backend through the typed API layer (./coordination).
 //
 // Rules honored by the UI:
-// - Every step is executed by an explicit human "Execute next step" click; there
-//   is NO run-all, scheduler, or autonomous advance. Accepting a step's output
-//   never dispatches the next step.
-// - Step and deliverable reviews are discrete human actions (accept / request
-//   revision / reject). Revision requires selecting specific rework steps.
+// - Execution is autonomous within a single human "Run all steps" action: every
+//   eligible step runs in order and is auto-accepted, then the consolidated
+//   deliverable is aggregated. There is no per-step manual gate and no
+//   scheduler/background dispatch outside that one human-launched action.
+// - The human reviews the final deliverable (accept / request revision / reject).
+//   Revision invalidates the selected rework steps and re-runs them autonomously.
 // - The coordination-plan snapshot is read-only.
 // - Deliverable version history is immutable and read-only.
 // - The UI never overrides server-side authorization / permission ceilings.
@@ -22,9 +23,7 @@ import {
   reviewCoordinationPlan,
   authorizeCoordinationPlan,
   initiateExecution,
-  executeNextStep,
-  reviewStep,
-  aggregateDeliverable,
+  runAutonomously,
   reviewDeliverable,
   getExecutionStatus,
   listDeliverableVersions,
@@ -325,48 +324,21 @@ export function Coordination() {
     }
   }
 
-  async function doExecuteNext() {
+  async function doRun() {
+    // Autonomous run: executes every eligible step (in dependency order) and
+    // aggregates the deliverable for the owner's final review in one action.
     if (!plan || !execution) return;
-    setExecBusy("execute");
+    setExecBusy("run");
     setRevError("");
     setReviewMsg("");
     try {
-      await executeNextStep(plan.plan_id, execution.execution_id);
-      await loadExecutionStatus(plan.plan_id, execution.execution_id);
-    } catch (e) {
-      setRevError(errMsg(e, "Could not execute the next step."));
-    } finally {
-      setExecBusy(null);
-    }
-  }
-
-  async function doReviewStep(seq: number, decision: string) {
-    if (!plan || !execution) return;
-    setRevBusy(`step-${seq}-${decision}`);
-    setRevError("");
-    try {
-      await reviewStep(plan.plan_id, execution.execution_id, seq, decision);
-      await loadExecutionStatus(plan.plan_id, execution.execution_id);
-      setReviewMsg(`Step ${seq} ${decision.replace(/_/g, " ")}.`);
-    } catch (e) {
-      setRevError(errMsg(e, "Could not review the step."));
-    } finally {
-      setRevBusy(null);
-    }
-  }
-
-  async function doAggregate() {
-    if (!plan || !execution) return;
-    setRevBusy("aggregate");
-    setRevError("");
-    try {
-      await aggregateDeliverable(plan.plan_id, execution.execution_id);
+      await runAutonomously(plan.plan_id, execution.execution_id);
       await loadExecutionStatus(plan.plan_id, execution.execution_id);
       await loadVersions(plan.plan_id, execution.execution_id);
     } catch (e) {
-      setRevError(errMsg(e, "Could not aggregate the deliverable."));
+      setRevError(errMsg(e, "Could not run the execution."));
     } finally {
-      setRevBusy(null);
+      setExecBusy(null);
     }
   }
 
@@ -397,8 +369,14 @@ export function Coordination() {
                                         undefined, rework);
       setExecution((prev) => prev ? { ...prev, status: r.run_status } : prev);
       if (decision === "revision_requested") {
-        if (r.steps?.length) setReviewMsg(`Rework required on: ${r.steps.join(", ")}. Select and re-execute each step.`);
-        else setReviewMsg("Revision requested. Re-execute the affected steps to continue.");
+        if (r.steps?.length) {
+          setReviewMsg(`Rework required on: ${r.steps.join(", ")}. Re-running the affected steps…`);
+        } else {
+          setReviewMsg("Revision requested. Re-running the affected steps…");
+        }
+        setReworkSelected([]);
+        // Autonomous rework: re-run only the invalidated steps and re-aggregate.
+        await runAutonomously(plan.plan_id, execution.execution_id);
       } else {
         setReviewMsg(`Deliverable ${decision.replace(/_/g, " ")}.`);
       }
@@ -621,24 +599,17 @@ export function Coordination() {
             <div className="coord-exec" data-testid="coord-exec">
               <p className="muted">Execution: {execStatusLabel(execution.status)}</p>
               <div className="coord-actions">
-                <button className="btn btn--sm" data-testid="coord-exec-next"
-                  onClick={doExecuteNext} disabled={execBusy !== null ||
+                <button className="btn btn--primary btn--sm" data-testid="coord-run"
+                  onClick={doRun} disabled={execBusy !== null || execBusy === "run" ||
                     execution.status !== "running" || !hasRunnable(execution)}>
-                  {execBusy === "execute" ? "Executing…" : "Execute next eligible step"}
+                  {execBusy === "run" ? "Running…" : "Run all steps"}
                 </button>
               </div>
-              <StepList steps={planSteps} execution={execution} onReview={doReviewStep}
-                busy={revBusy} />
+              <StepList steps={planSteps} execution={execution} />
 
-              {execution.status === "ready_for_review" && (
+              {execution.status === "ready_for_review" && execution.deliverable?.status === "pending" && (
                 <div className="deliverable-review" data-testid="coord-deliv">
                   <h5 className="section-title">Consolidated deliverable</h5>
-                  <div className="coord-actions">
-                    <button className="btn btn--primary btn--sm" data-testid="coord-aggregate"
-                      onClick={doAggregate} disabled={revBusy !== null}>
-                      {revBusy === "aggregate" ? "Aggregating…" : "Aggregate deliverable"}
-                    </button>
-                  </div>
                   {execution.deliverable && execution.deliverable.status === "pending" && (
                     <div className="deliverable-actions">
                       <button className="btn btn--sm" data-testid="coord-accept"
@@ -671,7 +642,7 @@ export function Coordination() {
             execution.deliverable?.status === "revision_requested" && (
               <div className="deliverable-rework" data-testid="coord-revision-notice">
                 <p className="warning" role="alert">
-                  A revision was requested. Re-execute the invalidated steps one at a time, then re-aggregate.
+                  A revision was requested. Run again to re-execute the invalidated steps, then re-review.
                 </p>
               </div>
             )}
@@ -746,11 +717,9 @@ function blockedStep(execution?: ExecutionSummary | null): number | null {
   return rejected ? rejected.seq : null;
 }
 
-function StepList({ steps, execution, onReview, busy }: {
+function StepList({ steps, execution }: {
   steps: TeamGoalStep[];
   execution?: ExecutionSummary | null;
-  onReview?: (seq: number, decision: string) => void;
-  busy?: string | null;
 }) {
   if (!steps.length) return <Empty text="This plan has no steps." />;
   return (
@@ -758,36 +727,21 @@ function StepList({ steps, execution, onReview, busy }: {
       {steps.map((s) => {
         const cur = execution?.steps?.find((x) => x.seq === s.seq)?.status ?? s.status;
         const label = stepStatusLabel(cur);
-        const awaiting = cur === "awaiting_review";
         return (
           <li key={s.seq} className="list__item coord-step" data-testid={`coord-step-${s.seq}`}>
             <div className="coord-step__main">
               <span className="badge badge--neutral">{s.seq}</span>
               <span className="coord-step__agent">{humanizeAgent(s.agent_id)}</span>
               <span className="coord-step__resp">{s.responsibility || "—"}</span>
-              <span className={`badge badge--${cur === "accepted" ? "approved" : cur === "rejected" || cur === "failed" ? "rejected" : "neutral"}`}>
+              <span className={
+                `badge badge--${cur === "accepted" ? "approved"
+                  : cur === "rejected" || cur === "failed" ? "rejected" : "neutral"}`}>
                 {label}
               </span>
               {s.depends_on_seq != null && (
                 <span className="muted coord-step__dep">after step {s.depends_on_seq}</span>
               )}
             </div>
-            {awaiting && onReview && (
-              <div className="coord-step__actions">
-                <button className="btn btn--sm" data-testid={`coord-accept-${s.seq}`}
-                  onClick={() => onReview(s.seq, "accepted")} disabled={!!busy}>
-                  Accept
-                </button>
-                <button className="btn btn--sm btn--ghost" data-testid={`coord-revise-${s.seq}`}
-                  onClick={() => onReview(s.seq, "revision_requested")} disabled={!!busy}>
-                  Revise
-                </button>
-                <button className="btn btn--sm btn--danger-ghost" data-testid={`coord-reject-${s.seq}`}
-                  onClick={() => onReview(s.seq, "rejected")} disabled={!!busy}>
-                  Reject
-                </button>
-              </div>
-            )}
           </li>
         );
       })}

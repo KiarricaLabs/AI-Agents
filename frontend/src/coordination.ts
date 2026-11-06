@@ -176,6 +176,15 @@ export function executeNextStep(planId: string, executionId: string): Promise<an
   return post<any>(`${API}/team/goals/plans/${encodeURIComponent(planId)}/execution/${encodeURIComponent(executionId)}/step/execute`);
 }
 
+// Autonomous run (replaces per-step execution): runs every eligible step in
+// dependency order and aggregates the deliverable for your final review. This is
+// a single human action; nothing auto-advances outside of it.
+export function runAutonomously(planId: string, executionId: string): Promise<any> {
+  return post<any>(
+    `${API}/team/goals/plans/${encodeURIComponent(planId)}/execution/${encodeURIComponent(executionId)}/run`,
+  );
+}
+
 export function reviewStep(planId: string, executionId: string, seq: number,
                            decision: string, note?: string): Promise<StepReviewResult> {
   return post<StepReviewResult>(

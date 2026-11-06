@@ -407,6 +407,107 @@ class CoordinationExecutionService:
                 "status": STEP_AWAITING, "episode_id": episode_id,
                 "requires_review": True}
 
+    # ------------------------------------------------------------------ autonomous
+    def _run_autonomous_step(self, execution_id: str, plan_id: str, seq: int,
+                             agent: str, responsibility: str,
+                             ceiling: list) -> Dict[str, Any]:
+        """Run one step to an ACCEPTED conclusion (no human per-step gate).
+
+        Uses the same atomic claim + validated evidence path as execute_step, but
+        finalizes the output as ``accepted`` so the run can advance on its own.
+        A competing request cannot dispatch the same step twice (atomic claim).
+        """
+        now = _now()
+        episode_id = self.episodes.start_for_work(
+            "coordination_step", f"{plan_id}:{seq}", agent)["episode_id"]
+        with self.db.transaction() as c:
+            cur = c.execute(
+                "UPDATE coordination_step_outputs SET status=?, episode_id=?, updated_at=? "
+                "WHERE execution_id=? AND seq=? AND status IN ('pending','revision_requested','failed') "
+                "AND tenant_id=? AND user_id=?",
+                (STEP_IN_PROGRESS, episode_id, now, execution_id, seq,
+                 self.tenant_id, self.user_id))
+            if cur.rowcount == 0:
+                raise StepAlreadyClaimed(
+                    f"step {seq} was already claimed/executed; no duplicate dispatch")
+        accepted_context = self._accepted_context(plan_id, execution_id)
+        try:
+            result = self._dispatch(agent, responsibility, accepted_context,
+                                    effective_permissions=ceiling)
+        except Exception as e:
+            self._mark_step(plan_id, execution_id, seq, "failed",
+                            error=(str(e)[:500] or "dispatch failed"))
+            raise AgentOutputInvalid(f"agent dispatch failed: {e}") from e
+        ok, err = validate_output(agent, result)
+        if not ok:
+            self._mark_step(plan_id, execution_id, seq, "failed",
+                            error=(err[:500] or "invalid output"))
+            raise AgentOutputInvalid(f"invalid agent output: {err}") from None
+        summary = str(result.get("reply") or "").strip() or str(result)[:200]
+        evidence = {"summary": summary[:400]}
+        if not self.episodes.complete_with_evidence(episode_id, evidence):
+            self._mark_step(plan_id, execution_id, seq, "failed",
+                            error="episode could not be completed with evidence")
+            raise AgentOutputInvalid("episode could not be completed with evidence")
+        with self.db.transaction() as c:
+            c.execute(
+                "UPDATE coordination_step_outputs SET status=?, output_json=?, evidence_json=?, updated_at=? "
+                "WHERE execution_id=? AND seq=? AND tenant_id=? AND user_id=?",
+                (STEP_TERMINAL_ACCEPTED, json.dumps(result), json.dumps(evidence), now,
+                 execution_id, seq, self.tenant_id, self.user_id))
+        return {"seq": seq, "agent_id": agent, "status": STEP_TERMINAL_ACCEPTED}
+
+    def run_autonomously(self, execution_id: str, approver_user_id: str) -> Dict[str, Any]:
+        """Autonomous run: execute every eligible step in dependency order,
+        auto-accept validated outputs, then aggregate the deliverable for the
+        owner\u2019s final review. Replaces the per-step manual flow. Owner-only and
+        human-launched; no idle background/scheduler work.
+
+        Any output already left ``awaiting_review`` (from an earlier manual run)
+        is adopted as accepted. Rework and aggregate follow the existing evidence
+        and permission-ceiling rules.
+        """
+        if approver_user_id != self.user_id:
+            raise ReviewNotPermitted("only the owner may run this execution")
+        run = self._get_execution(execution_id)
+        if run["status"] in (RUN_COMPLETED, RUN_REJECTED):
+            raise ExecutionNotRunnable(
+                f"execution is terminal (status={run['status']})")
+        plan_id = run["plan_id"]
+        # Adopt any outputs left 'awaiting_review' from a prior manual run.
+        for s in self._get_plan_steps(plan_id):
+            out = self._step_output(execution_id, s["seq"])
+            if out and out.get("status") == STEP_AWAITING:
+                self._mark_step(plan_id, execution_id, s["seq"], STEP_TERMINAL_ACCEPTED)
+
+        ran: List[Dict[str, Any]] = []
+        while True:
+            eligible = self.next_eligible_step(execution_id)
+            if eligible is None:
+                break
+            seq = eligible["seq"]
+            step_row = self._plan_step_row(plan_id, seq)
+            ceiling = []
+            if step_row and step_row.get("effective_permissions"):
+                try:
+                    ceiling = json.loads(step_row["effective_permissions"])
+                except (TypeError, ValueError):
+                    ceiling = []
+            ran.append(self._run_autonomous_step(
+                execution_id, plan_id, seq, eligible["agent_id"],
+                eligible["responsibility"], ceiling))
+
+        all_accepted = self._all_accepted(execution_id, plan_id)
+        result: Dict[str, Any] = {
+            "execution_id": execution_id, "ran": ran,
+            "all_accepted": all_accepted,
+            "run_status": self._get_execution(execution_id)["status"],
+        }
+        if all_accepted:
+            result["deliverable"] = self.aggregate(execution_id, approver_user_id)
+            result["run_status"] = self._get_execution(execution_id)["status"]
+        return result
+
     def _plan_step_row(self, plan_id: str, seq: int) -> Optional[Dict[str, Any]]:
         rows = self.db.query(
             "SELECT * FROM coordination_plan_steps WHERE plan_id=? AND tenant_id=? AND user_id=? "

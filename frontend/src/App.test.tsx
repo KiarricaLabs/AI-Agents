@@ -2282,6 +2282,24 @@ describe("Coordination panel (component)", () => {
         s.deliverable = null; s.versions = [];
         return ok({ execution_id: s.executionId, plan_id: "p1", team_goal_id: "g1", status: "running", reused: false });
       }
+      if (method === "POST" && url.endsWith("/run")) {
+        // Autonomous run: all eligible steps run + auto-accept, then aggregate.
+        s.steps.forEach((st: any) => { st.status = "accepted"; });
+        s.runStatus = "ready_for_review";
+        s.deliverable = {
+          deliverable_id: "d1", execution_id: s.executionId, title: "Launch brief",
+          content: { expected_deliverable: "Launch brief", steps: [] },
+          status: "pending", review_note: null, reused: false,
+        };
+        s.versions = [{
+          version_id: "v1", deliverable_id: "d1", execution_id: s.executionId,
+          version: 1, content: s.deliverable.content, status: "pending",
+          review_note: null, revision_of: null,
+          created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+        }];
+        return ok({ execution_id: s.executionId, all_accepted: true,
+                    run_status: "ready_for_review", deliverable: s.deliverable });
+      }
       if (method === "POST" && url.endsWith("/step/execute")) {
         const el = nextEligible(s);
         if (!el) return fail({ detail: "no eligible step" }, 409);
@@ -2359,69 +2377,57 @@ describe("Coordination panel (component)", () => {
     fireEvent.click(screen.getByTestId(testId));
   }
 
-  it("executes one step at a time and never auto-advances", async () => {
+  it("runs every eligible step autonomously and reaches deliverable review", async () => {
     globalThis.fetch = coordBackend() as any;
     await openToExecution();
-    await waitFor(() => expect(screen.getByTestId("coord-exec-next")).toBeEnabled());
-    await clickEnabled("coord-exec-next");
-    // Step 1 is ready for review; step 2 must NOT be auto-dispatched.
-    await screen.findByTestId("coord-accept-1");
-    expect(screen.queryByTestId("coord-accept-2")).not.toBeInTheDocument();
-    await clickEnabled("coord-accept-1");
-    await waitFor(() => expect(screen.queryByTestId("coord-accept-1")).not.toBeInTheDocument());
-    // Accepting step 1 must not dispatch step 2 either.
-    expect(screen.queryByTestId("coord-accept-2")).not.toBeInTheDocument();
-    await clickEnabled("coord-exec-next");
-    await screen.findByTestId("coord-accept-2");
+    await runAll();
+    // No per-step review controls appear — steps auto-accept.
     expect(screen.queryByTestId("coord-accept-1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coord-revise-1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("coord-reject-1")).not.toBeInTheDocument();
+    // The deliverable (final review) is the human gate.
+    expect(screen.getByTestId("coord-deliv")).toBeInTheDocument();
+    expect(screen.getAllByTestId(/^coord-step-/).length).toBe(2);
   });
 
-  it("supports step revision (request revision on a step)", async () => {
+  it("offers a single Run control, not per-step execute", async () => {
     globalThis.fetch = coordBackend() as any;
     await openToExecution();
-    await clickEnabled("coord-exec-next");
-    await screen.findByTestId("coord-revise-1");
-    await clickEnabled("coord-revise-1");
-    await waitFor(() => expect(screen.queryByTestId("coord-revise-1")).not.toBeInTheDocument());
-    expect(screen.getByTestId("coord-step-1").textContent).toContain("Revision requested");
-    // A revised step is re-runnable: the execute action stays available.
-    await waitFor(() => expect(screen.getByTestId("coord-exec-next")).toBeEnabled());
+    // One autonomous action replaces per-step execution.
+    expect(await screen.findByTestId("coord-run")).toBeInTheDocument();
+    expect(screen.queryByTestId("coord-exec-next")).not.toBeInTheDocument();
   });
 
-  async function aggregateAll() {
-    await clickEnabled("coord-exec-next");
-    await clickEnabled("coord-accept-1");
-    await clickEnabled("coord-exec-next");
-    await clickEnabled("coord-accept-2");
-    await screen.findByTestId("coord-aggregate");
-    await clickEnabled("coord-aggregate");
+  async function runAll() {
+    await clickEnabled("coord-run");
+    await screen.findByTestId("coord-deliv");
   }
 
   it("accepts the consolidated deliverable and completes the run", async () => {
     globalThis.fetch = coordBackend() as any;
     await openToExecution();
-    await aggregateAll();
+    await runAll();
     await clickEnabled("coord-accept"); // deliverable accept button
     await waitFor(() =>
       expect(screen.getByTestId("coord-exec").textContent).toContain("Completed"));
   });
 
-  it("requests a deliverable revision with selected rework steps", async () => {
+  it("requests a deliverable revision and autonomously re-runs rework", async () => {
     globalThis.fetch = coordBackend() as any;
     await openToExecution();
-    await aggregateAll();
+    await runAll();
     await screen.findByTestId("coord-rework-1");
     fireEvent.click(screen.getByTestId("coord-rework-1")); // select step 1 to rework
     await clickEnabled("coord-revision");
-    // Run returns to running; invalidated step 1 is revision_requested and re-runnable.
-    await screen.findByTestId("coord-revision-notice");
-    await waitFor(() => expect(screen.getByTestId("coord-exec-next")).toBeEnabled());
+    // Revision is recorded, then the affected steps re-run autonomously and the
+    // deliverable returns to your review gate.
+    await waitFor(() => expect(screen.getByTestId("coord-accept")).toBeEnabled());
   });
 
   it("rejects the deliverable into a terminal run state", async () => {
     globalThis.fetch = coordBackend() as any;
     await openToExecution();
-    await aggregateAll();
+    await runAll();
     await clickEnabled("coord-reject");
     await waitFor(() =>
       expect(screen.getByTestId("coord-exec").textContent).toContain("Rejected"));
@@ -2430,7 +2436,7 @@ describe("Coordination panel (component)", () => {
   it("renders immutable deliverable version history and version detail", async () => {
     globalThis.fetch = coordBackend() as any;
     await openToExecution();
-    await aggregateAll();
+    await runAll();
     const versionBtn = await screen.findByTestId("coord-version-v1");
     expect(versionBtn.textContent).toContain("v1");
     fireEvent.click(versionBtn);

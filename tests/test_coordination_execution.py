@@ -120,6 +120,58 @@ class CoordinationExecutionServiceTest(unittest.TestCase):
         # Accepting must NOT auto-dispatch the next step -> still only step 1.
         self.svc.review_step(run, 1, "accepted", "u1")
 
+    # ---------------------------------------------------------- autonomous run
+    def test_run_autonomously_runs_all_steps_and_aggregates(self):
+        tg, ids, plan_id, run = self._start_run_and_multi()  # 2 dependent steps
+        res = self.svc.run_autonomously(run, "u1")
+        self.assertTrue(res["all_accepted"])
+        self.assertEqual(len(res["ran"]), 2)
+        self.assertEqual([st["status"] for st in res["ran"]], ["accepted", "accepted"])
+        for seq in (1, 2):
+            o = self.svc._step_output(run, seq)
+            self.assertEqual(o["status"], "accepted")
+            self.assertTrue(o["evidence_json"])
+            self.assertTrue(o["output_json"])
+        # Deliverable auto-aggregated to pending; run awaits final review.
+        self.assertEqual(res["deliverable"]["status"], "pending")
+        self.assertEqual(res["run_status"], "ready_for_review")
+
+    def test_run_autonomously_then_human_approves_deliverable(self):
+        tg, ids, plan_id, run = self._start_run_and_multi()
+        res = self.svc.run_autonomously(run, "u1")
+        self.assertTrue(res["all_accepted"])
+        self.svc.review_deliverable(run, "accepted", "u1")
+        self.assertEqual(self.svc._get_execution(run)["status"], "completed")
+
+    def test_run_autonomously_no_duplicate_dispatch_on_repeat(self):
+        tg, ids, plan_id, run = self._start_run_and_multi()
+        self.svc.run_autonomously(run, "u1")
+        before = self.db.query("SELECT COUNT(*) AS n FROM episodes")[0]["n"]
+        self.svc.run_autonomously(run, "u1")
+        after = self.db.query("SELECT COUNT(*) AS n FROM episodes")[0]["n"]
+        self.assertEqual(before, after)  # no new dispatches on a repeated run
+
+    def test_run_autonomously_non_owner_denied(self):
+        tg, ids, plan_id, run = self._start_run_and_multi()
+        with self.assertRaises(Exception):
+            self.svc.run_autonomously(run, "someone-else")
+
+    def test_run_autonomously_terminal_raises(self):
+        tg, ids, plan_id, run = self._start_run_and_multi()
+        self.svc.run_autonomously(run, "u1")
+        self.svc.review_deliverable(run, "rejected", "u1")
+        with self.assertRaises(ExecutionNotRunnable):
+            self.svc.run_autonomously(run, "u1")
+
+    def test_run_autonomously_revision_reruns_rework_steps(self):
+        tg, ids, plan_id, run = self._start_run_and_multi()
+        self.svc.run_autonomously(run, "u1")
+        self.svc.review_deliverable(run, "revision_requested", "u1", rework_steps=[1])
+        self.svc.run_autonomously(run, "u1")  # re-runs step 1 + dependent step 2
+        for seq in (1, 2):
+            self.assertEqual(self.svc._step_output(run, seq)["status"], "accepted")
+        self.assertEqual(self.svc._get_execution(run)["status"], "ready_for_review")
+
     def test_eligibility_only_after_dependencies_accepted(self):
         tg, ids, plan_id, run = self._start_run_and_multi()
         # step 2 depends on step 1; step 1 runs first, then step 2 runs.
