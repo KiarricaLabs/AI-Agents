@@ -7,6 +7,7 @@ import { ReviewCenter } from "./review_center";
 import { TeamMemory } from "./team_memory";
 import { TeamChat } from "./team_chat";
 import { Pipeline } from "./pipeline";
+import { TeamStatus } from "./team_status";
 
 const API = "http://127.0.0.1:8001";
 
@@ -3130,6 +3131,52 @@ describe("Pipeline (component)", () => {
     expect(screen.getByTestId("pipeline-goal-projects")).toHaveClass("pipeline__stage--done");
     fireEvent.click(screen.getByTestId("pipeline-goto-goal-projects"));
     expect(jumped).toBe("projects");
+  });
+});
+
+describe("TeamStatus (component)", () => {
+  function backend(progress: any[], blocked: any[]) {
+    return vi.fn(async (url: string) => {
+      if (url.includes("/team/progress")) return ok({ items: progress });
+      if (url.includes("/team/comm/blocked")) return ok({ items: blocked });
+      return ok({ items: [] });
+    });
+  }
+
+  it("renders latest agent states, recent activity, and blocked coordination", async () => {
+    globalThis.fetch = backend(
+      [
+        { id: "p1", agent_id: "strategist", status: "completed", detail: "plan ready" },
+        { id: "p2", agent_id: "tutor", status: "completed", detail: "explained the market" },
+        { id: "p3", agent_id: "soundboard", status: "working", detail: "reflecting on ideas" },
+      ],
+      [
+        { id: "c1", from_agent: "workspace_architect", to_agent: "communications", content: "depth limit reached" },
+      ]
+    ) as any;
+    render(<TeamStatus />);
+    await screen.findByTestId("team-status");
+    // agent state chips reflect the latest status per agent
+    expect(screen.getByTestId("team-status-agent-strategist")).toHaveTextContent("completed");
+    expect(screen.getByTestId("team-status-agent-soundboard")).toHaveTextContent("working");
+    // recent activity entries
+    expect(screen.getByTestId("team-status-progress-0")).toHaveTextContent("plan ready");
+    // blocked coordination surfaced to the human
+    expect(screen.getByTestId("team-status-blocked-0"))
+      .toHaveTextContent(/Workspace Architect → Communications/);
+  });
+
+  it("shows empty and offline states", async () => {
+    globalThis.fetch = backend([], []) as any;
+    render(<TeamStatus />);
+    await screen.findByTestId("team-status");
+    expect(screen.getByTestId("team-status-agents-empty")).toBeInTheDocument();
+    expect(screen.getByTestId("team-status-progress-empty")).toBeInTheDocument();
+    expect(screen.getByTestId("team-status-blocked-empty")).toBeInTheDocument();
+
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error("offline"))) as any;
+    render(<TeamStatus />);
+    expect(await screen.findByText("Could not load team status.")).toBeInTheDocument();
   });
 });
 

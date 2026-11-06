@@ -4,6 +4,7 @@ import { Markdown } from "./markdown";
 import { KNOWN_SAMPLE_IDS } from "./knownSamples";
 import { statusLabel, priorityText } from "./uiText";
 import { Coordination } from "./coordination_panel";
+import { TeamStatus } from "./team_status";
 import { ReviewCenter } from "./review_center";
 import { proposeTeamGoal, validateTeamGoalDraft } from "./coordination";
 import { TeamMemory } from "./team_memory";
@@ -2143,6 +2144,7 @@ export default function App() {
 
             <Pipeline onJump={setTab} />
             <Coordination />
+            <TeamStatus />
             <ReviewCenter onOpen={() => setTab("home")} />
           </section>
         )}
