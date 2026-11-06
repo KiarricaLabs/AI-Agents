@@ -8,7 +8,7 @@
 // agent is dispatched after a single send beyond the existing routing.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API, humanizeAgent, proposeTeamGoal,
-  draftTeamGoalFromMessage, type TeamGoalDraft } from "./coordination";
+  draftTeamGoalFromMessage, validateTeamGoalDraft, type TeamGoalDraft } from "./coordination";
 import { Markdown } from "./markdown";
 
 const THREAD_KEY = "ai-team-shared-thread";
@@ -367,25 +367,59 @@ export function TeamChat() {
     setDelegMsg("");
     setDelegDraft(null);
     try {
-      const parsed = await draftTeamGoalFromMessage(draft, "workspace_architect");
+      let parsed = await draftTeamGoalFromMessage(draft, "workspace_architect");
       if (!parsed || !parsed.title || !(parsed.steps || []).length) {
         setDelegMsg("Could not turn that into a team plan (no steps found). Try phrasing it as a goal with actions.");
         return;
       }
       setDelegDraft(parsed);
+
+      // Capability/delegation validation BEFORE proposing (closes the T2-C-8
+      // gap): auto-reassign invalid steps to a suggested capability-matched,
+      // delegable agent, and be explicit when a step can\u2019t be fulfilled.
+      const coordinator = parsed.coordinator_agent || "workspace_architect";
+      let steps = parsed.steps;
+      let note = "";
+      try {
+        const val = await validateTeamGoalDraft(coordinator, parsed.steps);
+        if (!val.plan_valid) {
+          const reassignments: string[] = [];
+          let blocking = "";
+          steps = val.steps.map((vs) => {
+            if (vs.valid) return { seq: vs.seq, agent_id: vs.agent_id,
+              responsibility: vs.responsibility, depends_on_seq: (vs as any).depends_on_seq ?? null };
+            if (vs.suggested_agent_id) {
+              reassignments.push(`step ${vs.seq}: ${humanizeAgent(vs.agent_id)} \u2192 ${humanizeAgent(vs.suggested_agent_id)}`);
+              return { seq: vs.seq, agent_id: vs.suggested_agent_id, responsibility: vs.responsibility,
+                depends_on_seq: (vs as any).depends_on_seq ?? null };
+            }
+            blocking = vs.error || `step ${vs.seq} cannot be assigned`;
+            return { seq: vs.seq, agent_id: vs.agent_id, responsibility: vs.responsibility,
+              depends_on_seq: (vs as any).depends_on_seq ?? null };
+          });
+          if (blocking) {
+            setDelegMsg(`Could not delegate: ${blocking}. No agent the coordinator (${humanizeAgent(coordinator)}) can delegate to has that capability. Pick a different coordinator or split the goal.`);
+            return;
+          }
+          if (reassignments.length) {
+            parsed = { ...parsed, steps: steps };
+            note = `Auto-assigned ${reassignments.length} ${reassignments.length === 1 ? "step" : "steps"} to capable agents (${humanizeAgent(coordinator)} can delegate to them): ${reassignments.join("; ")}. `;
+          }
+        }
+      } catch { /* validation unavailable — propose as-is; plan review will still enforce */ }
+
       const created = await proposeTeamGoal({
         title: parsed.title,
-        coordinator_agent: parsed.coordinator_agent || "workspace_architect",
+        coordinator_agent: coordinator,
         thread_id: threadId || undefined,
         summary: parsed.summary ?? undefined,
         expected_deliverable: parsed.expected_deliverable ?? undefined,
-        steps: parsed.steps,
+        steps,
       });
-      setDelegMsg(
-        created.status === "proposed"
+      setDelegMsg(note +
+        (created.status === "proposed"
           ? "TeamGoal proposed (status: proposed). In the AI Team panel: approve it, authorize the plan, then \u201cRun all\u201d \u2014 agents run their steps and you approve the final deliverable."
-          : `TeamGoal created (${created.status}). Open the AI Team panel to authorize and run.`,
-      );
+          : `TeamGoal created (${created.status}). Open the AI Team panel to authorize and run.`));
     } catch (e) {
       const detail = (e as any)?.message || (e as any)?.detail;
       setDelegMsg(detail ? `Could not delegate: ${detail}` : "Could not delegate. Please try again.");

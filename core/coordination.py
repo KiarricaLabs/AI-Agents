@@ -89,6 +89,82 @@ class CoordinationPlanBuilder:
                 return True
         return False
 
+    def _delegable(self, coordinator: str, agent: str) -> bool:
+        try:
+            ok, _ = self.delegation.can_delegate(coordinator, agent)
+            return bool(ok)
+        except Exception:  # pragma: no cover
+            return False
+
+    def validate_draft(self, coordinator: str,
+                       steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Non-persistent capability/delegation validation of a plan DRAFT.
+
+        Mirrors the exact rules the builder applies at authorize time, so the UI
+        can warn / auto-reassign BEFORE proposing (closing the T2-C-8 gap where
+        wrong responsibilities or undeclared delegation only fail at authorize).
+        For every invalid step it also lists ``valid_agent_ids`` (agents that are
+        delegable from the coordinator AND have a capability for the
+        responsibility) plus a deterministic ``suggested_agent_id``.
+        """
+        coordinator = (coordinator or "").strip().lower()
+        if coordinator not in AGENT_SLUGS:
+            raise CoordinationInvalidPlan(f"unknown coordinator: {coordinator}")
+        try:
+            self._validate_sequence(steps)
+        except CoordinationInvalidPlan:
+            raise
+
+        plan_steps: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        for s in steps:
+            agent = (s.get("agent_id") or "").strip().lower()
+            responsibility = s.get("responsibility") or ""
+            seq = int(s.get("seq"))
+            if agent not in AGENT_SLUGS:
+                errors.append(f"step {seq}: unknown agent '{agent}'")
+                plan_steps.append({
+                    **s, "agent_id": agent, "valid": False,
+                    "capability_ok": False, "delegation_ok": False,
+                    "error": f"unknown agent '{agent}'",
+                    "valid_agent_ids": [], "suggested_agent_id": None,
+                })
+                continue
+
+            capability_ok = self._has_relevant_capability(agent, responsibility)
+            delegation_ok = self._delegable(coordinator, agent)
+
+            candidates = [
+                a for a in AGENT_SLUGS
+                if self._delegable(coordinator, a)
+                and self._has_relevant_capability(a, responsibility)
+            ]
+            valid = capability_ok and delegation_ok
+            err = None
+            if not capability_ok:
+                err = (f"step {seq}: agent '{agent}' lacks a relevant capability "
+                       f"for the responsibility")
+            elif not delegation_ok:
+                err = (f"step {seq}: delegation from coordinator '{coordinator}' "
+                       f"to '{agent}' is not authorized (not declared)")
+            if err:
+                errors.append(err)
+            suggested = None
+            if not valid and candidates:
+                suggested = candidates[0] if candidates[0] != agent else (candidates[1] if len(candidates) > 1 else candidates[0])
+            plan_steps.append({
+                **s,
+                "agent_id": agent,
+                "capability_ok": capability_ok,
+                "delegation_ok": delegation_ok,
+                "valid": valid,
+                "error": err,
+                "valid_agent_ids": candidates,
+                "suggested_agent_id": suggested,
+            })
+        return {"coordinator": coordinator, "steps": plan_steps,
+                "plan_valid": not errors, "errors": errors}
+
     # ----------------------------------------------------------------- build
     def build(self, team_goal_id: str) -> Dict[str, Any]:
         """Build a reviewable coordination plan from an approved TeamGoal.

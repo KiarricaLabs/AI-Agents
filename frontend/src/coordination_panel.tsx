@@ -25,6 +25,7 @@ import {
   initiateExecution,
   runAutonomously,
   reviewDeliverable,
+  validateTeamGoalDraft,
   getExecutionStatus,
   listDeliverableVersions,
   getDeliverableVersion,
@@ -234,6 +235,19 @@ export function Coordination() {
           depends_on_seq: s.depends_on_seq ?? undefined,
         })),
       };
+      // Capability/delegation guidance BEFORE proposing (T2-C-8 gap): surface
+      // which steps can\u2019t be fulfilled by a delegable, capable agent so the
+      // author corrects them now instead of failing at plan authorization.
+      try {
+        const val = await validateTeamGoalDraft(formCoordinator, payload.steps as any[]);
+        if (!val.plan_valid) {
+          setCreateError(
+            "This plan can\u2019t run yet \u2014 " +
+            val.errors[0] +
+            ". Assign each step to an agent the coordinator can delegate to with a matching capability (or change the coordinator).");
+          return;
+        }
+      } catch { /* server unavailable — fall through to submit; plan review still enforces */ }
       const r = await proposeTeamGoal(payload);
       setCreateSuccess(
         `Team goal \u201c${formTitle.trim()}\u201d proposed (${r.status}). Approval is a separate human step.`);

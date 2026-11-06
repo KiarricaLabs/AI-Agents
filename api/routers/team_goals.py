@@ -43,6 +43,7 @@ from core.coordination_plan import (
     CoordinationPlanInvalid,
     CoordinationPlanPermissionError,
 )
+from core.coordination import CoordinationPlanBuilder
 
 router = APIRouter(prefix="/team/goals", tags=["team-goals"])
 _db = Database(path=DB_PATH, tenant_id=DEFAULT_TENANT)
@@ -99,6 +100,32 @@ class ProposeGoalBody(BaseModel):
     expected_deliverable: Optional[str] = None
     steps: Optional[List[ProposeStep]] = None
     idempotency_key: Optional[str] = None
+
+
+class ValidateGoalBody(BaseModel):
+    coordinator_agent: str
+    steps: List[ProposeStep]
+
+
+@router.post("/validate")
+def validate_plan_draft(body: ValidateGoalBody, request: Request):
+    """Non-persistent capability/delegation validation of a TeamGoal DRAFT.
+
+    Returns per-step capability_ok / delegation_ok / valid / error plus the set
+    of valid (delegable + capable) agents and a suggested agent for each invalid
+    step, so the UI can guide or auto-reassign BEFORE proposing. Never persists
+    or authorizes anything; exact same rules the plan builder uses at authorize.
+    """
+    t, u = _identity(request)
+    _require_human(request)
+    try:
+        steps = [{"seq": s.seq, "agent_id": s.agent_id,
+                  "responsibility": s.responsibility,
+                  "depends_on_seq": s.depends_on_seq} for s in body.steps]
+        return CoordinationPlanBuilder(_db, t, u).validate_draft(
+            body.coordinator_agent, steps)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.post("/draft")

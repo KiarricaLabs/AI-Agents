@@ -2929,6 +2929,14 @@ describe("Team Chat (component)", () => {
           steps: [{ seq: 1, agent_id: "strategist", responsibility: "Research the Bay Area", depends_on_seq: null }],
         });
       }
+      if (url.endsWith("/team/goals/validate")) {
+        return ok({
+          coordinator: "workspace_architect",
+          steps: [{ seq: 1, agent_id: "strategist", responsibility: "Research the Bay Area",
+            capability_ok: true, delegation_ok: true, valid: true, error: null }],
+          plan_valid: true, errors: [],
+        });
+      }
       if (url.endsWith("/team/goals") && init?.method === "POST") {
         return ok({ team_goal_id: "tg-d", status: "proposed", reused: false });
       }
@@ -2948,6 +2956,50 @@ describe("Team Chat (component)", () => {
     expect(urls.some((u: string) => u.includes("/approve"))).toBe(false);
     expect(urls.some((u: string) => u.includes("/coordination-plan/authorize"))).toBe(false);
     expect(urls.some((u: string) => u.endsWith("/run"))).toBe(false);
+  });
+
+  it("auto-reassigns an invalid delegated step to a capable agent before proposing", async () => {
+    localStorage.removeItem("ai-team-shared-thread");
+    let proposedSteps: any = null;
+    const fn = vi.fn(async (url: string, init?: any) => {
+      if (url.endsWith("/team/threads")) return ok({ thread_id: "team-1" });
+      if (url.includes("/memory/conversation?")) return ok({ items: [] });
+      if (url.endsWith("/team/goals/draft")) {
+        return ok({
+          title: "Launch plan", coordinator_agent: "workspace_architect",
+          summary: null, expected_deliverable: "Launch brief",
+          steps: [{ seq: 1, agent_id: "communications", responsibility: "Prioritize the launch", depends_on_seq: null }],
+        });
+      }
+      if (url.endsWith("/team/goals/validate")) {
+        // communications undeclared -> suggest strategist (capable + delegable).
+        return ok({
+          coordinator: "workspace_architect",
+          steps: [{ seq: 1, agent_id: "communications", responsibility: "Prioritize the launch",
+            capability_ok: false, delegation_ok: false, valid: false,
+            error: "step 1: delegation not authorized",
+            valid_agent_ids: ["strategist"], suggested_agent_id: "strategist" }],
+          plan_valid: false, errors: ["step 1: delegation not authorized"],
+        });
+      }
+      if (url.endsWith("/team/goals") && init?.method === "POST") {
+        proposedSteps = JSON.parse(init.body).steps;
+        return ok({ team_goal_id: "tg-d", status: "proposed", reused: false });
+      }
+      return ok({ items: [] });
+    });
+    globalThis.fetch = fn as any;
+    render(<TeamChat />);
+    await screen.findByTestId("team-chat-input");
+    fireEvent.click(screen.getByTestId("mode-delegate"));
+    fireEvent.change(screen.getByTestId("team-chat-input"), { target: { value: "goal: Launch the plan" } });
+    fireEvent.click(screen.getByTestId("team-chat-delegate"));
+    const msg = await screen.findByTestId("delegate-msg");
+    expect(msg.textContent).toContain("proposed");
+    expect(msg.textContent).toMatch(/auto-assigned/i);
+    // Proposed step was reassigned to the suggested capable agent.
+    expect(proposedSteps).toBeTruthy();
+    expect(proposedSteps[0].agent_id).toBe("strategist");
   });
 });
 

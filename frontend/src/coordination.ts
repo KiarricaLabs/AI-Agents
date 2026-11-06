@@ -285,6 +285,38 @@ export function draftTeamGoalFromMessage(message: string, coordinator_agent: str
   return post<TeamGoalDraft>(`${API}/team/goals/draft`, { message, coordinator_agent });
 }
 
+export interface ValidatedDraftStep {
+  seq: number;
+  agent_id: string;
+  responsibility?: string | null;
+  capability_ok: boolean;
+  delegation_ok: boolean;
+  valid: boolean;
+  error?: string | null;
+  valid_agent_ids?: string[];
+  suggested_agent_id?: string | null;
+}
+
+export interface TeamGoalDraftValidation {
+  coordinator: string;
+  steps: ValidatedDraftStep[];
+  plan_valid: boolean;
+  errors: string[];
+}
+
+// Non-persistent capability/delegation validation of a TeamGoal draft. Lets the
+// UI guide/auto-reassign BEFORE proposing (closing the T2-C-8 gap where wrong
+// responsibilities or undeclared delegation only failed at authorize).
+export function validateTeamGoalDraft(
+  coordinator: string,
+  steps: ProposeStepInput[],
+): Promise<TeamGoalDraftValidation> {
+  return post<TeamGoalDraftValidation>(`${API}/team/goals/validate`, {
+    coordinator_agent: coordinator,
+    steps,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Phase 7 §13 — Review & Action Center
 // ---------------------------------------------------------------------------

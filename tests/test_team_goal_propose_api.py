@@ -197,6 +197,55 @@ class ProposeAPITest(unittest.TestCase):
         r = self.client.post("/team/goals", json=body, headers=self._h(user=other))
         self.assertEqual(r.status_code, 404, r.text)
 
+    # ---------------------------------------------------------- validate draft
+    def _valid_steps(self):
+        return [{"seq": 1, "agent_id": "strategist", "responsibility": "Plan the research"},
+                {"seq": 2, "agent_id": "strategist", "responsibility": "Prioritize findings",
+                 "depends_on_seq": 1}]
+
+    def test_validate_draft_reports_valid_plan(self):
+        r = self.client.post("/team/goals/validate", headers=self._h(), json={
+            "coordinator_agent": "workspace_architect", "steps": self._valid_steps()})
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertTrue(body["plan_valid"])
+        self.assertEqual([s["valid"] for s in body["steps"]], [True, True])
+
+    def test_validate_draft_flags_undeclared_delegation(self):
+        # communications is NOT delegable from workspace_architect -> invalid,
+        # with no valid candidate (no delegable agent has 'draft' capability).
+        r = self.client.post("/team/goals/validate", headers=self._h(), json={
+            "coordinator_agent": "workspace_architect",
+            "steps": [{"seq": 1, "agent_id": "communications", "responsibility": "Draft messaging"}]})
+        self.assertEqual(r.status_code, 200, r.text)
+        st = r.json()["steps"][0]
+        self.assertFalse(st["valid"])
+        self.assertFalse(st["delegation_ok"])
+        self.assertEqual(st["suggested_agent_id"], None)
+        self.assertEqual(st["valid_agent_ids"], [])
+        self.assertIn("not authorized", st["error"])
+
+    def test_validate_draft_suggests_capable_delegable_agent(self):
+        # 'Prioritize' responsibility matched to strategist; if authored with an
+        # undeclared agent that still has no suggestion, the endpoint is honest.
+        r = self.client.post("/team/goals/validate", headers=self._h(), json={
+            "coordinator_agent": "workspace_architect",
+            "steps": [{"seq": 1, "agent_id": "bogus", "responsibility": "Plan the research"}]})
+        self.assertEqual(r.status_code, 200, r.text)
+        st = r.json()["steps"][0]
+        self.assertFalse(st["valid"])
+        self.assertIn("unknown agent", st["error"])
+
+    def test_validate_draft_unknown_coordinator_422(self):
+        r = self.client.post("/team/goals/validate", headers=self._h(), json={
+            "coordinator_agent": "bogus", "steps": self._valid_steps()})
+        self.assertEqual(r.status_code, 422, r.text)
+
+    def test_validate_draft_non_human_403(self):
+        r = self.client.post("/team/goals/validate", headers=self._h(role="agent"), json={
+            "coordinator_agent": "workspace_architect", "steps": self._valid_steps()})
+        self.assertEqual(r.status_code, 403, r.text)
+
 
 if __name__ == "__main__":
     unittest.main()
