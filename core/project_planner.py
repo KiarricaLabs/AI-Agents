@@ -38,7 +38,7 @@ class StructuredProjectPlanner:
         self.tenant_id = tenant_id
         self.user_id = user_id
         self.router = router or ModelRouter(
-            timeout=int(os.getenv("PAT_PLANNER_TIMEOUT_SECONDS", "90")),
+            timeout=int(os.getenv("PAT_PLANNER_TIMEOUT_SECONDS", "180")),
             retries=1,
         )
         self.profile_path = Path(BASE_DIR) / "business_profile.md"

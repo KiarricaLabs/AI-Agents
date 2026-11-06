@@ -118,7 +118,10 @@ class ModelRouter:
                     text = self._generate_once(
                         model, prompt, system, json_format=True, json_schema=json_schema)
                 else:
-                    text = self._generate_once(model, prompt, system)
+                    if json_schema is not None:
+                        text = self._generate_once(model, prompt, system, json_schema=json_schema)
+                    else:
+                        text = self._generate_once(model, prompt, system)
                 # Empty/whitespace-only output is a failure, never a successful
                 # reply; it is retried within the bounded window.
                 if not text or not text.strip():

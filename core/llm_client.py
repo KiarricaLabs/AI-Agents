@@ -19,10 +19,14 @@ class LLMClient:
     def complete(self, prompt: str, system: str = "", timeout: int = 120,
                  format_json: bool = False, json_schema: Optional[dict] = None) -> str:
         if self.provider == "ollama":
-            payload = {"model": self.model, "prompt": prompt, "system": system, "stream": False}
+            # keep_alive keeps the model resident across a multi-step run, avoiding
+            # the ~20-25s reload warmup on every agent call.
+            keep_alive = os.getenv("PAT_LLM_KEEP_ALIVE", "30m")
+            payload = {"model": self.model, "prompt": prompt, "system": system,
+                       "stream": False, "keep_alive": keep_alive}
             if json_schema is not None:
                 payload["format"] = json_schema
-                payload["options"] = {"temperature": 0, "num_predict": 1800}
+                payload["options"] = {"temperature": 0, "num_predict": 1600}
             elif format_json:
                 # Ollama JSON mode: constrain the model to emit a JSON object.
                 payload["format"] = "json"

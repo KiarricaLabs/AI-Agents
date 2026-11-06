@@ -34,6 +34,24 @@ class TestModelRouter(unittest.TestCase):
         self.assertEqual(res.provider, "ollama")
         self.assertEqual(res.location, "local:ollama:llama3.1")
 
+    def test_json_schema_reaches_generate_once_when_only_schema_given(self):
+        # Regression: when the caller supplies json_schema WITHOUT json_format,
+        # the schema must still be forwarded so the model emits valid JSON.
+        schema = {"type": "object", "properties": {"goal": {"type": "string"}}}
+        captured = {}
+
+        def capture(model, prompt, system, json_schema=None):
+            captured["schema"] = json_schema
+            return '{"goal":"ok"}'
+
+        router = ModelRouter(retries=1)
+        with patch.object(router, "_generate_once", side_effect=capture):
+            res = router.complete("orchestrator", "plan it",
+                                  model_spec={"provider": "ollama", "model": "m"},
+                                  json_schema=schema)
+        self.assertEqual(captured.get("schema"), schema)
+        self.assertEqual(res.text, '{"goal":"ok"}')
+
     def test_retry_then_success(self):
         router = ModelRouter(retries=3)
         calls = {"n": 0}
