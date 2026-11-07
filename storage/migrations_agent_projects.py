@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     deliverable_type TEXT NOT NULL DEFAULT 'draft',
     acceptance_criteria TEXT NOT NULL DEFAULT '[]',
     output TEXT,
+    output_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

@@ -437,6 +437,9 @@ class Database:
             "ALTER TABLE deliverables ADD COLUMN is_synthetic INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE assignments ADD COLUMN is_synthetic INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE team_goal_steps ADD COLUMN plan TEXT",
+            # Structured output payload for agent_tasks (output_json); output stays
+            # the readable prose the human reviews.
+            "ALTER TABLE agent_tasks ADD COLUMN output_json TEXT",
         ]
         for m in migrations:
             try:

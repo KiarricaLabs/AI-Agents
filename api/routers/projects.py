@@ -111,7 +111,7 @@ def _project(tenant: str, user: str, project_id: str):
     project = dict(rows[0])
     tasks = _db.query(
         "SELECT id, agent, instruction, depends_on, status, review_status, deliverable_type, "
-        "acceptance_criteria, output, created_at, updated_at "
+        "acceptance_criteria, output, output_json, created_at, updated_at "
         "FROM agent_tasks WHERE project_id=? AND tenant_id=? AND user_id=? ORDER BY rowid",
         (project_id, tenant, user))
     for task in tasks:

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from config.settings import BASE_DIR
+from core.output_contracts import extract_structured, guidance_for
 from core.runtime import build_runtime, load_registry
 
 
@@ -122,8 +123,10 @@ class ProjectRunner:
             f"ACCEPTANCE CRITERIA:\n{task['acceptance_criteria']}\n\n"
             f"BUSINESS PROFILE:\n{self.profile}\n\n"
             f"COMPLETED DEPENDENCY OUTPUTS:\n{json.dumps({d: completed[d] for d in dependencies}, ensure_ascii=False)}\n\n"
-            "Produce only the local draft, research, or artifact for this task. "
-            "Do not send email, post, DM, pay, book, or perform any outward action."
+            "Produce the full readable draft, research, or artifact for this task\u2014it is "
+            "what the human will review. Keep quality high. "
+            "Do not send email, post, DM, pay, book, or perform any outward action.\n\n"
+            + guidance_for(task["deliverable_type"])
         )
         project_id = project["id"]
         now = _now()
@@ -138,15 +141,21 @@ class ProjectRunner:
                 "task_id": task["id"],
                 "accepted_dependency_outputs": dependencies,
             })
-            output = str(result.get("reply") or "").strip()
-            if not output:
+            raw = str(result.get("reply") or "").strip()
+            if not raw:
                 raise ValueError("agent returned empty output")
+            # Best-effort structured payload: never blocks the run if the agent
+            # omits/strips the JSON block \u2014 the readable prose is always kept.
+            structured, prose = extract_structured(raw, task["deliverable_type"])
             self.db.execute(
-                "UPDATE agent_tasks SET status='done', review_status='pending', output=?, updated_at=? "
+                "UPDATE agent_tasks SET status='done', review_status='pending', "
+                "output=?, output_json=?, updated_at=? "
                 "WHERE id=? AND project_id=? AND tenant_id=? AND user_id=?",
-                (output, _now(), task["id"], project_id, self.tenant_id, self.user_id))
-            self._log(agent, "task_completed", {"project_id": project_id, "task_id": task["id"]})
-            return task["id"], output
+                (prose, json.dumps(structured) if structured else None, _now(),
+                 task["id"], project_id, self.tenant_id, self.user_id))
+            self._log(agent, "task_completed", {"project_id": project_id, "task_id": task["id"],
+                                                  "structured": bool(structured)})
+            return task["id"], prose
         except Exception:
             raise
 
