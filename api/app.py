@@ -1,8 +1,59 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="Personal AI Team")
+import os
+
+_SCHEDULERS = {}
+
+@asynccontextmanager
+async def lifespan(app):
+    # Startup: restore schedulers for projects with a schedule.
+    from config.settings import DB_PATH, DEFAULT_TENANT
+    from storage.database import Database
+    from core.scheduler import Scheduler
+    from core.run_worker import get_worker
+    try:
+        db = Database(path=DB_PATH, tenant_id=DEFAULT_TENANT)
+        get_worker(db)
+        rows = db.query("SELECT id, tenant_id, user_id, schedule_interval_seconds FROM agent_projects WHERE schedule_interval_seconds IS NOT NULL")
+        for r in rows:
+            pid = r["id"]
+            if pid in _SCHEDULERS:
+                continue
+            interval = r["schedule_interval_seconds"] or 300
+            tenant = r["tenant_id"]
+            user = r["user_id"]
+            def make_enqueue(p, t, u):
+                def enqueue():
+                    import uuid, json
+                    from datetime import datetime, timezone
+                    # approval gate: only approved/running projects
+                    pr = db.query("SELECT status FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?", (p, t, u))
+                    if not pr or pr[0]["status"] not in ("approved", "running"):
+                        return
+                    job_id = str(uuid.uuid4())
+                    now = datetime.now(timezone.utc).isoformat()
+                    with db.transaction() as conn:
+                        conn.execute("INSERT INTO agent_runs (id,project_id,tenant_id,user_id,status,created_at) VALUES (?,?,?,?,?,?)",
+                                     (job_id, p, t, u, "queued", now))
+                return enqueue
+            sched = Scheduler(make_enqueue(pid, tenant, user), interval_seconds=interval)
+            sched.start()
+            _SCHEDULERS[pid] = sched
+    except Exception:
+        pass
+    yield
+    # Shutdown
+    for s in list(_SCHEDULERS.values()):
+        try:
+            s.stop()
+        except Exception:
+            pass
+    _SCHEDULERS.clear()
+
+app = FastAPI(title="Personal AI Team", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 from api.routers import memory, agents, brand  # noqa: E402

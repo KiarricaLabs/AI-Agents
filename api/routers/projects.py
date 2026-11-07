@@ -364,6 +364,51 @@ def set_schedule(project_id: str, request: Request, body: dict = None):
         "UPDATE agent_projects SET schedule_interval_seconds=?, updated_at=? "
         "WHERE id=? AND tenant_id=? AND user_id=?",
         (interval, datetime.now(timezone.utc).isoformat(), project_id, tenant, user))
+    # Register scheduler if not already present (duplicate prevention).
+    try:
+        import api.app as _appmod
+        if project_id not in _appmod._SCHEDULERS:
+            from core.scheduler import Scheduler
+            from core.run_worker import get_worker
+            get_worker(_db)
+            def enqueue():
+                import uuid
+                from datetime import datetime, timezone
+                pr = _db.query("SELECT status FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?", (project_id, tenant, user))
+                if not pr or pr[0]["status"] not in ("approved", "running"):
+                    return
+                job_id = str(uuid.uuid4())
+                now = datetime.now(timezone.utc).isoformat()
+                with _db.transaction() as conn:
+                    conn.execute("INSERT INTO agent_runs (id,project_id,tenant_id,user_id,status,created_at) VALUES (?,?,?,?,?,?)",
+                                 (job_id, project_id, tenant, user, "queued", now))
+            sched = Scheduler(enqueue, interval_seconds=interval)
+            sched.start()
+            _appmod._SCHEDULERS[project_id] = sched
+        elif interval is not None:
+            # update interval by recreating
+            old = _appmod._SCHEDULERS.pop(project_id, None)
+            if old:
+                old.stop()
+            from core.scheduler import Scheduler
+            from core.run_worker import get_worker
+            get_worker(_db)
+            def enqueue2():
+                import uuid
+                from datetime import datetime, timezone
+                pr = _db.query("SELECT status FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?", (project_id, tenant, user))
+                if not pr or pr[0]["status"] not in ("approved", "running"):
+                    return
+                job_id = str(uuid.uuid4())
+                now = datetime.now(timezone.utc).isoformat()
+                with _db.transaction() as conn:
+                    conn.execute("INSERT INTO agent_runs (id,project_id,tenant_id,user_id,status,created_at) VALUES (?,?,?,?,?,?)",
+                                 (job_id, project_id, tenant, user, "queued", now))
+            sched = Scheduler(enqueue2, interval_seconds=interval)
+            sched.start()
+            _appmod._SCHEDULERS[project_id] = sched
+    except Exception:
+        pass
     return {"project_id": project_id, "schedule_interval_seconds": interval}
 
 
