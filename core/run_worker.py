@@ -102,4 +102,3 @@ def get_worker(db):
         _worker = RunWorker(db)
         _worker.start()
     return _worker
-"""
