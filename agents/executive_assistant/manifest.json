@@ -32,7 +32,9 @@
   "tools": [
     "now",
     "simulate_travel",
-    "save_local_artifact"
+    "save_local_artifact",
+    "email_send",
+    "calendar_create"
   ],
   "permissions": [
     "memory:read",

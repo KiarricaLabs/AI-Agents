@@ -157,6 +157,10 @@ def build_registry(db=None, tenant_id: Optional[str] = None, timeout: float = 5.
     reg.register(SimulateResearchTool())
     reg.register(SimulateTravelTool())
     reg.register(SaveLocalArtifactTool())
+    from core.tools.integrations import EmailSendTool, CalendarCreateTool, ImageGenerateTool
+    reg.register(EmailSendTool())
+    reg.register(CalendarCreateTool())
+    reg.register(ImageGenerateTool())
     # The structured workflow never invokes the legacy work-propose tools (goal/
     # project/deliverable proposals are now created via the structured planner and
     # human-gated approvals). Keeping them registered would couple System B's

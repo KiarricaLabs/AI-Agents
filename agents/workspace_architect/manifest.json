@@ -30,7 +30,8 @@
     "approval_required": true
   },
   "tools": [
-    "save_local_artifact"
+    "save_local_artifact",
+    "image_generate"
   ],
   "permissions": [
     "memory:read",

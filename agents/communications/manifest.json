@@ -29,7 +29,9 @@
   "tools": [
     "simulate_email",
     "simulate_social_campaign",
-    "save_local_artifact"
+    "save_local_artifact",
+    "email_send",
+    "image_generate"
   ],
   "permissions": [
     "memory:read",
