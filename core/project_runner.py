@@ -5,6 +5,7 @@ import json
 import os
 import uuid
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,8 +56,18 @@ class ProjectRunner:
         self.db = db
         self.tenant_id = tenant_id
         self.user_id = user_id
-        self.profile = (Path(BASE_DIR) / "business_profile.md").read_text(
+        base_profile = (Path(BASE_DIR) / "business_profile.md").read_text(
             encoding="utf-8").strip()
+        # C1: append learned preference lessons from feedback.
+        try:
+            from core.feedback import FeedbackService
+            fs = FeedbackService(self.db, self.tenant_id, self.user_id)
+            lessons = fs.preference_lessons()
+            if lessons:
+                base_profile = base_profile + "\n\nLEARNED PREFERENCES:\n" + "\n".join(f"- {l}" for l in lessons)
+        except Exception:
+            pass
+        self.profile = base_profile
         self.registry = load_registry()
 
     def _project(self, project_id: str):
@@ -73,6 +84,85 @@ class ProjectRunner:
             "ORDER BY rowid",
             (project_id, self.tenant_id, self.user_id))
 
+    def _claim_run(self, project_id: str, run_key: str = None) -> Dict[str, Any]:
+        """Atomically claim ownership of a run for this project.
+
+        Returns a dict with 'outcome' in:
+          - 'claimed'            : this caller now owns the run; proceed.
+          - 'already_completed'  : project already awaiting_review; returns cached result.
+          - 'already_failed'     : project failed; returns last_error.
+          - 'conflict'           : another run is in progress (stale heartbeat check).
+          - 'not_approved'       : project not in approved/running state.
+        Recovery: if a prior run was interrupted (status='running' with stale
+        heartbeat), reconcile running->pending tasks of the old attempt, bump
+        run_attempt, and claim. Done tasks/outputs are never touched.
+        """
+        stale_seconds = int(os.getenv("PAT_RUN_STALE_SECONDS", "300"))
+        now = _now()
+        with self.db.transaction_immediate() as c:
+            c.row_factory = __import__("sqlite3").Row
+            rows = c.execute(
+                "SELECT * FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?",
+                (project_id, self.tenant_id, self.user_id)).fetchall()
+            if not rows:
+                return {"outcome": "not_approved"}
+            proj = dict(rows[0])
+            status = proj.get("status")
+            # Terminal states -> idempotent replay
+            if status == "awaiting_review":
+                tasks = c.execute(
+                    "SELECT id, output FROM agent_tasks WHERE project_id=? AND tenant_id=? AND user_id=?",
+                    (project_id, self.tenant_id, self.user_id)).fetchall()
+                completed = {t["id"]: t["output"] for t in tasks if t["output"]}
+                return {"outcome": "already_completed",
+                        "result": {"project_id": project_id, "status": "awaiting_review",
+                                   "outputs": completed}}
+            if status == "failed":
+                return {"outcome": "already_failed", "error": proj.get("last_error")}
+            if status not in ("approved", "running"):
+                return {"outcome": "not_approved"}
+
+            # If already running, check heartbeat staleness / run_key match
+            if status == "running":
+                # Same run_key -> idempotent replay of in-progress run (conflict-ish but ok)
+                if run_key and proj.get("run_key") == run_key:
+                    # Treat as already claimed by this caller; just proceed.
+                    pass
+                else:
+                    hb = proj.get("run_heartbeat_at")
+                    stale = True
+                    if hb:
+                        try:
+                            from datetime import datetime, timezone
+                            hb_dt = datetime.fromisoformat(hb.replace("Z", "+00:00"))
+                            age = (datetime.now(timezone.utc) - hb_dt).total_seconds()
+                            stale = age > stale_seconds
+                        except Exception:
+                            stale = True
+                    if not stale:
+                        return {"outcome": "conflict"}
+                    # Stale -> recover: reset running tasks of old attempt to pending
+                    old_attempt = proj.get("run_attempt") or 0
+                    c.execute(
+                        "UPDATE agent_tasks SET status='pending', updated_at=? "
+                        "WHERE project_id=? AND tenant_id=? AND user_id=? "
+                        "AND status='running' AND task_attempt <= ?",
+                        (_now(), project_id, self.tenant_id, self.user_id, old_attempt))
+
+            # Claim: bump attempt, set running, set run_key, heartbeat
+            new_attempt = (proj.get("run_attempt") or 0) + 1
+            c.execute(
+                "UPDATE agent_projects SET status='running', run_attempt=?, run_key=?, "
+                "run_heartbeat_at=?, updated_at=?, last_error=NULL "
+                "WHERE id=? AND tenant_id=? AND user_id=?",
+                (new_attempt, run_key, now, now, project_id, self.tenant_id, self.user_id))
+            # Stamp task_attempt on pending tasks that are about to run
+            c.execute(
+                "UPDATE agent_tasks SET task_attempt=? "
+                "WHERE project_id=? AND tenant_id=? AND user_id=? AND status='pending'",
+                (new_attempt, project_id, self.tenant_id, self.user_id))
+        return {"outcome": "claimed"}
+
     def _log(self, agent: str, event: str, details: Dict[str, Any]):
         self.db.execute(
             "INSERT INTO activity_log "
@@ -80,13 +170,33 @@ class ProjectRunner:
             (str(uuid.uuid4()), self.tenant_id, self.user_id, _now(), agent,
              event, json.dumps(details)))
 
-    def run(self, project_id: str) -> Dict[str, Any]:
-        project = self._project(project_id)
-        if project["status"] != "running":
+    def run(self, project_id: str, run_key: str = None) -> Dict[str, Any]:
+        # --- Atomic ownership claim + recovery (short transaction, no model calls) ---
+        claim = self._claim_run(project_id, run_key)
+        if claim["outcome"] == "already_completed":
+            # Idempotent replay of a finished run: return cached result, no re-run.
+            return claim["result"]
+        if claim["outcome"] == "already_failed":
+            raise ValueError(claim.get("error") or "run already failed")
+        if claim["outcome"] == "conflict":
+            raise ValueError("run already in progress for this project")
+        if claim["outcome"] == "not_approved":
             raise ValueError("project must be approved before it can run")
+
         if os.getenv("PAT_AGENT_KILL_SWITCH", "").lower() in {"1", "true", "yes", "on"}:
             raise ValueError("agent runner is halted by the global kill switch")
 
+        project = self._project(project_id)
+        run_attempt = project.get("run_attempt") or 0
+        run_key = project.get("run_key")
+        # Start a short-lived heartbeat daemon thread that refreshes the lease
+        # during long Ollama generations (not only between tasks).
+        stop_event = threading.Event()
+        heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            args=(project_id, run_attempt, run_key, stop_event),
+            daemon=True, name=f"hb-{project_id}")
+        heartbeat_thread.start()
         tasks = [dict(row) for row in self._tasks(project_id)]
         runtime = build_runtime(self.db, self.tenant_id, self.user_id)
         completed: Dict[str, Any] = {
@@ -115,22 +225,51 @@ class ProjectRunner:
                     try:
                         task_id, output = fut.result()
                     except Exception as exc:
+                        stop_event.set()
+                        heartbeat_thread.join(timeout=5)
                         self._fail(project_id, task["id"], str(exc))
                         raise
                     completed[task_id] = output
                     task["status"] = "done"
+                    # Heartbeat: keep the lease fresh during a long run.
+                    self.db.execute(
+                        "UPDATE agent_projects SET run_heartbeat_at=?, updated_at=? "
+                        "WHERE id=? AND tenant_id=? AND user_id=?",
+                        (_now(), _now(), project_id, self.tenant_id, self.user_id))
 
         remaining = [task for task in tasks if task["status"] == "pending"]
         if remaining:
             self.db.execute(
-                "UPDATE agent_projects SET status='failed', updated_at=? WHERE id=? AND tenant_id=? AND user_id=?",
-                (_now(), project_id, self.tenant_id, self.user_id))
+                "UPDATE agent_projects SET status='failed', last_error=?, updated_at=? "
+                "WHERE id=? AND tenant_id=? AND user_id=?",
+                ("unresolved task dependencies", _now(), project_id, self.tenant_id, self.user_id))
             raise ValueError("project has unresolved task dependencies")
+        stop_event.set()
+        heartbeat_thread.join(timeout=5)
         self.db.execute(
-            "UPDATE agent_projects SET status='awaiting_review', updated_at=? "
+            "UPDATE agent_projects SET status='awaiting_review', run_heartbeat_at=NULL, updated_at=? "
             "WHERE id=? AND tenant_id=? AND user_id=?",
             (_now(), project_id, self.tenant_id, self.user_id))
+        stop_event.set()
+        heartbeat_thread.join(timeout=5)
         return {"project_id": project_id, "status": "awaiting_review", "outputs": completed}
+
+    def _heartbeat_loop(self, project_id, run_attempt, run_key, stop_event):
+        """Daemon thread: refresh run_heartbeat_at while a run is active.
+        Every update is guarded by project_id + run_attempt + run_key + status='running'
+        so a stale thread from an older attempt cannot refresh a newer lease."""
+        interval = float(os.getenv("PAT_HEARTBEAT_INTERVAL_SECONDS", "5"))
+        while not stop_event.wait(interval):
+            try:
+                self.db.execute(
+                    "UPDATE agent_projects SET run_heartbeat_at=?, updated_at=? "
+                    "WHERE id=? AND tenant_id=? AND user_id=? "
+                    "AND status='running' AND run_attempt=? "
+                    "AND (run_key IS ? OR run_key=?)",
+                    (_now(), _now(), project_id, self.tenant_id, self.user_id,
+                     run_attempt, run_key, run_key))
+            except Exception:
+                pass
 
     def _run_task(self, runtime, project, task, completed) -> tuple:
         """Execute one task to completion. Returns (task_id, output). Called from
@@ -201,7 +340,7 @@ class ProjectRunner:
             (f"Task failed: {error[:500]}", _now(), task_id, project_id,
              self.tenant_id, self.user_id))
         self.db.execute(
-            "UPDATE agent_projects SET status='failed', updated_at=? "
+            "UPDATE agent_projects SET status='failed', last_error=?, updated_at=? "
             "WHERE id=? AND tenant_id=? AND user_id=?",
-            (_now(), project_id, self.tenant_id, self.user_id))
+            (error[:500], _now(), project_id, self.tenant_id, self.user_id))
         self._log("runner", "task_failed", {"project_id": project_id, "task_id": task_id, "error": error[:500]})

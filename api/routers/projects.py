@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from typing import Optional
 
 from config.settings import DB_PATH, DEFAULT_TENANT
 from storage.database import Database
@@ -19,6 +20,12 @@ _db = Database(path=DB_PATH, tenant_id=DEFAULT_TENANT)
 
 class CreateProjectRequest(BaseModel):
     goal: str
+    idempotency_key: str | None = None
+    brand_id: str | None = None
+
+
+class RunProjectRequest(BaseModel):
+    run_key: str | None = None
 
 
 class PlanTaskRequest(BaseModel):
@@ -75,34 +82,46 @@ def _require_human(request: Request):
 def create_project(req: CreateProjectRequest, request: Request):
     _require_human(request)
     tenant, user = _identity(request)
+    key = req.idempotency_key
+
+    # Idempotency: if a project already exists for this key, return it.
+    if key is not None:
+        existing = _find_project_by_key(tenant, user, key)
+        if existing is not None:
+            return _serialize_project(existing)
+
     try:
         plan = StructuredProjectPlanner(_db, tenant, user).plan(req.goal)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     project_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    # The agent model emits simple ids like "task-1", but agent_tasks.id is a
-    # GLOBAL primary key. Different projects can therefore collide. Remap every
-    # task id to be unique-per-project and rewrite dependency references so the
-    # insert never fails and the returned tasks match what is stored.
     remap = {task.id: f"{project_id}::task-{i + 1}" for i, task in enumerate(plan.tasks)}
-    with _db.transaction() as conn:
-        conn.execute(
-            "INSERT INTO agent_projects "
-            "(id,tenant_id,user_id,goal,status,plan_json,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (project_id, tenant, user, plan.goal, "awaiting_plan_approval",
-             plan.model_dump_json(), now, now),
-        )
-        for i, task in enumerate(plan.tasks):
+    try:
+        with _db.transaction() as conn:
             conn.execute(
-                "INSERT INTO agent_tasks "
-                "(id,project_id,tenant_id,user_id,agent,instruction,depends_on,status,deliverable_type,acceptance_criteria,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (remap[task.id], project_id, tenant, user, task.agent, task.instruction,
-                 json.dumps([remap[d] for d in task.depends_on]), "pending", task.deliverable_type,
-                 json.dumps(task.acceptance_criteria), now, now),
+                "INSERT INTO agent_projects "
+                "(id,tenant_id,user_id,goal,status,plan_json,created_at,updated_at,idempotency_key,brand_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (project_id, tenant, user, plan.goal, "awaiting_plan_approval",
+                 plan.model_dump_json(), now, now, key, req.brand_id),
             )
+            for i, task in enumerate(plan.tasks):
+                conn.execute(
+                    "INSERT INTO agent_tasks "
+                    "(id,project_id,tenant_id,user_id,agent,instruction,depends_on,status,deliverable_type,acceptance_criteria,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (remap[task.id], project_id, tenant, user, task.agent, task.instruction,
+                     json.dumps([remap[d] for d in task.depends_on]), "pending", task.deliverable_type,
+                     json.dumps(task.acceptance_criteria), now, now),
+                )
+    except Exception as exc:
+        # Concurrent duplicate key: unique index fired. Re-query winner.
+        if key is not None and "UNIQUE" in str(exc).upper():
+            existing = _find_project_by_key(tenant, user, key)
+            if existing is not None:
+                return _serialize_project(existing)
+        raise
     stored = []
     for task in plan.tasks:
         dumped = task.model_dump()
@@ -111,6 +130,34 @@ def create_project(req: CreateProjectRequest, request: Request):
         stored.append(dumped)
     return {"id": project_id, "status": "awaiting_plan_approval",
             "goal": plan.goal, "tasks": stored}
+
+
+def _find_project_by_key(tenant, user, key):
+    rows = _db.query(
+        "SELECT * FROM agent_projects WHERE tenant_id=? AND user_id=? AND idempotency_key=?",
+        (key, ) if False else (tenant, user, key))
+    if not rows:
+        return None
+    return rows[0]
+
+
+def _serialize_project(proj):
+    pid = proj["id"]
+    tasks = _db.query(
+        "SELECT * FROM agent_tasks WHERE project_id=? AND tenant_id=? AND user_id=? ORDER BY rowid",
+        (pid, proj["tenant_id"], proj["user_id"]))
+    stored = []
+    for t in tasks:
+        stored.append({
+            "id": t["id"],
+            "agent": t["agent"],
+            "instruction": t["instruction"],
+            "depends_on": json.loads(t["depends_on"] or "[]"),
+            "deliverable_type": t["deliverable_type"],
+            "acceptance_criteria": json.loads(t["acceptance_criteria"] or "[]"),
+        })
+    return {"id": pid, "status": proj["status"],
+            "goal": proj["goal"], "tasks": stored}
 
 
 def _project(tenant: str, user: str, project_id: str):
@@ -259,16 +306,54 @@ def edit_plan(project_id: str, body: EditPlanRequest, request: Request):
     return _project(tenant, user, project_id)
 
 
-@router.post("/{project_id}/run")
-def run_project(project_id: str, request: Request):
+@router.post("/{project_id}/run", status_code=202)
+def run_project(project_id: str, request: Request, body: Optional[RunProjectRequest] = None):
     _require_human(request)
     tenant, user = _identity(request)
-    try:
-        return ProjectRunner(_db, tenant, user).run(project_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"project runner failed: {exc}") from exc
+    run_key = body.run_key if body else None
+    job_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    with _db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO agent_runs (id,project_id,tenant_id,user_id,run_key,status,created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (job_id, project_id, tenant, user, run_key, "queued", now),
+        )
+    from core.run_worker import get_worker
+    get_worker(_db)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.get("/runs/{job_id}")
+def get_run(job_id: str, request: Request):
+    _require_human(request)
+    tenant, user = _identity(request)
+    rows = _db.query(
+        "SELECT * FROM agent_runs WHERE id=? AND tenant_id=? AND user_id=?",
+        (job_id, tenant, user))
+    if not rows:
+        raise HTTPException(status_code=404, detail="run not found")
+    r = rows[0]
+    result = json.loads(r["result_json"]) if r.get("result_json") else None
+    return {"job_id": r["id"], "project_id": r["project_id"],
+            "status": r["status"], "created_at": r["created_at"],
+            "started_at": r.get("started_at"), "finished_at": r.get("finished_at"),
+            "result": result, "error": r.get("error")}
+
+
+# B3 — Unified approval center
+@router.get("/approvals")
+def list_approvals(request: Request):
+    _require_human(request)
+    tenant, user = _identity(request)
+    projects = _db.query(
+        "SELECT * FROM agent_projects WHERE tenant_id=? AND user_id=? AND status IN ('awaiting_plan_approval','awaiting_review','failed')",
+        (tenant, user))
+    items = []
+    for p in projects:
+        items.append({"project_id": p["id"], "goal": p["goal"],
+                      "status": p["status"], "updated_at": p["updated_at"]})
+    return {"approvals": items}
 
 
 @router.post("/tasks/{task_id}/review")

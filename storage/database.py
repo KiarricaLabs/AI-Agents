@@ -412,6 +412,10 @@ class Database:
             apply_feedback_tables(c)
             from storage.migrations_agent_projects import apply_agent_project_tables
             apply_agent_project_tables(c)
+            from storage.migrations_agent_runs import apply_agent_runs_table
+            apply_agent_runs_table(c)
+            from storage.migrations_media_assets import apply_media_assets_table
+            apply_media_assets_table(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))
@@ -440,6 +444,15 @@ class Database:
             # Structured output payload for agent_tasks (output_json); output stays
             # the readable prose the human reviews.
             "ALTER TABLE agent_tasks ADD COLUMN output_json TEXT",
+            "ALTER TABLE agent_projects ADD COLUMN brand_id TEXT",
+            "ALTER TABLE agent_projects ADD COLUMN run_attempt INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_projects ADD COLUMN run_key TEXT",
+            "ALTER TABLE agent_projects ADD COLUMN run_heartbeat_at TEXT",
+            "ALTER TABLE agent_projects ADD COLUMN idempotency_key TEXT",
+            "ALTER TABLE agent_projects ADD COLUMN last_error TEXT",
+            "ALTER TABLE agent_projects ADD COLUMN approved_plan_hash TEXT",
+            "ALTER TABLE agent_tasks ADD COLUMN task_attempt INTEGER NOT NULL DEFAULT 0",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_projects_create_key ON agent_projects(tenant_id, user_id, idempotency_key) WHERE idempotency_key IS NOT NULL",
         ]
         for m in migrations:
             try:
@@ -480,6 +493,28 @@ class Database:
                 c.commit()
             except Exception:
                 c.rollback()
+                raise
+            finally:
+                c.close()
+
+    @contextmanager
+    def transaction_immediate(self):
+        """Short write transaction that acquires the SQLite write lock up front
+        (BEGIN IMMEDIATE). Used for atomic ownership/recovery claims so the check,
+        abandon, and claim cannot be interleaved by another writer. Callers MUST
+        NOT call self.execute / self.query inside (the lock is non-reentrant)."""
+        with self._lock:
+            c = self._connect()
+            try:
+                c.isolation_level = None  # autocommit; we manage BEGIN/COMMIT
+                c.execute("BEGIN IMMEDIATE")
+                yield c
+                c.commit()
+            except Exception:
+                try:
+                    c.rollback()
+                except Exception:
+                    pass
                 raise
             finally:
                 c.close()

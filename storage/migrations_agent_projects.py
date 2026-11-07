@@ -10,7 +10,14 @@ CREATE TABLE IF NOT EXISTS agent_projects (
     status TEXT NOT NULL DEFAULT 'awaiting_plan_approval',
     plan_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    run_attempt INTEGER NOT NULL DEFAULT 0,
+    run_key TEXT,
+    run_heartbeat_at TEXT,
+    idempotency_key TEXT,
+    last_error TEXT,
+    approved_plan_hash TEXT,
+    brand_id TEXT
 );
 CREATE TABLE IF NOT EXISTS agent_tasks (
     id TEXT PRIMARY KEY,
@@ -26,6 +33,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     acceptance_criteria TEXT NOT NULL DEFAULT '[]',
     output TEXT,
     output_json TEXT,
+    task_attempt INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

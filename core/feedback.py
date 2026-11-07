@@ -99,6 +99,16 @@ class FeedbackService:
             if row["status"] == "approved" and row.get("lesson")
         ]
 
+    def preference_lessons(self) -> list:
+        """Return approved lesson strings for the preference profile (C1)."""
+        out = []
+        for scope in (None, "team"):
+            for r in self.approved_lessons(scope):
+                l = r.get("lesson")
+                if l and l not in out:
+                    out.append(l)
+        return out
+
     def lessons_for(self, agent_id: str, brand_id: Optional[str] = None,
                     task_id: Optional[str] = None) -> list:
         """Return approved lessons applicable to one grounded agent run."""
