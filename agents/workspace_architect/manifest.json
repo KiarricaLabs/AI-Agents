@@ -30,7 +30,10 @@
     "approval_required": true
   },
   "tools": [
-    "save_local_artifact"
+    "save_local_artifact",
+    "email_send",
+    "calendar_create",
+    "image_generate"
   ],
   "permissions": [
     "memory:read",
