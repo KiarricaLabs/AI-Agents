@@ -124,56 +124,107 @@ No new tables, **no second state machine** — reuse `agent_projects.status` + `
   three columns; since they're additive with defaults, dropping is trivial and nothing existing
   depends on them yet.
 
-### 5.5 Behavior changes (the design)
+### 5.5 Behavior changes (REVISED) — ownership, keys, locking
 
-**Ownership claim (solves race + recovery):**
+**Single-owner claim (atomic state transition, not `IN ('approved','running')`).**
+Ownership is encoded by the project status itself. The ONLY way to become the owner of a run
+is the atomic transition **from the unclaimed state `approved` → `running`**:
 ```
-claim = "UPDATE agent_projects SET status='running', run_attempt=run_attempt+1
-         WHERE id=? AND user_id=? AND tenant_id=? AND status IN ('approved','running')
-         AND (run_attempt = ? OR <recovery allowed>)"
+UPDATE agent_projects
+SET status='running', run_attempt = run_attempt+1, run_key=:key, run_heartbeat_at=:now
+WHERE id=:id AND tenant_id=:t AND user_id=:u AND status='approved'
+  AND (run_key IS NULL OR run_key <> :key)
 ```
-Atomic under the lock. Only one caller wins a given run attempt.
+- `rows == 1` → this caller owns **the** new attempt. No other request can claim it, because
+  the status is no longer `approved`.
+- `rows == 0` → not claimable now (already owned, or same key already in use).
 
-**Recovery (within the claim):** after claiming `run_attempt = N`, reconcile:
+**Three cases are distinguished by (status, run_key, heartbeat / run_attempt):**
+- **New execution:** status `approved` → the claim above succeeds.
+- **Existing active execution:** status `running` and heartbeat fresh. A duplicate run request
+  is refused (409). A request with the **same `run_key`** returns the current in-progress state
+  (idempotent) — it never starts a second run.
+- **Recovery of an abandoned execution:** status `running` but the heartbeat has gone **stale**
+  (older than a threshold, e.g. 3× the model timeout) because the owner process died.
+  Recovery is two **short, atomic** transitions:
+  1. Abandon the stale attempt: `SET status='approved', run_attempt=run_attempt+1
+     WHERE status='running' AND (heartbeat stale)`; then
+  2. Claim as new (the claim above).
+  A **live** owner (fresh heartbeat) blocks step 1 → it cannot be stolen.
+
+**Why this prevents two concurrent executions (incl. across processes):**
+- SQLite is single-writer; the app lock serializes writers within a process, and SQLite's file
+  write-lock serializes writers **across** FastAPI processes. Only the single statement that
+  observes `status='approved'` (and atomically sets it to `running`) becomes the owner.
+- Because ownership moves only `approved → running`, a second request — concurrent or
+  sequential — finds `running` and cannot claim. Recovery requires a **stale** heartbeat, so a
+  live owner is never displaced.
+
+**Heartbeat (short writes, never around a model call):** the runner sets
+`run_heartbeat_at` at the start of each task and after each task. These are single
+`execute()`s under the lock (microseconds); the model generation happens **between** them,
+outside any transaction/lock → we never hold a SQLite write lock while Ollama generates.
+
+**Task attempts (consistent):** when a task starts under `run_attempt = N`, we set
+`task_attempt = N`. Recovery reconcile:
 ```
-UPDATE agent_tasks SET status='pending', output=NULL, task_attempt=0
-WHERE project_id=? AND status='running' AND task_attempt < N
+UPDATE agent_tasks SET status='pending', task_attempt=0
+WHERE project_id=:id AND status='running' AND task_attempt < :N
 ```
-i.e. any task of an **earlier** attempt that is stuck `running` is reset to `pending` and
-re-run under the new attempt. In-flight tasks of the *current* attempt (`task_attempt == N`)
-are left alone (they belong to the live run).
+Only earlier-attempt, still-`running` tasks are reset. **`done` tasks (with persisted output)
+are never touched** → valid deliverables are preserved and not re-run.
 
-**Run idempotency:** the endpoint accepts an optional `X-Idempotency-Key`. If a run is already
-active for that key (or `run_attempt == key`'s attempt), return the current status instead of
-starting a duplicate. A **legitimate recovery** is a new claim (new attempt) that resumes the
-existing project — not a parallel second run.
+**Idempotency keys (client-supplied, separate for create vs run, tenant/user-scoped):**
+- **Create:** `idempotency_key TEXT NULL` on `agent_projects` + a **UNIQUE index on
+  `(tenant_id, user_id, idempotency_key)`** (nullable → ignores NULLs, so no-key creates are
+  unaffected). A duplicate create key returns the **original** project (200) for its current
+  status — after `completed`, `failed`, or an interrupted project, the same key always maps to
+  that original project; it never creates a second one.
+- **Run:** `run_key TEXT NULL` on `agent_projects`, scoped to the project. Behavior by state:
+  - **Completed** (`awaiting_review`/`done`): same `run_key` → return current state. No re-run.
+  - **Failed**: same `run_key` → return the stored failure (idempotent). Retrying must use a
+    **new** run_key.
+  - **Interrupted**: same `run_key` on a stale lease → triggers **recovery of that attempt**
+    (finish, not a new parallel run).
+  - **Fresh key**: a new claim (new attempt) — a deliberate re-run.
 
-**Create idempotency:** `create_project` accepts an optional `idempotency_key`; a UNIQUE index
-means a duplicate key returns the existing project (200) instead of inserting a new one.
+### 5.6 Transaction boundaries & locking (explicit)
+- DB locks/transactions protect **only short state transitions**: insert project+tasks
+  (`create_project`), the ownership claim, heartbeat writes, reconcile, per-task `running`/
+  `done`. Each is a single short `execute()`/`transaction()`.
+- **Model generation never runs inside a transaction or while holding the lock.** The runner
+  writes `running`, releases the lock, calls `runtime.dispatch()` (Ollama), then re-acquires to
+  write `done`. No lock is held across a model call. This is already true today and stays true.
 
-`Idempotency` (same request ⇒ same result) and `recovery` (resume where it left off) remain
-separate concerns, satisfied by the same two columns.
-
-### 5.6 Regression test plan
-
-- **Recovery:** set a project `running` with some tasks stuck `running` (simulated crash);
-  invoke run → assert tasks reconcile to `pending` and the run completes. Verify **no existing
-  `done` task is re-run**.
-- **Race/claim:** fire concurrent `run()` calls → assert only one attempt executes.
-- **Duplicate run:** same `X-Idempotency-Key` twice → one execution, second returns current
-  status.
-- **Duplicate create:** same `idempotency_key` twice → one project.
-- **Restart resume:** kill the worker mid-run (test harness), restart, run → completes.
+### 5.7 Regression test plan (includes the concurrency + kill/restart you asked for)
+- **Recovery:** project `running` with some tasks stuck `running` (old attempt) → run()
+  reconciles them to `pending` and completes; **no `done` task or its output is touched**.
+- **Concurrent execution:** fire N `run()` calls (threads/processes) → assert exactly one
+  attempt becomes owner; others get 409/idempotent response, never a second execution.
+- **Duplicate run key:** completed = same result, no re-run; failed = same failure, no auto-retry;
+  interrupted = recovery of the same attempt.
+- **Duplicate create key:** one project, returns original for all statuses.
+- **Task attempts:** assert `task_attempt == run_attempt` after a run; a stale `running` task of
+  an earlier attempt is the only thing reset.
+- **Process-kill/restart:** integration test that simulates a crash (seed the DB to a
+  mid-run `running` state from a prior attempt), then runs recovery and asserts completion —
+  plus a manual live check by killing the worker mid-run and re-running.
+- Human approval gates unchanged (approve/run/review still require role ∈ {user, admin}).
 
 ---
 
-## 6. Decisions needed before implementation
+## 6. Revisions & decisions
 
-1. Approve the additive schema (`run_attempt`, `task_attempt`, `idempotency_key`) and the
-   ownership-claim + reconcile design.
-2. Confirm idempotency keys are **client-supplied** (frontend sends a key) vs server-generated.
-3. Output-validation tiers (soft default / strict for structured) stay **out of M1.1** — confirm.
-4. Concurrency: acceptable to keep all runs serialized under the lock for now (no DB migration
-   to a queue) — confirm we are not adding a background worker in M1.1.
+**Addressed per your review:** (1) single-owner claim via `approved→running` (not
+`IN ('approved','running')`); (2) client-supplied keys, create vs run separate, tenant/user
+scoped; (3) locks cover only short state changes — never around model generation.
+
+**Final decisions to confirm to implement:**
+1. Approve additive schema: `agent_projects(+run_attempt, run_key, run_heartbeat_at,
+   idempotency_key [+unique index], last_error)`, `agent_tasks(+task_attempt)` — all additive
+   with defaults, backward-compatible; rollback = drop the columns.
+2. Idempotency keys are **client-supplied** (create key and run key), scoped to tenant/user.
+3. Output-validation tiers stay **out of M1.1**.
+4. Runs stay synchronous (no background worker in M1.1).
 
 *Documentation only. No application code or schema changed.*
