@@ -42,6 +42,23 @@ export function StructuredProjects() {
 
   useEffect(() => { load(); }, [load]);
 
+  // While a project is running, poll the plan + summary so per-task progress is
+  // visible live (the local runner can take minutes) and the panel flips to
+  // awaiting_review/done/failed on completion.
+  useEffect(() => {
+    const id = selected?.id;
+    if (!id || selected?.status !== "running") return;
+    const timer = setInterval(async () => {
+      try {
+        const next = await request<Project>(`/projects/${id}`);
+        setSelected(next);
+        setProjectSummary(await request<ProjectSummary>(`/projects/${id}/summary`));
+        if (next.status !== "running") { clearInterval(timer); await load(); }
+      } catch { /* transient read — keep polling */ }
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [selected?.id, selected?.status]);
+
   async function open(id: string) {
     setError("");
     try {
@@ -68,10 +85,15 @@ export function StructuredProjects() {
     if (!selected) return;
     setBusy("run"); setError("");
     try {
-      setSelected(await request<Project>(`/projects/${selected.id}/run`, { method: "POST" }));
-      await load();
-    } catch (e) { setError(e instanceof Error ? e.message : "Could not run the project."); }
-    finally { setBusy(""); }
+      // Fire-and-forget: the backend runner executes synchronously and can take
+      // minutes on the local model, so we do NOT block the UI on this POST. The
+      // polling effect below shows live per-task progress and picks up the final
+      // status (awaiting_review / done / failed).
+      const runRequest = fetch(`${API}/projects/${selected.id}/run`, { method: "POST" });
+      runRequest.catch(() => setError("Could not start the project run."));
+    } finally {
+      setBusy("");
+    }
   }
 
   async function review(taskId: string, action: "approve" | "edit" | "send_back") {
