@@ -247,31 +247,6 @@ class TeamRouterApiTest(unittest.TestCase):
             "SELECT payload_json FROM work_proposals WHERE id=?", (pid,))[0]["payload_json"]
         self.assertEqual(orig, after)  # original byte-for-byte
 
-    def test_plan_revision_of_must_be_plan(self):
-        c = self._client()
-        # create a non-plan proposal via work/proposals
-        r = c.post("/work/proposals", json={
-            "work_type": "workspace", "action": "create", "payload": {"name": "WS2"},
-            "agent_id": "workspace_architect"})
-        self.assertEqual(r.status_code, 200, r.text)
-        nonplan = r.json()["proposal_id"]
-        r = c.post(f"/team/plans/{nonplan}/revision",
-                   json={"agent_id": "strategist", "payload_updates": {}})
-        self.assertEqual(r.status_code, 422)
-
-    def test_approve_plan_creates_workspace_t2b(self):
-        c = self._client()
-        ws_before = len(self.api_db.query("SELECT id FROM workspaces"))
-        pid = c.post("/team/plans", json={
-            "title": "P", "agent_id": "strategist",
-            "tasks": [{"title": "T1", "agent": "communications"}]}).json()["proposal_id"]
-        r = c.post(f"/work/proposals/{pid}/approve", json={})
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(self.api_db.query("SELECT status FROM work_proposals WHERE id=?",
-                                           (pid,))[0]["status"], "approved")
-        self.assertEqual(len(self.api_db.query("SELECT id FROM workspaces")), ws_before + 1)
-        # approval must not auto-create any episode (no auto-execution)
-        self.assertEqual(len(self.api_db.query("SELECT id FROM episodes")), 0)
 
     def test_list_plans_scoped_by_tenant(self):
         c = self._client()

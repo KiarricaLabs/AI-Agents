@@ -28,34 +28,8 @@ class GroupChatSecurityTest(unittest.TestCase):
     def _h(self, user, tenant, role="user"):
         return {"x-token": issue_token(user, tenant, role)}
 
-    def test_extract_is_human_gated_and_non_human_gets_403(self):
-        t, u = ("fg_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
-        r = self.client.post("/work/extract", json={
-            "kind": "project", "message": "project: Launch an app",
-        }, headers=self._h(u, t, role="agent"))
-        self.assertEqual(r.status_code, 403)
 
-    def test_extract_persists_nothing(self):
-        t, u = ("fg_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
-        r = self.client.post("/work/extract", json={
-            "kind": "project", "message": "project: Launch an app",
-        }, headers=self._h(u, t))
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["persisted"], False)
-        # no proposal row was created by extraction alone
-        lst = self.client.get("/work/proposals", headers=self._h(u, t)).json()
-        self.assertEqual(lst.get("items", []), [])
 
-    def test_propose_stays_proposed_and_never_auto_executes(self):
-        t, u = ("fg_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])
-        ws = self.client.post("/work/proposals/workspace", json={"name": "SafeCo"}, headers=self._h(u, t))
-        self.assertEqual(ws.status_code, 200, ws.text)
-        pid = ws.json()["proposal_id"]
-        detail = self.client.get(f"/work/proposals/{pid}", headers=self._h(u, t)).json()
-        self.assertEqual(detail["status"], "proposed")
-        # Not executed: an unapproved proposal must not create a workspace.
-        lst = self.client.get("/workspaces", headers=self._h(u, t)).json()["items"]
-        self.assertFalse(any(w["name"] == "SafeCo" for w in lst))
 
     def test_progress_record_is_human_gated(self):
         t, u = ("fg_%s" % uuid.uuid4().hex[:8], "fu_%s" % uuid.uuid4().hex[:8])

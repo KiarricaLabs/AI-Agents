@@ -63,6 +63,17 @@ def _identity(request: Request):
     return tenant, user
 
 
+_HUMAN_ROLES = {"user", "admin"}
+
+
+def _require_human(request: Request):
+    """Local human-only gate (defined locally; the legacy work router that once
+    hosted this helper has been removed)."""
+    role = getattr(request.state, "role", "user")
+    if role not in _HUMAN_ROLES:
+        raise HTTPException(status_code=403, detail="human approval required")
+
+
 def _resolve_brand_id(brand_svc: BrandService, explicit: Optional[str]):
     """Resolve the active brand for grounding: explicit > default > sole brand.
 
@@ -248,7 +259,6 @@ def coordinated_plan(req: PlanReq, request: Request):
     configurable default, not a hard-coded permanent route.
     """
     t, u = _identity(request)
-    from api.routers.work import _require_human
     _require_human(request)
     from core.runtime import build_runtime, load_registry
 

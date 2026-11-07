@@ -5,10 +5,8 @@ from fastapi.responses import JSONResponse
 app = FastAPI(title="Personal AI Team")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-from api.routers import memory, workspaces, episodes, agents, brand, work, tasks  # noqa: E402
+from api.routers import memory, agents, brand  # noqa: E402
 from api.routers import team  # noqa: E402
-from api.routers import team_goals  # noqa: E402
-from api.routers import team_goals_execution  # noqa: E402
 from api.routers import agent_comm, progress as progress_api  # noqa: E402
 from api.routers import feedback  # noqa: E402
 from api.routers import evaluations  # noqa: E402
@@ -64,15 +62,9 @@ async def security_mw(request, call_next):
 
 
 app.include_router(memory.router)
-app.include_router(workspaces.router)
-app.include_router(episodes.router)
 app.include_router(agents.router)
 app.include_router(brand.router)
-app.include_router(work.router)
-app.include_router(tasks.router)
 app.include_router(team.router)
-app.include_router(team_goals.router)
-app.include_router(team_goals_execution.router)
 app.include_router(agent_comm.router)
 app.include_router(progress_api.router)
 app.include_router(feedback.router)

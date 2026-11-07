@@ -242,25 +242,3 @@ class PlanApprovalApiTest(unittest.TestCase):
     def _client(self):
         return TestClient(app)
 
-    def test_end_to_end_approve(self):
-        c = self._client()
-        pid = c.post("/team/plans", json={
-            "title": "Ship", "agent_id": "strategist",
-            "tasks": [{"title": "T", "agent": "communications"}],
-            "milestones": [{"title": "M", "order": 1}]}).json()["proposal_id"]
-        r = c.post(f"/work/proposals/{pid}/approve", json={})
-        self.assertEqual(r.status_code, 200, r.text)
-        wid = r.json()["result_id"]
-        self.assertTrue(self.api_db.query("SELECT id FROM workspaces WHERE id=?", (wid,)))
-
-    def test_approve_invalid_plan_endpoint_422(self):
-        c = self._client()
-        # propose a plan with an unknown agent -> rejected at propose time
-        r = c.post("/team/plans", json={
-            "title": "X", "agent_id": "strategist",
-            "tasks": [{"title": "T", "agent": "ghost"}]})
-        self.assertEqual(r.status_code, 422, r.text)
-
-
-if __name__ == "__main__":
-    unittest.main()
