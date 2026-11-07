@@ -445,6 +445,7 @@ class Database:
             # the readable prose the human reviews.
             "ALTER TABLE agent_tasks ADD COLUMN output_json TEXT",
             "ALTER TABLE agent_projects ADD COLUMN brand_id TEXT",
+            "ALTER TABLE agent_projects ADD COLUMN schedule_interval_seconds INTEGER",
             "ALTER TABLE agent_projects ADD COLUMN run_attempt INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agent_projects ADD COLUMN run_key TEXT",
             "ALTER TABLE agent_projects ADD COLUMN run_heartbeat_at TEXT",

@@ -341,6 +341,45 @@ def get_run(job_id: str, request: Request):
             "result": result, "error": r.get("error")}
 
 
+# B2 — Scheduled triggers
+@router.post("/{project_id}/schedule")
+def set_schedule(project_id: str, request: Request, body: dict = None):
+    _require_human(request)
+    tenant, user = _identity(request)
+    interval = (body or {}).get("interval_seconds")
+    if interval is not None:
+        try:
+            interval = int(interval)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="invalid interval")
+        if interval <= 0:
+            raise HTTPException(status_code=400, detail="interval must be positive")
+    # verify project exists
+    rows = _db.query(
+        "SELECT * FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?",
+        (project_id, tenant, user))
+    if not rows:
+        raise HTTPException(status_code=404, detail="project not found")
+    _db.execute(
+        "UPDATE agent_projects SET schedule_interval_seconds=?, updated_at=? "
+        "WHERE id=? AND tenant_id=? AND user_id=?",
+        (interval, datetime.now(timezone.utc).isoformat(), project_id, tenant, user))
+    return {"project_id": project_id, "schedule_interval_seconds": interval}
+
+
+@router.get("/{project_id}/schedule")
+def get_schedule(project_id: str, request: Request):
+    _require_human(request)
+    tenant, user = _identity(request)
+    rows = _db.query(
+        "SELECT schedule_interval_seconds FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?",
+        (project_id, tenant, user))
+    if not rows:
+        raise HTTPException(status_code=404, detail="project not found")
+    return {"project_id": project_id,
+            "schedule_interval_seconds": rows[0]["schedule_interval_seconds"]}
+
+
 # B3 — Unified approval center
 @router.get("/approvals")
 def list_approvals(request: Request):

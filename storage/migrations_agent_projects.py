@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS agent_projects (
     idempotency_key TEXT,
     last_error TEXT,
     approved_plan_hash TEXT,
-    brand_id TEXT
+    brand_id TEXT,
+    schedule_interval_seconds INTEGER
 );
 CREATE TABLE IF NOT EXISTS agent_tasks (
     id TEXT PRIMARY KEY,
