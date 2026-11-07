@@ -81,6 +81,11 @@ def create_project(req: CreateProjectRequest, request: Request):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     project_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    # The agent model emits simple ids like "task-1", but agent_tasks.id is a
+    # GLOBAL primary key. Different projects can therefore collide. Remap every
+    # task id to be unique-per-project and rewrite dependency references so the
+    # insert never fails and the returned tasks match what is stored.
+    remap = {task.id: f"{project_id}::task-{i + 1}" for i, task in enumerate(plan.tasks)}
     with _db.transaction() as conn:
         conn.execute(
             "INSERT INTO agent_projects "
@@ -89,17 +94,23 @@ def create_project(req: CreateProjectRequest, request: Request):
             (project_id, tenant, user, plan.goal, "awaiting_plan_approval",
              plan.model_dump_json(), now, now),
         )
-        for task in plan.tasks:
+        for i, task in enumerate(plan.tasks):
             conn.execute(
                 "INSERT INTO agent_tasks "
                 "(id,project_id,tenant_id,user_id,agent,instruction,depends_on,status,deliverable_type,acceptance_criteria,created_at,updated_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (task.id, project_id, tenant, user, task.agent, task.instruction,
-                 json.dumps(task.depends_on), "pending", task.deliverable_type,
+                (remap[task.id], project_id, tenant, user, task.agent, task.instruction,
+                 json.dumps([remap[d] for d in task.depends_on]), "pending", task.deliverable_type,
                  json.dumps(task.acceptance_criteria), now, now),
             )
+    stored = []
+    for task in plan.tasks:
+        dumped = task.model_dump()
+        dumped["id"] = remap[task.id]
+        dumped["depends_on"] = [remap[d] for d in task.depends_on]
+        stored.append(dumped)
     return {"id": project_id, "status": "awaiting_plan_approval",
-            "goal": plan.goal, "tasks": [task.model_dump() for task in plan.tasks]}
+            "goal": plan.goal, "tasks": stored}
 
 
 def _project(tenant: str, user: str, project_id: str):

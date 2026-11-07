@@ -77,5 +77,68 @@ class RunnerStructuredOutputTest(unittest.TestCase):
             self.assertEqual(parsed["positioning"], "community-first")
 
 
+class RunnerRetryTest(unittest.TestCase):
+    def _seed(self, db, task_id="a", status="running", project_status="running"):
+        now = "2026-01-01T00:00:00+00:00"
+        db.execute(
+            "INSERT INTO agent_projects "
+            "(id,tenant_id,user_id,goal,status,plan_json,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ("p1", "t1", "u1", "Grow users", project_status, "{}", now, now))
+        db.execute(
+            "INSERT INTO agent_tasks "
+            "(id,project_id,tenant_id,user_id,agent,instruction,depends_on,status,"
+            "deliverable_type,acceptance_criteria,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, "p1", "t1", "u1", "strategist", "Define the audience.", "[]", "pending",
+             "draft", "[]", now, now))
+
+    def _runner(self, db, dispatch):
+        class Runtime:
+            def dispatch(self, agent, prompt, context):
+                return {"reply": dispatch()}
+        return Runtime()
+
+    def test_retries_transient_generation_failure_then_succeeds(self):
+        from agents.base import _GENERATION_FAILED_REPLY
+
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(path=str(Path(directory) / "retry.db"), tenant_id="t1")
+            self._seed(db)
+            calls = {"n": 0}
+
+            def dispatch():
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return _GENERATION_FAILED_REPLY
+                return "On Us is the community-first space for Black Bay Area creatives."
+
+            with patch("core.project_runner.build_runtime", return_value=self._runner(db, dispatch)):
+                ProjectRunner(db, "t1", "u1").run("p1")
+            self.assertGreater(calls["n"], 1, "transient failure should be retried")
+            row = db.query("SELECT status, output FROM agent_tasks WHERE id='a'")[0]
+            self.assertEqual(row["status"], "done")
+            self.assertNotIn("couldn't reach", row["output"])
+
+    def test_persistent_failure_marks_task_and_project_failed(self):
+        from agents.base import _GENERATION_FAILED_REPLY
+
+        with patch.dict("os.environ", {"PAT_TASK_RETRIES": "1"}):
+            with tempfile.TemporaryDirectory() as directory:
+                db = Database(path=str(Path(directory) / "fail.db"), tenant_id="t1")
+                self._seed(db)
+
+                def dispatch():
+                    return _GENERATION_FAILED_REPLY
+
+                with patch("core.project_runner.build_runtime", return_value=self._runner(db, dispatch)):
+                    with self.assertRaises(ValueError):
+                        ProjectRunner(db, "t1", "u1").run("p1")
+                task = db.query("SELECT status, output FROM agent_tasks WHERE id='a'")[0]
+                self.assertEqual(task["status"], "failed")
+                proj = db.query("SELECT status FROM agent_projects WHERE id='p1'")[0]
+                self.assertEqual(proj["status"], "failed")
+
+
 if __name__ == "__main__":
     unittest.main()

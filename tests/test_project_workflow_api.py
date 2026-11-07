@@ -152,6 +152,63 @@ class ProjectWorkflowApiTest(unittest.TestCase):
             (action_id, self.tenant, self.user))
         self.assertEqual(rows[0]["status"], "executed")
 
+    def test_create_project_remaps_task_ids_globally_unique(self):
+        """agent_tasks.id is a global primary key; two projects produced by the
+        same model prompt may reuse ids like 'task-1'. create_project must remap
+        each task id to a project-unique value and rewrite dependency refs so the
+        second project never hits a UNIQUE constraint."""
+        from unittest.mock import patch
+
+        from core.project_planner import PlannedTask, ProjectPlan
+        from api.routers import projects as projects_module
+
+        def make_plan(goal):
+            return ProjectPlan(
+                goal=goal,
+                tasks=[
+                    PlannedTask(id="task-1", agent="strategist",
+                                instruction="Define audience segments and positioning for "
+                                            "the campaign with acceptance criteria.",
+                                deliverable_type="positioning_statement",
+                                acceptance_criteria=["names audience", "names positioning"]),
+                    PlannedTask(id="task-2", agent="communications",
+                                instruction="Turn positioning into captions and a content "
+                                            "calendar for the campaign.",
+                                depends_on=["task-1"],
+                                deliverable_type="content_calendar",
+                                acceptance_criteria=["has hooks", "has calendar"]),
+                ],
+            )
+
+        with patch.object(projects_module.StructuredProjectPlanner, "plan", side_effect=make_plan):
+            r1 = self.client.post("/projects", headers=self._h(),
+                                  json={"goal": "Grow On Us in Oakland"})
+            self.assertEqual(r1.status_code, 200, r1.text)
+            r2 = self.client.post("/projects", headers=self._h(),
+                                  json={"goal": "Grow On Us in Oakland"})
+            self.assertEqual(r2.status_code, 200, r2.text)
+
+        p1, p2 = r1.json(), r2.json()
+        ids1 = {t["id"] for t in p1["tasks"]}
+        ids2 = {t["id"] for t in p2["tasks"]}
+        self.assertEqual(len(ids1), 2)
+        self.assertEqual(len(ids2), 2)
+        self.assertTrue(ids1.isdisjoint(ids2), "task ids must be unique across projects")
+        # every id is scoped to its own project
+        for pid, ids in ((p1["id"], ids1), (p2["id"], ids2)):
+            self.assertTrue(all(i.startswith(pid + "::") for i in ids))
+        # dependency refs were rewritten to the remapped ids in the same project
+        dep_tasks = [t for t in p1["tasks"] if t["depends_on"]]
+        self.assertEqual(len(dep_tasks), 1)
+        self.assertTrue(dep_tasks[0]["depends_on"][0] in ids1)
+        self.assertTrue(dep_tasks[0]["depends_on"][0].startswith(p1["id"]))
+        # persisted tasks reference the remapped ids
+        rows = self.db.query(
+            "SELECT id FROM agent_tasks WHERE project_id=? AND tenant_id=? AND user_id=?",
+            (p1["id"], self.tenant, self.user))
+        persisted = {row["id"] for row in rows}
+        self.assertEqual(persisted, ids1)
+
 
 if __name__ == "__main__":
     unittest.main()

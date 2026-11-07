@@ -4,11 +4,13 @@ from __future__ import annotations
 import json
 import os
 import uuid
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
+from agents.base import _EMPTY_OUTPUT_REPLY, _GENERATION_FAILED_REPLY
 from config.settings import BASE_DIR
 from core.output_contracts import extract_structured, guidance_for
 from core.runtime import build_runtime, load_registry
@@ -16,6 +18,27 @@ from core.runtime import build_runtime, load_registry
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_generation_failure(raw: str) -> bool:
+    """True when the agent's reply is a system fallback for a model failure
+    rather than a real draft. The structured runner must never record these as
+    completed work; they are transient (parallel calls hitting one local model)
+    and should be retried."""
+    text = (raw or "").strip()
+    return (
+        text == _GENERATION_FAILED_REPLY.strip()
+        or text == _EMPTY_OUTPUT_REPLY.strip()
+        or text.startswith("I couldn't reach the language model just now")
+        or text.startswith("The model returned no usable response just now")
+    )
+
+
+def _task_retries() -> int:
+    try:
+        return max(0, int(os.getenv("PAT_TASK_RETRIES", "3")))
+    except ValueError:
+        return 3
 
 
 def _parallel_workers() -> int:
@@ -135,7 +158,10 @@ class ProjectRunner:
             "WHERE id=? AND project_id=? AND tenant_id=? AND user_id=? AND status='pending'",
             (now, task["id"], project_id, self.tenant_id, self.user_id))
         self._log(agent, "task_started", {"project_id": project_id, "task_id": task["id"]})
-        try:
+        raw = ""
+        last_err = ""
+        retries = _task_retries()
+        for attempt in range(retries + 1):
             result = runtime.dispatch(agent, prompt, {
                 "project_id": project_id,
                 "task_id": task["id"],
@@ -143,7 +169,16 @@ class ProjectRunner:
             })
             raw = str(result.get("reply") or "").strip()
             if not raw:
-                raise ValueError("agent returned empty output")
+                last_err = "agent returned empty output"
+            elif _is_generation_failure(raw):
+                last_err = raw[:120]
+            else:
+                break  # real draft, use it
+            if attempt < retries:
+                time.sleep(1.5)
+        if not raw or _is_generation_failure(raw):
+            raise ValueError(last_err or "agent returned empty output")
+        try:
             # Best-effort structured payload: never blocks the run if the agent
             # omits/strips the JSON block \u2014 the readable prose is always kept.
             structured, prose = extract_structured(raw, task["deliverable_type"])
