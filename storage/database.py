@@ -416,6 +416,8 @@ class Database:
             apply_agent_runs_table(c)
             from storage.migrations_media_assets import apply_media_assets_table
             apply_media_assets_table(c)
+            from storage.migrations_credentials import apply_credentials_table
+            apply_credentials_table(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))
