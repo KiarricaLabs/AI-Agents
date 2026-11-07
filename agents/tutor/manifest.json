@@ -33,8 +33,7 @@
   },
   "tools": [
     "calculate",
-    "save_local_artifact",
-    "work_propose_goal"
+    "save_local_artifact"
   ],
   "permissions": [
     "memory:read",

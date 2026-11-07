@@ -32,10 +32,7 @@
   "tools": [
     "now",
     "simulate_travel",
-    "save_local_artifact",
-    "work_propose_project",
-    "work_propose_goal",
-    "work_propose_assignment"
+    "save_local_artifact"
   ],
   "permissions": [
     "memory:read",

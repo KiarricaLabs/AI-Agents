@@ -29,9 +29,7 @@
   "tools": [
     "simulate_email",
     "simulate_social_campaign",
-    "save_local_artifact",
-    "work_propose_deliverable",
-    "work_propose_deliverable_version"
+    "save_local_artifact"
   ],
   "permissions": [
     "memory:read",

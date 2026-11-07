@@ -30,10 +30,7 @@
     "approval_required": true
   },
   "tools": [
-    "save_local_artifact",
-    "work_propose_project",
-    "work_propose_deliverable",
-    "work_propose_workspace"
+    "save_local_artifact"
   ],
   "permissions": [
     "memory:read",

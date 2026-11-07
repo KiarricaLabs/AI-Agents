@@ -26,9 +26,7 @@
     "write": [],
     "approval_required": true
   },
-  "tools": [
-    "work_propose_goal_update"
-  ],
+  "tools": [],
   "permissions": [
     "memory:read",
     "brand:read",

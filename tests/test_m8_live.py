@@ -28,8 +28,14 @@ def _ollama_up() -> bool:
 
 OLLAMA_UP = _ollama_up()
 
+# Live-Ollama smoke tests are opt-in (PAT_RUN_LIVE_TESTS=1) so the default suite
+# stays deterministic and fast: they dispatch to the real, slow local model and
+# are meant to be run on demand with `python -m unittest tests.test_m8_live`.
+_LIVE_OK = os.getenv("PAT_RUN_LIVE_TESTS", "").strip().lower() in ("1", "true", "yes")
+_SKIP_REASON = "live-Ollama smoke tests are opt-in (set PAT_RUN_LIVE_TESTS=1)"
 
-@unittest.skipUnless(OLLAMA_UP, "Ollama not running — live test skipped")
+
+@unittest.skipUnless(OLLAMA_UP and _LIVE_OK, f"Ollama unavailable or {_SKIP_REASON}")
 class TestLiveAgents(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -55,7 +61,7 @@ class TestLiveAgents(unittest.TestCase):
                 self.assertEqual(r["location"], "local:ollama:llama3.1")
 
 
-@unittest.skipUnless(OLLAMA_UP, "Ollama not running — live test skipped")
+@unittest.skipUnless(OLLAMA_UP and _LIVE_OK, f"Ollama unavailable or {_SKIP_REASON}")
 class TestLiveConversation(unittest.TestCase):
     def test_two_turn_conversation_live(self):
         """Real two-turn conversation through the actual HTTP router (Ollama)."""

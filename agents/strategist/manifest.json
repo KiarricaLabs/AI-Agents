@@ -32,10 +32,7 @@
   "tools": [
     "calculate",
     "simulate_research",
-    "save_local_artifact",
-    "work_propose_project",
-    "work_propose_goal",
-    "work_propose_goal_update"
+    "save_local_artifact"
   ],
   "permissions": [
     "memory:read",
