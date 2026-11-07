@@ -106,6 +106,10 @@ class ModelRouter:
         spec = model_spec or {}
         provider = str(spec.get("provider") or AI_PROVIDER).lower()
         model = spec.get("model") or AI_MODEL
+        # A1: allow a faster execution model via env without changing manifests.
+        exec_override = os.getenv("PAT_EXEC_MODEL")
+        if exec_override and spec.get("role") != "planner":
+            model = exec_override
         return provider, model
 
     def _generate_with_retry(self, model: str, prompt: str, system: str,
