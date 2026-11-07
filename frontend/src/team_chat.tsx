@@ -227,6 +227,15 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   const send = async () => {
     const text = draft.trim();
     if (!text || sending || booting) return;
+    // The user explicitly chose "Delegate to the team". Enter/Send must route
+    // through the structured planner (POST /projects), never fall through to the
+    // conversational chat like the team/task auto-delegate heuristic does.
+    if (mode === "delegate") {
+      setActiveContact("team");
+      setDraft("");
+      await delegateToTeam(text);
+      return;
+    }
     const asksToCapturePlan = /\b(?:capture|save|turn)\b[\s\S]{0,30}\b(?:as|into)\b[\s\S]{0,12}\bplan\b/i.test(text);
     const asksToDelegate = (mode === "team" || mode === "task") && (
       /\b(delegate|assign|break\s+(?:this|it)\s+into\s+tasks|have\s+\w+\s+(?:draft|research|define|write)|(?:create|build|launch)\s+(?:a\s+)?campaign|marketing campaign|campaign strategy|long[-\s]term strategy|strategy for)\b/i.test(text) ||

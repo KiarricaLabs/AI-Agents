@@ -2222,6 +2222,34 @@ describe("Team Chat (component)", () => {
     expect(urls.some((u: string) => u.endsWith("/run"))).toBe(false);
   });
 
+  it("routes Enter in Delegate mode through the structured planner, not the chat", async () => {
+    // Regression: pressing Enter in "Delegate to the team" must call POST /projects
+    // (which feeds the structured approval flow) and never fall through to the
+    // conversational /team/messages path.
+    localStorage.removeItem("ai-team-shared-thread");
+    const fn = vi.fn(async (url: string, init?: any) => {
+      if (url.endsWith("/team/threads")) return ok({ thread_id: "team-1" });
+      if (url.includes("/memory/conversation?")) return ok({ items: [] });
+      if (url.endsWith("/projects") && init?.method === "POST") {
+        return ok({ id: "prj-x", status: "awaiting_plan_approval" });
+      }
+      return ok({ items: [] });
+    });
+    globalThis.fetch = fn as any;
+    render(<TeamChat />);
+    await screen.findByTestId("team-chat-input");
+    fireEvent.click(screen.getByTestId("mode-delegate"));
+    fireEvent.change(screen.getByTestId("team-chat-input"), { target: { value: "goal: Launch the On Us platform in the Bay Area" } });
+    fireEvent.keyDown(screen.getByTestId("team-chat-input"), { key: "Enter" });
+    const msg = await screen.findByTestId("delegate-msg");
+    expect(msg.textContent).toContain("Structured plan created");
+    await waitFor(() => {
+      const urls = fn.mock.calls.map((c: any) => c[0] || "");
+      expect(urls.some((u: string) => u.endsWith("/projects"))).toBe(true);
+      expect(urls.some((u: string) => u.includes("/team/messages"))).toBe(false);
+    });
+  });
+
   it("shows an explicit failure on structured planning error instead of falling back to TeamGoals", async () => {
     localStorage.removeItem("ai-team-shared-thread");
     const fn = vi.fn(async (url: string, init?: any) => {
