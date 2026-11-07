@@ -86,12 +86,11 @@ interface Msg {
   created_at?: string;
 }
 
-type Mode = "team" | "task" | "propose" | "delegate";
+type Mode = "team" | "task" | "delegate";
 
 const MODE_META: Record<Mode, { label: string; hint: string; prefix: string }> = {
   team: { label: "Ask the team", hint: "Any relevant agent replies.", prefix: "" },
   task: { label: "Designate a task", hint: "The message is treated as an assignment for the most relevant agents.", prefix: "[Designated task] " },
-  propose: { label: "Request a proposal", hint: "Ask the team to draft a proposal for your approval.", prefix: "[Proposal request] " },
   delegate: { label: "Delegate to the team", hint: "Turn this into a runnable team plan; agents run their steps, you approve the final deliverable.", prefix: "[Delegated to team] " },
 };
 
@@ -110,13 +109,6 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   const [mode, setMode] = useState<Mode>("team");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  // --- Request-a-proposal: extract an editable draft, choose a parent, file it ---
-  const [propKind, setPropKind] = useState("project");
-  const [propDraft, setPropDraft] = useState<any | null>(null);
-  const [propParent, setPropParent] = useState("");
-  const [propParents, setPropParents] = useState<{ workspaces: any[]; projects: any[]; goals: any[] }>({ workspaces: [], projects: [], goals: [] });
-  const [propBusy, setPropBusy] = useState(false);
-  const [propMsg, setPropMsg] = useState("");
   // --- Delegate-to-the-team: message -> TeamGoal proposal -> approve/authorize/run ---
   const [delegBusy, setDelegBusy] = useState(false);
   const [delegMsg, setDelegMsg] = useState("");
@@ -299,133 +291,6 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
     }
   };
 
-  const loadParents = async () => {
-    try {
-      const [w, p, g] = await Promise.all([
-        fetch(`${API}/workspaces`), fetch(`${API}/workspaces/projects`), fetch(`${API}/workspaces/goals`),
-      ]);
-      const wd = await w.json().catch(() => ({}));
-      const pd = await p.json().catch(() => ({}));
-      const gd = await g.json().catch(() => ({}));
-      setPropParents({
-        workspaces: wd.items || [],
-        projects: pd.items || [],
-        goals: gd.items || [],
-      });
-    } catch { /* offline */ }
-  };
-
-  const chooseKind = (kind: string) => {
-    setPropKind(kind);
-    setPropDraft(null);
-    setPropParent("");
-    setPropMsg("");
-  };
-
-  const extractProposal = async () => {
-    const message = draft.trim();
-    if (!message || propBusy) return;
-    setPropBusy(true);
-    setPropMsg("");
-    try {
-      const r = await fetch(`${API}/work/extract`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: propKind, message, subject_agent: "workspace_architect" }),
-      });
-      const b = await r.json().catch(() => ({}));
-      if (!r.ok) { setPropMsg((b as any).detail || `Could not extract a draft (${r.status}).`); return; }
-      setPropDraft(b.draft);
-      setPropMsg("Draft ready — choose a parent and propose for approval.");
-      await loadParents();
-    } catch {
-      setPropMsg("Could not extract a draft. Please try again.");
-    } finally {
-      setPropBusy(false);
-    }
-  };
-
-  const proposeProposal = async () => {
-    if (propBusy || !propDraft) return;
-    let work_type = propKind;
-    let payload: any = {};
-    if (propKind === "project") {
-      // Seamless path: with no workspace selected, create one (a container) on
-      // this explicit human action, then attach the project proposal to it.
-      if (propParent) {
-        payload = { workspace_id: propParent, name: propDraft.title || "New project" };
-      } else {
-        const wsName = (propDraft.title || "New project").slice(0, 60) + " · workspace";
-        const wsr = await fetch(`${API}/workspaces`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: wsName }),
-        });
-        const wsb = await wsr.json().catch(() => ({}));
-        if (!wsr.ok || !wsb.id) {
-          setPropMsg("Could not create a workspace to attach the project to. Please create one in Projects first.");
-          return;
-        }
-        payload = { workspace_id: wsb.id, name: propDraft.title || "New project" };
-      }
-    } else if (propKind === "goal") {
-      if (!propParent) { setPropMsg("Choose a parent project."); return; }
-      payload = { project_id: propParent, title: propDraft.title || "New goal", priority: 0 };
-    } else if (propKind === "assignment") {
-      if (!propParent) { setPropMsg("Choose a target goal."); return; }
-      payload = { goal_id: propParent, agent_id: propDraft.subject_agent || "workspace_architect" };
-    } else if (propKind === "plan") {
-      // A plan is self-contained: approving it creates its own workspace/project
-      // plus goals (from milestones) and deliverables. No parent needed.
-    } else {
-      if (!propParent) { setPropMsg("Choose a parent project."); return; }
-      payload = { project_id: propParent, title: propDraft.title || "New deliverable" };
-    }
-    setPropBusy(true);
-    setPropMsg("");
-    try {
-      if (propKind === "plan") {
-        const r = await fetch(`${API}/team/plans`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: propDraft.title || "New plan",
-            milestones: propDraft.milestones || [],
-            deliverables: propDraft.deliverables || [],
-            tasks: propDraft.tasks || [],
-            success_criteria: [],
-            description: propDraft.description || "",
-            thread_id: threadId || undefined,
-          }),
-        });
-        const b = await r.json().catch(() => ({}));
-        if (!r.ok) { setPropMsg((b as any).detail || `Could not create the plan proposal (${r.status}).`); return; }
-        setPropMsg("Plan proposed — approve it to create the goals and deliverables.");
-        setPropDraft(null);
-        setPropParent("");
-        return;
-      }
-      const r = await fetch(`${API}/work/proposals`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ work_type, action: "create", payload, thread_id: threadId || undefined }),
-      });
-      const b = await r.json().catch(() => ({}));
-      if (!r.ok) { setPropMsg((b as any).detail || `Could not create the proposal (${r.status}).`); return; }
-      setPropMsg("Proposal created — approve it in Work · Approvals to create the real record.");
-      setPropDraft(null);
-      setPropParent("");
-    } catch {
-      setPropMsg(propKind === "plan" ? "Could not create the plan proposal. Please try again." : "Could not create the proposal. Please try again.");
-    } finally {
-      setPropBusy(false);
-    }
-  };
-
-  const parentOptions = () => {
-    if (propKind === "project") return propParents.workspaces.map((w) => ({ id: w.id, label: w.name }));
-    if (propKind === "goal") return propParents.projects.map((p) => ({ id: p.id, label: p.name }));
-    if (propKind === "assignment") return propParents.goals.map((g) => ({ id: g.id, label: g.title }));
-    return propParents.projects.map((p) => ({ id: p.id, label: p.name }));
-  };
-
   async function delegateToTeam(message?: string) {
     const request = (message ?? draft).trim();
     if (!request) return;
@@ -578,47 +443,6 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
         </div>
       )}
 
-      {mode === "propose" && (
-        <div className="extract-panel" data-testid="propose-panel">
-          <div className="extract-panel__head">
-            <span className="result__heading">Build a proposal from your message</span>
-            <span className="badge badge--faint">draft only — requires your approval</span>
-          </div>
-          <p className="muted">Pick the kind of work, extract an editable draft, choose a parent, then file it for approval.</p>
-          <div className="work-toolbar" style={{ flexWrap: "wrap" }}>
-            <select className="select select--small" value={propKind} onChange={(e) => chooseKind(e.target.value)} aria-label="Proposal kind" data-testid="prop-kind">
-              <option value="project">Project</option>
-              <option value="goal">Goal</option>
-              <option value="plan">Plan (goals + deliverables)</option>
-              <option value="assignment">Assignment</option>
-              <option value="deliverable">Deliverable</option>
-            </select>
-            <button className="btn btn--sm btn--ghost" data-testid="prop-extract" disabled={propBusy || !draft.trim()} onClick={extractProposal}>
-              {propBusy ? "Extracting…" : "Extract draft"}
-            </button>
-          </div>
-
-          {propDraft && (
-            <div className="work-toolbar" style={{ flexWrap: "wrap" }}>
-              <span className="muted">Title:</span>
-              <input className="input input--sm" value={propDraft.title || ""} data-testid="prop-title" aria-label="Proposal title"
-                onChange={(e) => setPropDraft({ ...propDraft, title: e.target.value })} />
-              {propKind !== "plan" && (<>
-                <span className="muted">Parent:</span>
-                <select className="select select--small" value={propParent} onChange={(e) => setPropParent(e.target.value)} aria-label="Parent" data-testid="prop-parent">
-                  <option value="">Select a parent…</option>
-                  {parentOptions().map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-                </select>
-              </>)}
-              <button className="btn btn--sm btn--primary" data-testid="prop-file" disabled={propBusy} onClick={proposeProposal}>
-                {propBusy ? "Filing…" : "Propose for approval"}
-              </button>
-            </div>
-          )}
-          {propMsg && <p className="success" role="status" data-testid="prop-msg">{propMsg}</p>}
-        </div>
-      )}
-
       <div className="team-chat__list" ref={listRef} data-testid="team-chat-list">
         {booting ? (
           <div className="empty">Preparing your team chat…</div>
@@ -662,16 +486,7 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
           disabled={booting}
         />
         <div className="team-chat__actions">
-          {mode === "propose" ? (
-            <button
-              className="btn btn--primary"
-              data-testid="team-chat-propose"
-              disabled={booting || propBusy || !draft.trim()}
-              onClick={extractProposal}
-            >
-              {propBusy ? "Extracting…" : "Extract & propose"}
-            </button>
-          ) : mode === "delegate" ? (
+          {mode === "delegate" ? (
             <button
               className="btn btn--primary"
               data-testid="team-chat-delegate"
