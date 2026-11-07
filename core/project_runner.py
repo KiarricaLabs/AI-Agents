@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -14,6 +15,15 @@ from core.runtime import build_runtime, load_registry
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parallel_workers() -> int:
+    """Bounded parallelism for a run wave. Independent tasks run together so the
+    slow local-model calls overlap; the number is capped to keep memory/load sane."""
+    try:
+        return max(1, min(6, int(os.getenv("PAT_RUNNER_PARALLEL", "3"))))
+    except ValueError:
+        return 3
 
 
 class ProjectRunner:
@@ -54,12 +64,14 @@ class ProjectRunner:
             raise ValueError("agent runner is halted by the global kill switch")
 
         tasks = [dict(row) for row in self._tasks(project_id)]
-        by_id = {task["id"]: task for task in tasks}
         runtime = build_runtime(self.db, self.tenant_id, self.user_id)
         completed: Dict[str, Any] = {
             task["id"]: task["output"] for task in tasks
             if task["status"] == "done" and task["output"]
         }
+        # Each wave runs every currently-runnable task concurrently (independent
+        # tasks overlap their slow local-model calls); the next wave only opens
+        # once all of the previous wave's tasks are done, preserving dependencies.
         while True:
             if os.getenv("PAT_AGENT_KILL_SWITCH", "").lower() in {"1", "true", "yes", "on"}:
                 raise ValueError("agent runner halted by the global kill switch")
@@ -70,47 +82,19 @@ class ProjectRunner:
             ]
             if not runnable:
                 break
-            task = runnable[0]
-            agent = task["agent"]
-            if agent not in self.registry.list():
-                self._fail(project_id, task["id"], f"unknown agent: {agent}")
-                raise ValueError(f"unknown agent: {agent}")
-            dependencies = json.loads(task["depends_on"] or "[]")
-            prompt = (
-                f"Execute one focused task for this project: {project['goal']}\n\n"
-                f"YOUR TASK:\n{task['instruction']}\n\n"
-                f"DELIVERABLE TYPE:\n{task['deliverable_type']}\n\n"
-                f"ACCEPTANCE CRITERIA:\n{task['acceptance_criteria']}\n\n"
-                f"BUSINESS PROFILE:\n{self.profile}\n\n"
-                f"COMPLETED DEPENDENCY OUTPUTS:\n{json.dumps({d: completed[d] for d in dependencies}, ensure_ascii=False)}\n\n"
-                "Produce only the local draft, research, or artifact for this task. "
-                "Do not send email, post, DM, pay, book, or perform any outward action."
-            )
-            now = _now()
-            self.db.execute(
-                "UPDATE agent_tasks SET status='running', updated_at=? "
-                "WHERE id=? AND project_id=? AND tenant_id=? AND user_id=? AND status='pending'",
-                (now, task["id"], project_id, self.tenant_id, self.user_id))
-            self._log(agent, "task_started", {"project_id": project_id, "task_id": task["id"]})
-            try:
-                result = runtime.dispatch(agent, prompt, {
-                    "project_id": project_id,
-                    "task_id": task["id"],
-                    "accepted_dependency_outputs": dependencies,
-                })
-                output = str(result.get("reply") or "").strip()
-                if not output:
-                    raise ValueError("agent returned empty output")
-                self.db.execute(
-                    "UPDATE agent_tasks SET status='done', review_status='pending', output=?, updated_at=? "
-                    "WHERE id=? AND project_id=? AND tenant_id=? AND user_id=?",
-                    (output, _now(), task["id"], project_id, self.tenant_id, self.user_id))
-                completed[task["id"]] = output
-                self._log(agent, "task_completed", {"project_id": project_id, "task_id": task["id"]})
-                task["status"] = "done"
-            except Exception as exc:
-                self._fail(project_id, task["id"], str(exc))
-                raise
+            workers = min(_parallel_workers(), len(runnable))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(self._run_task, runtime, project, task, completed): task
+                           for task in runnable}
+                for fut in as_completed(futures):
+                    task = futures[fut]
+                    try:
+                        task_id, output = fut.result()
+                    except Exception as exc:
+                        self._fail(project_id, task["id"], str(exc))
+                        raise
+                    completed[task_id] = output
+                    task["status"] = "done"
 
         remaining = [task for task in tasks if task["status"] == "pending"]
         if remaining:
@@ -123,6 +107,48 @@ class ProjectRunner:
             "WHERE id=? AND tenant_id=? AND user_id=?",
             (_now(), project_id, self.tenant_id, self.user_id))
         return {"project_id": project_id, "status": "awaiting_review", "outputs": completed}
+
+    def _run_task(self, runtime, project, task, completed) -> tuple:
+        """Execute one task to completion. Returns (task_id, output). Called from
+        a worker thread; DB writes are serialized by the shared Database lock."""
+        agent = task["agent"]
+        if agent not in self.registry.list():
+            raise ValueError(f"unknown agent: {agent}")
+        dependencies = json.loads(task["depends_on"] or "[]")
+        prompt = (
+            f"Execute one focused task for this project: {project['goal']}\n\n"
+            f"YOUR TASK:\n{task['instruction']}\n\n"
+            f"DELIVERABLE TYPE:\n{task['deliverable_type']}\n\n"
+            f"ACCEPTANCE CRITERIA:\n{task['acceptance_criteria']}\n\n"
+            f"BUSINESS PROFILE:\n{self.profile}\n\n"
+            f"COMPLETED DEPENDENCY OUTPUTS:\n{json.dumps({d: completed[d] for d in dependencies}, ensure_ascii=False)}\n\n"
+            "Produce only the local draft, research, or artifact for this task. "
+            "Do not send email, post, DM, pay, book, or perform any outward action."
+        )
+        project_id = project["id"]
+        now = _now()
+        self.db.execute(
+            "UPDATE agent_tasks SET status='running', updated_at=? "
+            "WHERE id=? AND project_id=? AND tenant_id=? AND user_id=? AND status='pending'",
+            (now, task["id"], project_id, self.tenant_id, self.user_id))
+        self._log(agent, "task_started", {"project_id": project_id, "task_id": task["id"]})
+        try:
+            result = runtime.dispatch(agent, prompt, {
+                "project_id": project_id,
+                "task_id": task["id"],
+                "accepted_dependency_outputs": dependencies,
+            })
+            output = str(result.get("reply") or "").strip()
+            if not output:
+                raise ValueError("agent returned empty output")
+            self.db.execute(
+                "UPDATE agent_tasks SET status='done', review_status='pending', output=?, updated_at=? "
+                "WHERE id=? AND project_id=? AND tenant_id=? AND user_id=?",
+                (output, _now(), task["id"], project_id, self.tenant_id, self.user_id))
+            self._log(agent, "task_completed", {"project_id": project_id, "task_id": task["id"]})
+            return task["id"], output
+        except Exception:
+            raise
 
     def _fail(self, project_id: str, task_id: str, error: str):
         self.db.execute(

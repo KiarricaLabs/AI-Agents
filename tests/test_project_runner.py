@@ -46,6 +46,46 @@ class ProjectRunnerTest(unittest.TestCase):
                 db.query("SELECT status FROM agent_tasks WHERE id='b'")[0]["status"],
                 "done")
 
+    def test_independent_tasks_run_in_parallel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(path=str(Path(directory) / "test.db"), tenant_id="t1")
+            now = "2026-01-01T00:00:00+00:00"
+            db.execute(
+                "INSERT INTO agent_projects "
+                "(id,tenant_id,user_id,goal,status,plan_json,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                ("p1", "t1", "u1", "Grow users", "running", "{}", now, now))
+            # Two tasks with NO dependencies -> both runnable in the same wave.
+            for task in (("a", "strategist", "Define the audience.", "[]"),
+                         ("c", "soundboard", "Stress-test the idea.", "[]")):
+                db.execute(
+                    "INSERT INTO agent_tasks "
+                    "(id,project_id,tenant_id,user_id,agent,instruction,depends_on,status,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (task[0], "p1", "t1", "u1", task[1], task[2], task[3],
+                     "pending", now, now))
+            import threading
+            state = {"active": 0, "peak": 0, "lock": threading.Lock()}
+
+            class ParaRuntime:
+                def dispatch(self, agent, prompt, context):
+                    with state["lock"]:
+                        state["active"] += 1
+                        state["peak"] = max(state["peak"], state["active"])
+                    import time
+                    time.sleep(0.1)
+                    with state["lock"]:
+                        state["active"] -= 1
+                    return {"reply": f"{agent} draft"}
+
+            runtime = ParaRuntime()
+            with patch("core.project_runner.build_runtime", return_value=runtime):
+                result = ProjectRunner(db, "t1", "u1").run("p1")
+            self.assertEqual(result["status"], "awaiting_review")
+            self.assertEqual(set(result["outputs"].keys()), {"a", "c"})
+            # Both independent tasks overlapped -> observed peak concurrency >= 2.
+            self.assertGreaterEqual(state["peak"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
