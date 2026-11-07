@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_project_runkey ON agent_runs(project_id, run_key) WHERE run_key IS NOT NULL;
 """
 
 

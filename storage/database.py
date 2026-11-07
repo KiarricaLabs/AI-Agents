@@ -446,6 +446,7 @@ class Database:
             "ALTER TABLE agent_tasks ADD COLUMN output_json TEXT",
             "ALTER TABLE agent_projects ADD COLUMN brand_id TEXT",
             "ALTER TABLE agent_projects ADD COLUMN schedule_interval_seconds INTEGER",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_project_runkey ON agent_runs(project_id, run_key) WHERE run_key IS NOT NULL",
             "ALTER TABLE agent_projects ADD COLUMN run_attempt INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agent_projects ADD COLUMN run_key TEXT",
             "ALTER TABLE agent_projects ADD COLUMN run_heartbeat_at TEXT",

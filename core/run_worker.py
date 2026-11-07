@@ -87,9 +87,17 @@ def enqueue_scheduled_run(db, project_id, tenant, user, interval):
         return None
     job_id = str(uuid.uuid4())
     nows = datetime.now(timezone.utc).isoformat()
-    with db.transaction() as conn:
-        conn.execute("INSERT INTO agent_runs (id,project_id,tenant_id,user_id,run_key,status,created_at) VALUES (?,?,?,?,?,?,?)",
-                     (job_id, project_id, tenant, user, run_key, "queued", nows))
+    try:
+        with db.transaction() as conn:
+            conn.execute("INSERT INTO agent_runs (id,project_id,tenant_id,user_id,run_key,status,created_at) VALUES (?,?,?,?,?,?,?)",
+                         (job_id, project_id, tenant, user, run_key, "queued", nows))
+    except Exception as exc:
+        # Unique constraint violation -> return existing run id.
+        if "UNIQUE" in str(exc).upper() or "CONSTRAINT" in str(exc).upper():
+            rows = db.query("SELECT id FROM agent_runs WHERE project_id=? AND run_key=?", (project_id, run_key))
+            if rows:
+                return rows[0]["id"]
+        raise
     return job_id
 
 
