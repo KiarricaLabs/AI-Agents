@@ -25,4 +25,3 @@ class Scheduler:
                 self.enqueue_fn()
             except Exception:
                 pass
-"""
