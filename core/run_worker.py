@@ -65,6 +65,34 @@ class RunWorker:
                 (_now(), str(exc)[:500], job["id"]))
 
 
+def enqueue_scheduled_run(db, project_id, tenant, user, interval):
+    """Idempotently enqueue a scheduled run for one occurrence."""
+    import uuid
+    from datetime import datetime, timezone
+    # occurrence key: project + interval bucket
+    bucket = int(time.time() // max(1, interval)) if False else None
+    # use wall-clock minute bucket for determinism within an occurrence
+    now = datetime.now(timezone.utc)
+    # bucket to interval boundary
+    epoch = int(now.timestamp())
+    occ = epoch - (epoch % max(1, int(interval)))
+    run_key = f"{project_id}:{occ}"
+    # check existing
+    rows = db.query("SELECT id FROM agent_runs WHERE project_id=? AND run_key=?", (project_id, run_key))
+    if rows:
+        return rows[0]["id"]
+    # approval gate
+    pr = db.query("SELECT status FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?", (project_id, tenant, user))
+    if not pr or pr[0]["status"] not in ("approved", "running"):
+        return None
+    job_id = str(uuid.uuid4())
+    nows = datetime.now(timezone.utc).isoformat()
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO agent_runs (id,project_id,tenant_id,user_id,run_key,status,created_at) VALUES (?,?,?,?,?,?,?)",
+                     (job_id, project_id, tenant, user, run_key, "queued", nows))
+    return job_id
+
+
 _worker = None
 
 

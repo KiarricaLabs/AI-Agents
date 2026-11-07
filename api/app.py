@@ -25,21 +25,12 @@ async def lifespan(app):
             interval = r["schedule_interval_seconds"] or 300
             tenant = r["tenant_id"]
             user = r["user_id"]
-            def make_enqueue(p, t, u):
+            def make_enqueue(p, t, u, iv):
                 def enqueue():
-                    import uuid, json
-                    from datetime import datetime, timezone
-                    # approval gate: only approved/running projects
-                    pr = db.query("SELECT status FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?", (p, t, u))
-                    if not pr or pr[0]["status"] not in ("approved", "running"):
-                        return
-                    job_id = str(uuid.uuid4())
-                    now = datetime.now(timezone.utc).isoformat()
-                    with db.transaction() as conn:
-                        conn.execute("INSERT INTO agent_runs (id,project_id,tenant_id,user_id,status,created_at) VALUES (?,?,?,?,?,?)",
-                                     (job_id, p, t, u, "queued", now))
+                    from core.run_worker import enqueue_scheduled_run
+                    enqueue_scheduled_run(db, p, t, u, iv)
                 return enqueue
-            sched = Scheduler(make_enqueue(pid, tenant, user), interval_seconds=interval)
+            sched = Scheduler(make_enqueue(pid, tenant, user, interval), interval_seconds=interval)
             sched.start()
             _SCHEDULERS[pid] = sched
     except Exception:

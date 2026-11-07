@@ -372,16 +372,8 @@ def set_schedule(project_id: str, request: Request, body: dict = None):
             from core.run_worker import get_worker
             get_worker(_db)
             def enqueue():
-                import uuid
-                from datetime import datetime, timezone
-                pr = _db.query("SELECT status FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?", (project_id, tenant, user))
-                if not pr or pr[0]["status"] not in ("approved", "running"):
-                    return
-                job_id = str(uuid.uuid4())
-                now = datetime.now(timezone.utc).isoformat()
-                with _db.transaction() as conn:
-                    conn.execute("INSERT INTO agent_runs (id,project_id,tenant_id,user_id,status,created_at) VALUES (?,?,?,?,?,?)",
-                                 (job_id, project_id, tenant, user, "queued", now))
+                from core.run_worker import enqueue_scheduled_run
+                enqueue_scheduled_run(_db, project_id, tenant, user, interval)
             sched = Scheduler(enqueue, interval_seconds=interval)
             sched.start()
             _appmod._SCHEDULERS[project_id] = sched
@@ -394,16 +386,8 @@ def set_schedule(project_id: str, request: Request, body: dict = None):
             from core.run_worker import get_worker
             get_worker(_db)
             def enqueue2():
-                import uuid
-                from datetime import datetime, timezone
-                pr = _db.query("SELECT status FROM agent_projects WHERE id=? AND tenant_id=? AND user_id=?", (project_id, tenant, user))
-                if not pr or pr[0]["status"] not in ("approved", "running"):
-                    return
-                job_id = str(uuid.uuid4())
-                now = datetime.now(timezone.utc).isoformat()
-                with _db.transaction() as conn:
-                    conn.execute("INSERT INTO agent_runs (id,project_id,tenant_id,user_id,status,created_at) VALUES (?,?,?,?,?,?)",
-                                 (job_id, project_id, tenant, user, "queued", now))
+                from core.run_worker import enqueue_scheduled_run
+                enqueue_scheduled_run(_db, project_id, tenant, user, interval)
             sched = Scheduler(enqueue2, interval_seconds=interval)
             sched.start()
             _appmod._SCHEDULERS[project_id] = sched
