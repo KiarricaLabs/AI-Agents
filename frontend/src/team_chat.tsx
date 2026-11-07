@@ -304,7 +304,15 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
     const request = (message ?? draft).trim();
     if (!request) return;
     setDelegBusy(true);
-    setDelegMsg("");
+    // Immediate feedback: show the user's request as sent, and a clear working
+    // status, because the structured planner (local model) can take up to a
+    // minute before a plan is ready.
+    setMessages((prev) => [...prev, {
+      role: "user" as const,
+      content: `${MODE_META.delegate.prefix}${request}`,
+      created_at: new Date().toISOString(),
+    }]);
+    setDelegMsg("Generating your team plan\u2026 this can take up to a minute.");
     setDelegDraft(null);
     try {
       const structured = await fetch(`${API}/projects`, {
