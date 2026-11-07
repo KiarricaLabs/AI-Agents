@@ -64,7 +64,6 @@ describe("App shell and navigation", () => {
       ["home", "Home"],
       ["projects", "Projects"],
       ["tasks", "Task Center"],
-      ["activity", "Activity"],
       ["settings", "Settings"],
     ];
     for (const [route, label] of tabs) {
@@ -469,90 +468,7 @@ describe("Work view — Deliverables", () => {
   });
 });
 
-describe("Episodes", () => {
-  const agentsFixture = () => ({
-    [`${API}/agents`]: () =>
-      ok({ agents: [{ name: "tutor", display_name: "Brittany", archetype: "The Educator" }] }),
-  });
-
-  it("shows empty state when there are no episodes", async () => {
-    globalThis.fetch = makeFetch() as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(await screen.findByText(/No agent activity yet/)).toBeInTheDocument();
-  });
-
-  it("renders episode progress and running controls with the agent display name", async () => {
-    globalThis.fetch = makeFetch({
-      ...agentsFixture(),
-      [`${API}/episodes`]: () =>
-        ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0.5, created_at: "2026-11-01T00:00:00Z" }] }),
-    }) as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-
-    expect(await screen.findByText("Brittany")).toBeInTheDocument();
-    expect(screen.getByText(/50%/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
-  });
-
-  it("cancels a running episode via POST without opening the detail panel", async () => {
-    const fn = makeFetch({
-      ...agentsFixture(),
-      [`${API}/episodes`]: () =>
-        ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0.5 }] }),
-    });
-    globalThis.fetch = fn as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
-
-    await waitFor(() => {
-      expect(fn).toHaveBeenCalledWith(`${API}/episodes/e1/cancel`, expect.objectContaining({ method: "POST" }));
-    });
-    // Cancelling invokes the button handler only; the row click (stopPropagation)
-    // must not open the episode detail panel.
-    expect(screen.queryByText("Activity detail")).not.toBeInTheDocument();
-  });
-
-  it("does not show controls for non-running episodes", async () => {
-    globalThis.fetch = makeFetch({
-      ...agentsFixture(),
-      [`${API}/episodes`]: () =>
-        ok({ items: [{ id: "e1", agent_id: "tutor", status: "done", progress: 1 }] }),
-    }) as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    await screen.findByText("Brittany");
-    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
-  });
-
-  it("opens episode detail with its events when a row is clicked", async () => {
-    globalThis.fetch = makeFetch({
-      ...agentsFixture(),
-      [`${API}/episodes`]: () =>
-        ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0.5, created_at: "2026-11-01T00:00:00Z" }] }),
-      [`${API}/episodes/e1`]: () =>
-        ok({
-          episode: { id: "e1", agent_id: "tutor", status: "running", progress: 0.5, created_at: "2026-11-01T00:00:00Z" },
-          events: [
-            { status: "started", detail: "dispatched", created_at: "2026-11-01T00:00:01Z" },
-            { status: "checkpoint", detail: "40%", created_at: "2026-11-01T00:00:05Z" },
-          ],
-        }),
-    }) as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    fireEvent.click(await screen.findByText("Brittany"));
-
-    expect(await screen.findByText("Activity detail")).toBeInTheDocument();
-    expect(await screen.findByText("Started")).toBeInTheDocument();
-    expect(screen.getByText("Checkpoint")).toBeInTheDocument();
-    expect(screen.getByText("dispatched")).toBeInTheDocument();
-  });
-});
+;
 
 describe.skip("Agents", () => {
   const agentsFixture = () => ({
@@ -1790,145 +1706,9 @@ describe("Approvals & work navigation (M10 D1)", () => {
   });
 });
 
-describe("Execution tracking (M10 D2)", () => {
-  const workFixture = (over: Record<string, Route> = {}) => ({
-    [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
-    [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
-    [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", title: "Ship v1", project_id: "p1", status: "open" }] }),
-    [`${API}/workspaces/assignments`]: () => ok({ items: [{ id: "a1", goal_id: "g1", agent_id: "tutor", status: "queued" }] }),
-    [`${API}/workspaces/deliverables`]: () => ok({ items: [] }),
-    ...over,
-  });
+;
 
-  it("starts tracking from the Work tab using the assigned agent", async () => {
-    const fn = makeFetch(workFixture({
-      [`${API}/work/goal/g1/execute`]: () => ok({ episode_id: "ep1", status: "running", already_active: false, work_type: "goal", work_id: "g1", agent_id: "tutor" }),
-    }));
-    globalThis.fetch = fn as any;
-    render(<App />);
-    await openWorkProject();
-    fireEvent.click((await screen.findAllByText("Ship v1"))[0]); // goals list row (first "Ship v1" in DOM)
-    fireEvent.click(await screen.findByTestId("track-g1"));
-    await waitFor(() => {
-      expect(fn).toHaveBeenCalledWith(
-        `${API}/work/goal/g1/execute`,
-        expect.objectContaining({ method: "POST", body: JSON.stringify({ agent_id: "tutor" }) })
-      );
-    });
-    expect(await screen.findByText("Tracking")).toBeInTheDocument();
-  });
-
-  it("records an evidence-gated checkpoint from Activity", async () => {
-    const fn = makeFetch({
-      [`${API}/episodes`]: () => ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0, created_at: "2026-11-01T00:00:00Z" }] }),
-      [`${API}/episodes/e1`]: () => ok({ episode: { id: "e1", agent_id: "tutor", status: "running", progress: 0 }, events: [] }),
-    });
-    globalThis.fetch = fn as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    fireEvent.click(await screen.findByText(/Tutor/));
-    await screen.findByTestId("checkpoint-btn");
-    fireEvent.change(screen.getByLabelText("Evidence summary"), { target: { value: "milestone reached" } });
-    fireEvent.click(screen.getByTestId("checkpoint-btn"));
-    await waitFor(() => {
-      expect(fn).toHaveBeenCalledWith(
-        `${API}/episodes/e1/checkpoint`,
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({ progress: 0.5, evidence: { summary: "milestone reached" } }),
-        })
-      );
-    });
-  });
-
-  it("does not post a checkpoint with empty evidence", async () => {
-    const fn = makeFetch({
-      [`${API}/episodes`]: () => ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0, created_at: "2026-11-01T00:00:00Z" }] }),
-      [`${API}/episodes/e1`]: () => ok({ episode: { id: "e1", agent_id: "tutor", status: "running", progress: 0 }, events: [] }),
-    });
-    globalThis.fetch = fn as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    fireEvent.click(await screen.findByText(/Tutor/));
-    fireEvent.click(await screen.findByTestId("checkpoint-btn"));
-    expect(fn).not.toHaveBeenCalledWith(
-      `${API}/episodes/e1/checkpoint`,
-      expect.objectContaining({ method: "POST" })
-    );
-    expect(await screen.findByTestId("ep-error")).toBeInTheDocument();
-  });
-
-  it("completes an episode with validation evidence from Activity", async () => {
-    const fn = makeFetch({
-      [`${API}/episodes`]: () => ok({ items: [{ id: "e1", agent_id: "tutor", status: "running", progress: 0, created_at: "2026-11-01T00:00:00Z" }] }),
-      [`${API}/episodes/e1`]: () => ok({ episode: { id: "e1", agent_id: "tutor", status: "running", progress: 0 }, events: [] }),
-    });
-    globalThis.fetch = fn as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    fireEvent.click(await screen.findByText(/Tutor/));
-    await screen.findByTestId("complete-btn");
-    fireEvent.change(screen.getByLabelText("Completion evidence"), { target: { value: "work verified done" } });
-    fireEvent.click(screen.getByTestId("complete-btn"));
-    await waitFor(() => {
-      expect(fn).toHaveBeenCalledWith(
-        `${API}/episodes/e1/complete`,
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({ evidence: { summary: "work verified done" } }),
-        })
-      );
-    });
-  });
-});
-
-describe("Evidence application & execution history (M10 D3)", () => {
-  const epFixture = (episode: any, events: any[] = []) => ({
-    [`${API}/episodes`]: () => ok({ items: [{ id: episode.id, agent_id: episode.agent_id, status: episode.status, progress: episode.progress, applied_at: episode.applied_at, created_at: "2026-11-01T00:00:00Z" }] }),
-    [`${API}/episodes/${episode.id}`]: () => ok({ episode, events }),
-  });
-
-  it("applies a completed episode to its goal via confirmation", async () => {
-    const fn = makeFetch(epFixture({ id: "e1", agent_id: "tutor", status: "done", progress: 1, applied_at: null }));
-    globalThis.fetch = fn as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    fireEvent.click(await screen.findByText(/Tutor/));
-    await screen.findByTestId("apply-btn");
-    fireEvent.click(screen.getByTestId("apply-btn"));
-    fireEvent.click(await screen.findByTestId("confirm-apply"));
-    await waitFor(() => {
-      expect(fn).toHaveBeenCalledWith(`${API}/episodes/e1/apply`, expect.objectContaining({ method: "POST" }));
-    });
-  });
-
-  it("does not offer apply for an already-applied episode", async () => {
-    globalThis.fetch = makeFetch(epFixture({ id: "e1", agent_id: "tutor", status: "done", progress: 1, applied_at: "2026-11-01T00:00:00Z", applied_by: "u1" })) as any;
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    fireEvent.click(await screen.findByText(/Tutor/));
-    expect(await screen.findByTestId("episode-applied")).toBeInTheDocument();
-    expect(screen.queryByTestId("apply-btn")).not.toBeInTheDocument();
-  });
-
-  it("shows execution history in the goal detail panel", async () => {
-    globalThis.fetch = makeFetch({
-      [`${API}/workspaces`]: () => ok({ items: [{ id: "w1", name: "Acme" }] }),
-      [`${API}/workspaces/projects`]: () => ok({ items: [{ id: "p1", name: "Launch", workspace_id: "w1" }] }),
-      [`${API}/workspaces/goals`]: () => ok({ items: [{ id: "g1", title: "Ship v1", project_id: "p1", status: "in_progress" }] }),
-      [`${API}/workspaces/assignments`]: () => ok({ items: [] }),
-      [`${API}/workspaces/deliverables`]: () => ok({ items: [] }),
-      [`${API}/work/goal/g1/execution`]: () => ok({ work_type: "goal", work_id: "g1", episodes: [{ episode_id: "ep9", agent_id: "tutor", status: "done", progress: 1, evidence_summary: "ship verified", applied_at: "2026-11-01T00:00:00Z", applied_by: "u1" }] }),
-    }) as any;
-    render(<App />);
-    await openWorkProject();
-    fireEvent.click((await screen.findAllByText("Ship v1"))[0]);
-    const panel = await screen.findByTestId("exec-g1");
-    expect(panel).toBeInTheDocument();
-    expect(screen.getByText("ship verified")).toBeInTheDocument();
-    expect(screen.getByText("Applied")).toBeInTheDocument();
-  });
-});
+;
 
 describe("Approved-assignment execution (M10 D4.1)", () => {
   const base = () => ({

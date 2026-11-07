@@ -21,13 +21,12 @@ const WS_INTENT_RE = /(?:create|make|set up|start|add|open|new|build|establish)[
 const SAMPLE_VISIBLE_KEY = "pat.sampleData.visible";
 const SAMPLE_REVEALED_KEY = "pat.sampleData.revealed";
 
-type Tab = "home" | "projects" | "tasks" | "activity" | "settings";
+type Tab = "home" | "projects" | "tasks" | "settings";
 
 const NAV: { id: Tab; icon: string; label: string }[] = [
   { id: "home", icon: "home", label: "Home" },
   { id: "projects", icon: "briefcase", label: "Projects" },
   { id: "tasks", icon: "checklist", label: "Task Center" },
-  { id: "activity", icon: "activity", label: "Activity" },
   { id: "settings", icon: "gear", label: "Settings" },
 ];
 
@@ -35,7 +34,6 @@ const NAV_HINTS: Record<Tab, string> = {
   home: "Chat",
   projects: "Plans",
   tasks: "Review",
-  activity: "Execute",
   settings: "Learn",
 };
 
@@ -2955,7 +2953,6 @@ export default function App() {
                                   return (
                                     <div className="exec-control">
                                       <span className="badge badge--running">Tracking</span>
-                                      <button className="origin-link" onClick={() => { setTab("activity"); setSelectedEpisode(ep.episode_id); loadEpisode(ep.episode_id); }}>Open in Activity</button>
                                     </div>
                                   );
                                 }
@@ -3046,7 +3043,6 @@ export default function App() {
                                   return (
                                     <div className="exec-control">
                                       <span className="badge badge--running">Tracking</span>
-                                      <button className="origin-link" onClick={() => { setTab("activity"); setSelectedEpisode(ep.episode_id); loadEpisode(ep.episode_id); }}>Open in Activity</button>
                                     </div>
                                   );
                                 }
@@ -3244,168 +3240,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === "activity" && (
-          <section className="panel">
-            <div className="panel__head">
-              <div>
-                <h2 className="panel__title">Execution &amp; evidence</h2>
-                <p className="panel__sub">Watch approved work run, inspect evidence, and review what each agent produced.</p>
-              </div>
-              <WorkflowOverview stage="execute" onOpenCoordination={() => setTab("home")} />
-            </div>
-            {visibleEpisodes.length === 0 ? (
-              <Empty text="No agent activity yet. Runs appear here when you ask an agent to do work." />
-            ) : (
-              <ul className="list">
-                {visibleEpisodes.map((e) => (
-                  <li
-                    key={e.id}
-                    className={`list__item list__item--clickable${selectedEpisode === e.id ? " list__item--selected" : ""}`}
-                    onClick={() => loadEpisode(e.id)}
-                  >
-                    <span className="list__icon">
-                      <Icon name="activity" size={16} />
-                    </span>
-                    <span className="list__name">{agentLabel(e.agent_id)}</span>
-                    <span className={`badge badge--${e.status || "neutral"}`}>{statusLabel(e.status)}</span>
-                    <span className="badge badge--faint">{Math.round((e.progress || 0) * 100)}%</span>
-                    <span className="badge badge--faint">{formatStamp(e.created_at)}</span>
-                    {!offline && e.status === "running" && (
-                      <span className="list__actions">
-                        <button
-                          className="btn btn--ghost"
-                          onClick={(ev) => { ev.stopPropagation(); cancelEpisode(e.id); }}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          className="btn btn--ghost"
-                          onClick={(ev) => { ev.stopPropagation(); resumeEpisode(e.id); }}
-                        >
-                          Resume
-                        </button>
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {selectedEpisode && (
-              <div className="versions">
-                <h3 className="versions__title">Activity detail</h3>
-                {episodeDetail ? (
-                  <>
-                    <div className="episode-meta">
-                      <span className={`badge badge--${episodeDetail.status || "neutral"}`}>{statusLabel(episodeDetail.status)}</span>
-                      <span className="badge badge--faint">{Math.round((episodeDetail.progress || 0) * 100)}% progress</span>
-                      {episodeDetail.created_at && (
-                        <span className="badge badge--faint">started {formatStamp(episodeDetail.created_at)}</span>
-                      )}
-                    </div>
-                    {episodeDetail.status === "done" &&
-                      (episodeDetail.applied_at ? (
-                        <div className="exec-apply" data-testid="episode-applied"><span className="badge badge--approved">Applied</span></div>
-                      ) : !offline ? (
-                        <div className="exec-control exec-apply">
-                          {applyEid === episodeDetail.id ? (
-                            <>
-                              <span className="muted">Apply this completion to its goal using the recorded evidence?</span>
-                              <button className="btn btn--sm btn--primary" data-testid="confirm-apply" onClick={() => submitApply(episodeDetail.id)} disabled={!!applyingEid}>
-                                Confirm apply
-                              </button>
-                              <button className="btn btn--sm btn--ghost" onClick={() => setApplyEid(null)}>Cancel</button>
-                            </>
-                          ) : (
-                            <button className="btn btn--sm btn--primary" data-testid="apply-btn"
-                              onClick={() => { setApplyEid(episodeDetail.id); setApplyError(null); }}>
-                              Apply to goal
-                            </button>
-                          )}
-                          {applyError && <span className="muted" data-testid="apply-error">{applyError}</span>}
-                        </div>
-                      ) : null)}
-                    {episodeEvents.length === 0 ? (
-                      <Empty text="No events recorded for this episode yet." />
-                    ) : (
-                      <ul className="list">
-                        {episodeEvents.map((ev, i) => {
-                          let evSummary: string | null = null;
-                          try {
-                            const raw = ev.evidence_json;
-                            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-                            evSummary = parsed && parsed.summary ? String(parsed.summary) : null;
-                          } catch { evSummary = null; }
-                          return (
-                            <li key={i} className="list__item" data-testid={`event-${ev.status}`}>
-                              <span className="list__icon">
-                                <Icon name="activity" size={16} />
-                              </span>
-                              <span className="list__name">{statusLabel(ev.status)}</span>
-                              {(() => {
-                                const raw = ev.detail;
-                                if (!raw) return null;
-                                // Turn a raw coordination-step id into a human label.
-                                const m = raw.match(/coordination_step\s+\S*:(\d+)/);
-                                const label = m
-                                  ? `Coordination step ${m[1]}${episodeDetail?.agent_id ? ` · ${agentLabel(episodeDetail.agent_id)}` : ""} (execution)`
-                                  : raw;
-                                return <span className="badge badge--faint" data-testid="event-detail">{label}</span>;
-                              })()}
-                              {evSummary && <span className="badge badge--faint">{evSummary}</span>}
-                              <span className="badge badge--faint">{formatStamp(ev.created_at)}</span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                    {episodeDetail && episodeDetail.status === "running" && !offline && (
-                      <div className="exec-forms">
-                        <div className="exec-forms__head">Record progress (evidence required)</div>
-                        {epError && <p className="error" data-testid="ep-error">Error: {epError}</p>}
-                        <div className="exec-forms__row">
-                          <input
-                            className="input input--sm"
-                            aria-label="Progress (0..1)"
-                            value={cpProgress}
-                            onChange={(e) => setCpProgress(e.target.value)}
-                            placeholder="0..1"
-                          />
-                          <input
-                            className="input input--sm"
-                            aria-label="Evidence summary"
-                            value={cpEvidence}
-                            onChange={(e) => setCpEvidence(e.target.value)}
-                            placeholder="Evidence summary"
-                          />
-                          <button className="btn btn--sm btn--primary" onClick={() => submitCheckpoint(selectedEpisode as string)} data-testid="checkpoint-btn">
-                            Save progress
-                          </button>
-                        </div>
-                        <div className="exec-forms__row">
-                          <input
-                            className="input input--sm"
-                            aria-label="Completion evidence"
-                            value={completeEvidence}
-                            onChange={(e) => setCompleteEvidence(e.target.value)}
-                            placeholder="Completion evidence"
-                          />
-                          <button className="btn btn--sm btn--ghost" onClick={() => submitComplete(selectedEpisode as string)} data-testid="complete-btn">
-                            Complete
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <Empty text="Loading episode…" />
-                )}
-              </div>
-            )}
-          </section>
-        )}
-
-                {tab === "tasks" && (
+{tab === "tasks" && (
           <section className="panel">
             <div className="panel__head">
               <div>
