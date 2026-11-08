@@ -226,9 +226,24 @@ def run_agent(name: str, req: RunReq, request: Request):
             ah = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()
             if ah != ap["args_hash"]:
                 continue
-            # consume
-            _db.execute("UPDATE tool_approvals SET status='consumed', consumed_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), approval_id))
-            tool_calls.append({"tool": tool_name, "args": args, "approved": True})
+            # Atomic claim: only succeeds if still approved.
+            import sqlite3
+            claimed = False
+            try:
+                with _db.transaction_immediate() as c:
+                    cur = c.execute(
+                        "UPDATE tool_approvals SET status='consumed', consumed_at=? "
+                        "WHERE id=? AND tenant_id=? AND user_id=? AND status='approved' "
+                        "AND args_hash=? AND agent_id=? AND tool_name=?",
+                        (datetime.now(timezone.utc).isoformat(), approval_id, t, u,
+                         ah, ap["agent_id"], ap["tool_name"]))
+                    if cur.rowcount == 1:
+                        claimed = True
+            except Exception:
+                claimed = False
+            if not claimed:
+                continue
+            tool_calls.append({"tool": tool_name, "args": args, "approved": True, "approval_id": approval_id})
 
     orch = build_runtime(_db, t, u)
     try:

@@ -72,7 +72,8 @@ class ToolRegistry:
         return list(self._tools.keys())
 
     def invoke(self, agent_id, tool_name, args, manifest=None, policy=None,
-               user_id=None, approved=False, context=None, timeout=None) -> Dict[str, Any]:
+               user_id=None, approved=False, context=None, timeout=None,
+               approval_id=None) -> Dict[str, Any]:
         tool = self.get(tool_name)
         if tool is None:
             raise ValueError(f"Tool '{tool_name}' is not registered/available.")
@@ -106,7 +107,7 @@ class ToolRegistry:
             status = "error"
             result = {"ok": False, "error": _sanitize(str(e))}
 
-        self._audit(agent_id, tool_name, args, user_id, status, result.get("error"))
+        self._audit(agent_id, tool_name, args, user_id, status, result.get("error"), approval_id)
         return result
 
     def _run_with_timeout(self, tool: Tool, args: dict, context: Optional[dict], timeout: float):
@@ -130,13 +131,13 @@ class ToolRegistry:
             raise errors["value"]
         return box.get("value")
 
-    def _audit(self, agent_id, tool_name, args, user_id, status, error):
+    def _audit(self, agent_id, tool_name, args, user_id, status, error, approval_id=None):
         if self.db is None:
             return
         self.db.execute(
-            "INSERT INTO tool_executions (id,tenant_id,user_id,agent_id,tool,params_hash,status,error,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO tool_executions (id,tenant_id,user_id,agent_id,tool,params_hash,status,error,created_at,approval_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (str(uuid.uuid4()), self.tenant, user_id, agent_id, tool_name,
-             _hash_params(args), status, error, _now()))
+             _hash_params(args), status, error, _now(), approval_id))
 
 
 def build_registry(db=None, tenant_id: Optional[str] = None, timeout: float = 5.0) -> ToolRegistry:

@@ -232,6 +232,7 @@ class BaseAgent:
                     user_id=self.user_id,
                     approved=bool(call.get("approved", False)),
                     context=context,
+                    approval_id=call.get("approval_id"),
                 )
                 results.append({
                     "tool": tool_name,
