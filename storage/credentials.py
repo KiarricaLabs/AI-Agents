@@ -4,7 +4,12 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from config.settings import MASTER_KEY
+try:
+    from config.settings import MASTER_KEY as _SETTINGS_MASTER_KEY
+except Exception:  # pragma: no cover
+    _SETTINGS_MASTER_KEY = ""
+
+MASTER_KEY = _SETTINGS_MASTER_KEY
 
 try:
     from cryptography.fernet import Fernet
@@ -17,7 +22,10 @@ else:
 
 class CredentialStore:
     def __init__(self, db=None, tenant_id: str = None, user_id: str = None, key: Optional[str] = None):
-        k = key or MASTER_KEY
+        if key is None:
+            k = os.getenv("PAT_MASTER_KEY", "") or MASTER_KEY
+        else:
+            k = key
         if not k:
             raise RuntimeError("PAT_MASTER_KEY is required; no plaintext fallback.")
         if Fernet is None:
