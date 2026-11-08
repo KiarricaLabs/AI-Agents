@@ -1,5 +1,8 @@
 """Agent execution API: list agents and run them against the local runtime."""
 import uuid
+import json
+import hashlib
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -189,6 +192,44 @@ def run_agent(name: str, req: RunReq, request: Request):
                 "approved": True,  # read-only tools need no human approval
             })
 
+    # Consequential tools: only via a server-verified, unconsumed approval.
+    if isinstance(requested_tools, list):
+        for call in requested_tools:
+            if not isinstance(call, dict):
+                continue
+            tool_name = str(call.get("tool") or "").strip()
+            if tool_name in _READONLY_TOOLS:
+                continue
+            approval_id = call.get("approval_id")
+            if not approval_id:
+                continue
+            args = call.get("args") if isinstance(call.get("args"), dict) else {}
+            # verify approval
+            rows = _db.query(
+                "SELECT * FROM tool_approvals WHERE id=? AND tenant_id=? AND user_id=?",
+                (approval_id, t, u))
+            if not rows:
+                continue
+            ap = rows[0]
+            if ap["agent_id"] != name or ap["tool_name"] != tool_name:
+                continue
+            if ap["status"] != "approved":
+                continue
+            # expiry check
+            try:
+                exp = datetime.fromisoformat(ap["expires_at"].replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) > exp:
+                    continue
+            except Exception:
+                continue
+            # args hash check
+            ah = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()
+            if ah != ap["args_hash"]:
+                continue
+            # consume
+            _db.execute("UPDATE tool_approvals SET status='consumed', consumed_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), approval_id))
+            tool_calls.append({"tool": tool_name, "args": args, "approved": True})
+
     orch = build_runtime(_db, t, u)
     try:
         result = orch.dispatch(name, task, context={
@@ -317,3 +358,61 @@ def coordinated_plan(req: PlanReq, request: Request):
     except Exception:
         raise HTTPException(status_code=500, detail="plan generation failed")
     return plan
+
+
+# --- Consequential tool approval endpoints (Stage 4.3) ---
+@router.post("/approvals/tool")
+def create_tool_approval(req: dict, request: Request):
+    _require_human(request)
+    t, u = _identity(request)
+    agent_id = req.get("agent_id")
+    tool_name = req.get("tool")
+    args = req.get("args") if isinstance(req.get("args"), dict) else {}
+    if not agent_id or not tool_name:
+        raise HTTPException(status_code=400, detail="agent_id and tool required")
+    from core.runtime import load_registry
+    reg = load_registry()
+    manifest = reg.get(agent_id) if hasattr(reg, "get") else None
+    if manifest is None or tool_name not in (manifest.get("tools") or []):
+        raise HTTPException(status_code=403, detail="tool not declared for agent")
+    ah = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()
+    aid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    exp = (now + timedelta(minutes=10)).isoformat()
+    _db.execute(
+        "INSERT INTO tool_approvals (id,tenant_id,user_id,agent_id,tool_name,args_hash,status,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (aid, t, u, agent_id, tool_name, ah, "pending", now.isoformat(), exp))
+    return {"approval_id": aid, "status": "pending", "expires_at": exp}
+
+
+@router.post("/approvals/tool/{approval_id}/approve")
+def approve_tool(approval_id: str, request: Request):
+    _require_human(request)
+    t, u = _identity(request)
+    rows = _db.query("SELECT * FROM tool_approvals WHERE id=? AND tenant_id=? AND user_id=?", (approval_id, t, u))
+    if not rows:
+        raise HTTPException(status_code=404, detail="approval not found")
+    ap = rows[0]
+    if ap["status"] != "pending":
+        raise HTTPException(status_code=409, detail="not pending")
+    try:
+        exp = datetime.fromisoformat(ap["expires_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > exp:
+            raise HTTPException(status_code=410, detail="expired")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad expiry")
+    _db.execute("UPDATE tool_approvals SET status='approved' WHERE id=?", (approval_id,))
+    return {"approval_id": approval_id, "status": "approved"}
+
+
+@router.post("/approvals/tool/{approval_id}/reject")
+def reject_tool(approval_id: str, request: Request):
+    _require_human(request)
+    t, u = _identity(request)
+    rows = _db.query("SELECT * FROM tool_approvals WHERE id=? AND tenant_id=? AND user_id=?", (approval_id, t, u))
+    if not rows:
+        raise HTTPException(status_code=404, detail="approval not found")
+    _db.execute("UPDATE tool_approvals SET status='rejected' WHERE id=?", (approval_id,))
+    return {"approval_id": approval_id, "status": "rejected"}

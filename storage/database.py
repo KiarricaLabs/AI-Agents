@@ -418,6 +418,8 @@ class Database:
             apply_media_assets_table(c)
             from storage.migrations_credentials import apply_credentials_table
             apply_credentials_table(c)
+            from storage.migrations_tool_approvals import apply_tool_approvals_table
+            apply_tool_approvals_table(c)
             self._apply_migrations(c)
             c.execute("INSERT OR IGNORE INTO tenants (id,name,created_at) VALUES (?,?,?)",
                       (self.default_tenant, "Local", _now()))
