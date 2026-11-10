@@ -54,6 +54,59 @@ class LLMClient:
             raise RuntimeError(f"Provider {self.provider} requires API key; none configured.")
         return f"[{self.provider} not implemented in M0]"
 
+    def complete_stream(self, prompt: str, system: str = "", timeout: int = 120,
+                        format_json: bool = False, json_schema: Optional[dict] = None):
+        """Yield incremental response text from Ollama's streaming endpoint.
+
+        Yields str chunks as they arrive. The underlying HTTP response is closed
+        on normal completion, error, or generator closure/cancellation.
+        """
+        if self.provider == "ollama":
+            keep_alive = os.getenv("PAT_LLM_KEEP_ALIVE", "30m")
+            num_ctx = int(os.getenv("PAT_LLM_NUM_CTX", "8192") or "8192")
+            options = {"num_ctx": num_ctx}
+            payload = {"model": self.model, "prompt": prompt, "system": system,
+                       "stream": True, "keep_alive": keep_alive, "options": options}
+            if json_schema is not None:
+                payload["format"] = json_schema
+                options["temperature"] = 0
+                options["num_predict"] = 1600
+            elif format_json:
+                payload["format"] = "json"
+            else:
+                options["temperature"] = float(os.getenv("PAT_LLM_TEMPERATURE", "0.3") or "0.3")
+                options["num_predict"] = int(os.getenv("PAT_LLM_NUM_PREDICT", "1800") or "1800")
+            req = urllib.request.Request(
+                f"{self.base_url}/api/generate",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    for raw in resp:
+                        line = raw.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            # Skip malformed NDJSON lines.
+                            continue
+                        if isinstance(data, dict) and data.get("error"):
+                            raise RuntimeError(str(data.get("error")))
+                        chunk = data.get("response", "") if isinstance(data, dict) else ""
+                        if chunk:
+                            yield chunk
+                        if isinstance(data, dict) and data.get("done"):
+                            break
+            except Exception:
+                raise
+            return
+        # Cloud providers require explicit api_key; fail loudly if missing
+        if not self.api_key:
+            raise RuntimeError(f"Provider {self.provider} requires API key; none configured.")
+        raise RuntimeError(f"[{self.provider} not implemented in M0]")
+
     def ping(self, timeout: float = 3.0) -> bool:
         """Lightweight, non-generative availability probe (Ollama /api/tags).
 

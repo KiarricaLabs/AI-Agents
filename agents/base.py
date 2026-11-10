@@ -82,6 +82,22 @@ PLAN_CONTRACT = (
 )
 
 
+_REJECTION_PHRASES = ["not doing that", "stop bringing", "not what i asked", "don't want to work on", "let's do something else", "we are not doing", "was not talking to you", "i was not talking to", "rude"]
+def _is_rejection(task: str) -> bool:
+    t=(task or "").lower()
+    return any(p in t for p in _REJECTION_PHRASES)
+
+_ROSTER = ["strategist", "communications", "tutor", "executive_assistant", "workspace_architect", "soundboard"]
+
+def _filter_hallucination(text: str) -> str:
+    import re
+    for name in ["maya"]:
+        if name.lower() in text.lower():
+            parts=re.split(r"(?<=[.!?])\s+", text)
+            parts=[p for p in parts if name.lower() not in p.lower()]
+            text=" ".join(parts) if parts else text.replace(name, "teammate")
+    return text
+
 class BaseAgent:
     name: str = "base"
     manifest: Dict[str, Any] = {}
@@ -103,7 +119,7 @@ class BaseAgent:
 
     # --- Grounding + generation ---
 
-    def _ground(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _ground(self, task: str, context: Optional[Dict[str, Any]] = None, stream: bool = False, on_chunk=None) -> Dict[str, Any]:
         """Retrieve manifest-scoped memory, generate, and collect (approval-gated) proposals.
 
         Retrieval failures never crash the run and never invent memories: context
@@ -148,7 +164,7 @@ class BaseAgent:
                                            brand=brand_facts, lessons=lessons)
             out = {
                 "agent": self.name,
-                "reply": st["reply"],
+                "reply": _filter_hallucination(st["reply"]),
                 "provider": st["provider"],
                 "model": st["model"],
                 "location": st["location"],
@@ -164,7 +180,7 @@ class BaseAgent:
                                     brand=brand_facts, lessons=lessons)
             out = {
                 "agent": self.name,
-                "reply": result.text,
+                "reply": _filter_hallucination(result.text),
                 "provider": result.provider,
                 "model": result.model,
                 "location": result.location,
@@ -257,8 +273,7 @@ class BaseAgent:
             return self.router.complete(
                 agent_id=self.name,
                 prompt=task,
-                system=self._system_prompt(
-                    facts, history=(context or {}).get("conversation"),
+                system=self._system_prompt(task, facts, history=(context or {}).get("conversation"),
                     brand=brand, lessons=lessons, structured=False),
                 model_spec=spec,
                 context=context,
@@ -335,8 +350,7 @@ class BaseAgent:
             mr = self.router.complete(
                 agent_id=self.name,
                 prompt=prompt,
-                system=self._system_prompt(
-                    facts, history=(context or {}).get("conversation"),
+                system=self._system_prompt(task, facts, history=(context or {}).get("conversation"),
                     brand=brand, lessons=lessons, structured=True),
                 model_spec=spec,
                 context=context,
@@ -441,7 +455,7 @@ class BaseAgent:
                 + ", ".join(scopes)
                 + ". Do not invent other parent ids."
             )
-        system = self._system_prompt(facts=[], history=(context or {}).get("conversation"),
+        system = self._system_prompt(task, facts=[], history=(context or {}).get("conversation"),
                                      brand=None) + "\n\n" + PLAN_CONTRACT
         provider, model, location, raw = "ollama", "", "", ""
         generation_failed = None
@@ -570,7 +584,7 @@ class BaseAgent:
         res = r.get("result") or {}
         return {"status": "saved", "proposal_id": res.get("proposal_id")}
 
-    def _system_prompt(self, facts: Optional[List[Dict[str, Any]]] = None,
+    def _system_prompt(self, task: str = "", facts: Optional[List[Dict[str, Any]]] = None,
                         history: Optional[List[Dict[str, Any]]] = None,
                         brand: Optional[List[Dict[str, Any]]] = None,
                         lessons: Optional[List[Dict[str, Any]]] = None,
@@ -604,6 +618,14 @@ class BaseAgent:
 
         parts.append("")
         parts.append(operating_contract())
+        parts.append("")
+        parts.append("TEAM ROSTER (only these agents exist, never invent others):")
+        parts.append(", ".join(_ROSTER) + ". If you mention a teammate, use only these names.")
+        parts.append("")
+        parts.append("CURRENT TASK PRIORITY (strict):")
+        parts.append("The user's latest message defines the current intent and must take precedence over stored facts, brand knowledge, historical goals, and conversation history.")
+        parts.append("Profile information (e.g., Founder of On Us) is background only and must never be treated as the current task.")
+        parts.append("If the user explicitly rejects a topic (e.g., \"we are not doing that right now\", \"stop bringing that up\", \"that's not what I asked\", \"I don't want to work on that\"), immediately stop pursuing that topic, do not repeat the recommendation, and follow the user's next instruction.")
 
         # Capabilities are the expandable surface and live outside the identity block.
         if capabilities:
@@ -619,6 +641,13 @@ class BaseAgent:
             "You are stateless. Answer using only " + sources_text
             + " provided below. Do not claim to remember anything outside these."
         )
+        if _is_rejection(task) and facts:
+            def keep_fact(f):
+                v=str(f.get("value","")+f.get("key","")).lower()
+                if "instagram" in v and any(x in task.lower() for x in ["not doing", "stop", "rude", "not talking"]): return False
+                return True
+            facts=[f for f in facts if keep_fact(f)]
+            if not facts: facts=None
         if facts:
             from core.memory_scope import ScopedMemory
             lines = ScopedMemory.format_facts(facts)

@@ -49,7 +49,8 @@ class Orchestrator:
                    user_id=self.user_id, tools=self.tools, policy=self.policy,
                    brand=self.brand, feedback=self.feedback)
 
-    def dispatch(self, agent_name: str, task: str, context: Optional[Dict[str, Any]] = None):
+    def dispatch(self, agent_name: str, task: str, context: Optional[Dict[str, Any]] = None,
+                 stream: bool = False, on_chunk=None):
         from core.tracing import start_span, end_span
         span = start_span("orchestrator.dispatch", {"agent": agent_name})
         if self.policy is None:
@@ -59,12 +60,21 @@ class Orchestrator:
             end_span(span)
             raise PermissionError("policy denied")
         agent = self._build_agent(agent_name)
-        result = agent.run(task, context)
+        from core.observability import log_event
+        log_event("run.dispatched", agent_id=agent_name)
+        try:
+            result = agent.run(task, context, stream=stream, on_chunk=on_chunk)
+        except Exception as e:
+            log_event("run.failed", agent_id=agent_name, error_category=type(e).__name__)
+            end_span(span)
+            raise
         from core.validation import validate_output
         ok, err = validate_output(agent_name, result)
         if not ok:
+            log_event("run.failed", agent_id=agent_name, error_category="validation")
             end_span(span)
             raise ValueError(f"invalid agent output: {err}")
+        log_event("run.completed", agent_id=agent_name, outcome="ok")
         end_span(span)
         return result
 

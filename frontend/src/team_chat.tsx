@@ -8,17 +8,20 @@
 // agent is dispatched after a single send beyond the existing routing.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API, humanizeAgent, type TeamGoalDraft } from "./coordination";
+import { Composer } from "./Composer";
+import { TeamChatTimeline } from "./TeamChatTimeline";
+import { runAgentStream } from "./coordination";
 import { Markdown } from "./markdown";
 
 const THREAD_KEY = "ai-team-shared-thread";
 const CONTACTS = [
   { id: "team", label: "AI Team", subtitle: "Group chat · everyone", avatar: undefined },
-  { id: "strategist", label: "Strategist", subtitle: "Audience, positioning & strategy", avatar: "strategist" },
-  { id: "communications", label: "Communications", subtitle: "Posts, emails & launch copy", avatar: "communications" },
-  { id: "tutor", label: "Tutor", subtitle: "Learning & exam preparation", avatar: "tutor" },
-  { id: "executive_assistant", label: "Executive Assistant", subtitle: "Planning & coordination", avatar: "executive_assistant" },
-  { id: "workspace_architect", label: "Workspace Architect", subtitle: "Plans, tasks & organization", avatar: "workspace_architect" },
-  { id: "soundboard", label: "Soundboard", subtitle: "Ideas, creativity & feedback", avatar: "soundboard" },
+  { id: "strategist", label: "Aisha — Visionary", subtitle: "Strategy & vision", avatar: "strategist" },
+  { id: "communications", label: "Brandon — Voice", subtitle: "Communications Manager", avatar: "communications" },
+  { id: "tutor", label: "Brittany — Educator", subtitle: "Tutor", avatar: "tutor" },
+  { id: "executive_assistant", label: "Taylor — Organizer", subtitle: "Executive Assistant", avatar: "executive_assistant" },
+  { id: "workspace_architect", label: "Alex — Builder", subtitle: "Architect", avatar: "workspace_architect" },
+  { id: "soundboard", label: "Portia — Challenger", subtitle: "Advisory", avatar: "soundboard" },
 ] as const;
 
 // Agent photos (fall back to a colored initial when no photo is mapped).
@@ -38,6 +41,7 @@ const AVATAR_IMG: Record<string, string> = {
   communications: communicationsUrl,
 };
 
+const AGENT_ICONS: Record<string, string> = { strategist: "👁️", tutor: "📚", executive_assistant: "🗓️", communications: "🎙️", soundboard: "⚡", workspace_architect: "🔧" };
 const AGENT_COLORS = ["#d97706", "#7c3aed", "#059669", "#dc2626", "#2563eb", "#0891b2", "#db2777"];
 
 function agentInitial(slug?: string): string {
@@ -55,26 +59,17 @@ function agentColor(slug?: string): string {
 
 export function AgentAvatar({ slug, size = 28 }: { slug?: string; size?: number }) {
   const src = slug ? AVATAR_IMG[slug.toLowerCase()] : undefined;
-  if (src) {
-    return (
-      <img
-        className="agent-avatar agent-avatar--img"
-        data-testid={`avatar-${slug || "team"}`}
-        aria-hidden="true"
-        src={src}
-        alt=""
-        style={{ width: size, height: size }}
-      />
+  const icon = slug ? AGENT_ICONS[slug.toLowerCase()] : undefined;
+  const avatar = src ? (
+      <img className="agent-avatar agent-avatar--img" data-testid={`avatar-${slug}`} aria-hidden="true" src={src} alt="" style={{ width: size, height: size }} />
+    ) : (
+      <span className="agent-avatar" data-testid={`avatar-${slug || "team"}`} aria-hidden="true" style={{ width: size, height: size, background: agentColor(slug), fontSize: Math.round(size * 0.48) }}>{agentInitial(slug)}</span>
     );
-  }
+  if (!icon) return avatar;
   return (
-    <span
-      className="agent-avatar"
-      data-testid={`avatar-${slug || "team"}`}
-      aria-hidden="true"
-      style={{ width: size, height: size, background: agentColor(slug), fontSize: Math.round(size * 0.48) }}
-    >
-      {agentInitial(slug)}
+    <span style={{ position: "relative", display: "inline-flex", width: size, height: size }}>
+      {avatar}
+      <span style={{ position: "absolute", bottom: -4, right: -4, width: 16, height: 16, borderRadius: "50%", background: "var(--surface)", border: "1px solid var(--border)", display: "grid", placeItems: "center", fontSize: 9 }}>{icon}</span>
     </span>
   );
 }
@@ -103,10 +98,12 @@ function stamp(iso?: string): string {
 export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   const [threadId, setThreadId] = useState<string>(() => (typeof localStorage !== "undefined" ? localStorage.getItem(THREAD_KEY) || "" : ""));
   const [activeContact, setActiveContact] = useState("team");
+  const [voiceOutput, setVoiceOutput] = useState(true);
   const [booting, setBooting] = useState(true);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [draft, setDraft] = useState("");
   const [mode, setMode] = useState<Mode>("team");
+  const [individualAgent, setIndividualAgent] = useState<string>("tutor");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   // --- Delegate-to-the-team: message -> TeamGoal proposal -> approve/authorize/run ---
@@ -117,6 +114,8 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
   const [progress, setProgress] = useState<any[]>([]);
   // --- Task Center <-> chat linkage: work this thread produced ---
   const [workLinks, setWorkLinks] = useState<any[]>([]);
+  const audioRef=useRef<HTMLAudioElement>(null);
+  useEffect(()=>{ if(!voiceOutput) return; const last=messages[messages.length-1]; if(last && last.role==="assistant" && last.content && last.agent){ fetch(`${API}/voice/speak`, {method:"POST", headers:{"Content-Type":"application/json", "x-token": localStorage.getItem("pat_token")||""}, body: JSON.stringify({agent: last.agent, text: last.content.slice(0,1000)})}).then(r=>r.blob()).then(b=>{ const url=URL.createObjectURL(b); if(audioRef.current){ audioRef.current.src=url; audioRef.current.play(); }}).catch(()=>{}); } },[messages]);
   // --- conversation sidebar ---
   const [conversations, setConversations] = useState<any[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
@@ -234,6 +233,40 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
       setActiveContact("team");
       setDraft("");
       await delegateToTeam(text);
+      return;
+    }
+    // Individual mode: dispatch to selected agent via individual endpoint
+    if (mode === "task" && individualAgent) {
+      const payload = text;
+      setSending(true);
+      setError("");
+      // Optimistically add user message
+      setMessages((prev) => [...prev, { role: "user", content: payload, created_at: new Date().toISOString() }]);
+      setDraft("");
+      try {
+        await runAgentStream(individualAgent, { task: payload }, {
+          onChunk: (chunk: string) => {
+            setMessages((prev) => {
+              const last = prev[prev.length-1];
+              if (last && last.role === "assistant" && last.agent === individualAgent) {
+                return [...prev.slice(0,-1), { ...last, content: last.content + chunk }];
+              }
+              return [...prev, { role: "assistant", agent: individualAgent, content: chunk, created_at: new Date().toISOString() }];
+            });
+          },
+          onDone: (meta: any) => {
+            if (meta?.reply) {
+              setMessages((prev) => {
+                const last = prev[prev.length-1];
+                if (last && last.role === "assistant" && last.agent === individualAgent) return prev;
+                return [...prev, { role: "assistant", agent: individualAgent, content: meta.reply, created_at: new Date().toISOString() }];
+              });
+            }
+          },
+          onError: (msg: string) => setError(msg),
+        } as any);
+      } catch (e: any) { setError(e?.message || "request failed"); }
+      setSending(false);
       return;
     }
     const asksToCapturePlan = /\b(?:capture|save|turn)\b[\s\S]{0,30}\b(?:as|into)\b[\s\S]{0,12}\bplan\b/i.test(text);
@@ -468,18 +501,7 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
             This is a fresh team thread. Send a message and the relevant agents will join in.
           </div>
         ) : (
-          messages.map((m, i) => (
-            <div key={i} className={`chat-bubble chat-bubble--${m.role === "user" ? "user" : "agent"}`}>
-              <div className="chat-bubble__head">
-                <AgentAvatar slug={m.role === "user" ? undefined : m.agent} size={m.role === "user" ? 30 : 34} />
-                <span className="chat-bubble__role">
-                  {m.role === "user" ? "You" : m.agent ? humanizeAgent(m.agent) : "Team"}
-                </span>
-                {m.created_at && <span className="chat-bubble__time">{stamp(m.created_at)}</span>}
-              </div>
-              <div className="chat-bubble__body markdown"><Markdown source={m.content} /></div>
-            </div>
-          ))
+          <TeamChatTimeline messages={messages as any} />
         )}
         {sending && (
           <div className="chat-bubble chat-bubble--agent">
@@ -489,19 +511,27 @@ export function TeamChat({ onOpenTasks }: { onOpenTasks?: () => void } = {}) {
         )}
       </div>
 
+      <audio ref={audioRef} controls style={{display:"none"}} />
       {error && <p className="error" role="alert" data-testid="team-chat-error">{error}</p>}
 
       <div className="team-chat__composer">
-        <textarea
-          className="input"
-          rows={3}
-          placeholder="Message the whole team… (e.g. Research the launch market and propose a strategy)"
-          value={draft}
-          data-testid="team-chat-input"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-          disabled={booting}
-        />
+        <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+          <label style={{display:"flex",gap:4,alignItems:"center",fontSize:12}}><input type="checkbox" checked={voiceOutput} onChange={e=>setVoiceOutput(e.target.checked)} /> Voice reply</label>
+          <button className={`btn ${mode==="team"?"btn--primary":""}`} onClick={()=>setMode("team")}>Team</button>
+          <button className={`btn ${mode==="task"?"btn--primary":""}`} onClick={()=>setMode("task")}>Individual</button>
+          <button className={`btn ${mode==="delegate"?"btn--primary delegate-btn--active":"btn--ghost"}`} onClick={()=>setMode("delegate")}>Delegate</button>
+        </div>
+        {mode==="task" && (
+          <select value={individualAgent} onChange={e=>setIndividualAgent(e.target.value)} style={{marginBottom:8}}>
+            <option value="tutor">Tutor</option>
+            <option value="strategist">Strategist</option>
+            <option value="communications">Communications</option>
+            <option value="executive_assistant">Executive Assistant</option>
+            <option value="workspace_architect">Workspace Architect</option>
+            <option value="soundboard">Soundboard</option>
+          </select>
+        )}
+        <Composer value={draft} onChange={setDraft} onSend={send} placeholder={mode==="team"?"Message the whole team…":"Message individual agent…"} disabled={booting || sending} />
         <div className="team-chat__actions">
           {mode === "delegate" ? (
             <button

@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.memory import MemoryService
@@ -123,8 +124,222 @@ def model_health(request: Request):
     }
 
 
+
+def _record_agent_run_history(tenant, user, agent_id, thread_id, status, task, error_category=None, started_at=None):
+    try:
+        summary = (task or "").strip()[:200] or None
+        created = started_at or datetime.now(timezone.utc).isoformat()
+        finished = datetime.now(timezone.utc).isoformat()
+        _db.execute(
+            "INSERT INTO agent_run_history (id, tenant_id, user_id, agent_id, thread_id, status, task_summary, error_category, created_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), tenant, user, agent_id, thread_id, status, summary, error_category, created, finished),
+        )
+    except Exception:
+        pass
+
+
 @router.post("/{name}/run")
 def run_agent(name: str, req: RunReq, request: Request):
+    t, u = _identity(request)
+    from core.runtime import build_runtime, load_registry
+
+    reg = load_registry()
+    if name not in reg.list():
+        from core.observability import log_event
+        log_event("run.rejected", agent_id=name, error_category="unknown_agent")
+        _record_agent_run_history(t, u, name, getattr(req, "thread_id", None), "rejected", getattr(req, "task", None), "unknown_agent")
+        raise HTTPException(status_code=404, detail=f"unknown agent: {name}")
+
+    task = (req.task or "").strip()
+    if not task:
+        from core.observability import log_event
+        log_event("run.rejected", agent_id=name, error_category="empty_task")
+        _record_agent_run_history(t, u, name, getattr(req, "thread_id", None), "rejected", getattr(req, "task", None), "empty_task")
+        raise HTTPException(status_code=422, detail="task must not be empty")
+
+    try:
+        svc = MemoryService(db=_db, tenant_id=t)
+    
+        # Thread identity is an opaque key; tenant/user identity comes from request.state
+        # only. A foreign/unknown thread id simply yields empty history (no cross-user leak).
+        thread_id = req.thread_id
+        history = []
+        if thread_id:
+            history = svc.list_conversation(u, thread_id)
+        else:
+            thread_id = str(uuid.uuid4())
+    
+        # Bound the injected history to the approved window (most recent messages).
+        context_history = history[-HISTORY_WINDOW:] if history else []
+    
+        # Resolve the active brand once, up front. This is explicit/tenant-validated and
+        # never mixes facts across brands; ambiguity (multiple brands, no default) asks
+        # the caller to select a brand before running.
+        brand_id = _resolve_brand_id(BrandService(db=_db, tenant_id=t), req.brand_id)
+    
+        # Step 3: authoritative grounding on the selected project's existing goals.
+        # GoalService.list is tenant/user-scoped, so a foreign project simply yields
+        # no grounding (no cross-user leak); the values are display-only and never
+        # bypass the in-tool ownership/policy checks that actually create records.
+        project_context: dict = {}
+        if req.project_id:
+            from core.workspace import GoalService
+    
+            pid = req.project_id
+            owned = _db.query(
+                "SELECT id FROM projects WHERE id=? AND tenant_id=? AND user_id=?",
+                (pid, t, u))
+            if owned:
+                goals = GoalService(db=_db, tenant_id=t, user_id=u).list(pid) or []
+                project_context["goals"] = [
+                    {"id": g.get("id"), "title": g.get("title"),
+                     "status": g.get("status") or "open"}
+                    for g in goals
+                ]
+    
+        # Read-only tool calls: normalize to dicts and drop anything not whitelisted
+        # (whitelist + manifest + policy + in-tool checks all gate execution).
+        requested_tools = req.tool_calls or []
+        tool_calls: list = []
+        if isinstance(requested_tools, list):
+            for call in requested_tools:
+                if not isinstance(call, dict):
+                    continue
+                tool_name = str(call.get("tool") or "").strip()
+                if tool_name not in _READONLY_TOOLS:
+                    continue
+                tool_calls.append({
+                    "tool": tool_name,
+                    "args": call.get("args") if isinstance(call.get("args"), dict) else {},
+                    "approved": True,  # read-only tools need no human approval
+                })
+    
+        # Consequential tools: only via a server-verified, unconsumed approval.
+        if isinstance(requested_tools, list):
+            for call in requested_tools:
+                if not isinstance(call, dict):
+                    continue
+                tool_name = str(call.get("tool") or "").strip()
+                if tool_name in _READONLY_TOOLS:
+                    continue
+                approval_id = call.get("approval_id")
+                if not approval_id:
+                    continue
+                args = call.get("args") if isinstance(call.get("args"), dict) else {}
+                # verify approval
+                rows = _db.query(
+                    "SELECT * FROM tool_approvals WHERE id=? AND tenant_id=? AND user_id=?",
+                    (approval_id, t, u))
+                if not rows:
+                    continue
+                ap = rows[0]
+                if ap["agent_id"] != name or ap["tool_name"] != tool_name:
+                    continue
+                if ap["status"] != "approved":
+                    continue
+                # expiry check
+                try:
+                    exp = datetime.fromisoformat(ap["expires_at"].replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) > exp:
+                        continue
+                except Exception:
+                    continue
+                # args hash check
+                ah = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()
+                if ah != ap["args_hash"]:
+                    continue
+                # Atomic claim: only succeeds if still approved.
+                import sqlite3
+                claimed = False
+                try:
+                    with _db.transaction_immediate() as c:
+                        cur = c.execute(
+                            "UPDATE tool_approvals SET status='consumed', consumed_at=? "
+                            "WHERE id=? AND tenant_id=? AND user_id=? AND status='approved' "
+                            "AND args_hash=? AND agent_id=? AND tool_name=?",
+                            (datetime.now(timezone.utc).isoformat(), approval_id, t, u,
+                             ah, ap["agent_id"], ap["tool_name"]))
+                        if cur.rowcount == 1:
+                            claimed = True
+                except Exception:
+                    claimed = False
+                if not claimed:
+                    continue
+                tool_calls.append({"tool": tool_name, "args": args, "approved": True, "approval_id": approval_id})
+    
+        orch = build_runtime(_db, t, u)
+        from core.observability import log_event
+        log_event("run.started", agent_id=name)
+        if req.retry:
+            log_event("run.retry_requested", agent_id=name)
+        try:
+            result = orch.dispatch(name, task, context={
+                "thread_id": thread_id,
+                "conversation": context_history,
+                "brand_id": brand_id,
+                "work_intent": req.work_intent,
+                "project_id": req.project_id,
+                "workspace_id": req.workspace_id,
+                "project_name": req.project_name,
+                "workspace_name": req.workspace_name,
+                "project_context": project_context,
+                "tool_calls": tool_calls,
+            })
+        except PermissionError as e:
+            log_event("run.rejected", agent_id=name, error_category="permission")
+            raise HTTPException(status_code=403, detail=str(e))
+        except RuntimeError as e:
+            log_event("run.rejected", agent_id=name, error_category="runtime")
+            # Ollama unreachable or provider error (no cloud fallback).
+            raise HTTPException(status_code=502, detail=str(e))
+        except ValueError as e:
+            log_event("run.rejected", agent_id=name, error_category="validation")
+            # Invalid structured output was rejected before acceptance.
+            raise HTTPException(status_code=422, detail=str(e))
+        except Exception:
+            log_event("run.rejected", agent_id=name, error_category="internal")
+            raise HTTPException(status_code=500, detail="agent execution failed")
+    
+        # Persist both turns (success or failed-generation). A write failure must not
+        # silently lose a successful reply, and a failed turn still records the user
+        # message and the honest assistant response so retry loses no context.
+        reply_text = result.get("reply", "")
+        try:
+            # Human-triggered retry: if the most recent *user* message in this thread
+            # is already the task being retried, do not persist a duplicate user row.
+            duplicate_user = False
+            if req.retry and thread_id:
+                recent = svc.list_conversation(u, thread_id)
+                users = [m for m in recent if m.get("role") == "user"]
+                if users and users[-1].get("content") == task:
+                    duplicate_user = True
+            if not duplicate_user:
+                svc.add_conversation(u, task, "user", thread_id)
+            svc.add_conversation(u, reply_text, "assistant", thread_id)
+            # Persist thread metadata (agent + auto-title) without ever overwriting a
+            # manual rename. New threads are attributed to this agent; existing ones are
+            # only touched to refresh last-activity.
+            if req.thread_id:
+                svc.touch_thread(u, thread_id)
+            else:
+                svc.get_or_create_thread(u, thread_id, name, task)
+        except Exception as e:
+            result["history_warning"] = (
+                f"reply generated but conversation history failed to save ({type(e).__name__})"
+            )
+    
+        result["thread_id"] = thread_id
+        result["context_messages"] = len(context_history)
+        result["brand_id"] = brand_id
+    except Exception as e:
+        _record_agent_run_history(t, u, name, getattr(req, "thread_id", None), "failed", getattr(req, "task", None), type(e).__name__)
+        raise
+    _record_agent_run_history(t, u, name, thread_id if "thread_id" in locals() else getattr(req, "thread_id", None), "completed", getattr(req, "task", None), None)
+    return result
+
+
+@router.post("/{name}/run/stream")
+async def run_agent_stream(name: str, req: RunReq, request: Request):
     t, u = _identity(request)
     from core.runtime import build_runtime, load_registry
 
@@ -136,38 +351,32 @@ def run_agent(name: str, req: RunReq, request: Request):
     if not task:
         raise HTTPException(status_code=422, detail="task must not be empty")
 
-    svc = MemoryService(db=_db, tenant_id=t)
+    # Server-side eligibility: never trust client work_intent.
+    # Streaming is only for ordinary plain-text turns.
+    if req.work_intent:
+        raise HTTPException(status_code=400, detail="streaming not eligible: work_intent requires structured path")
+    if req.tool_calls:
+        raise HTTPException(status_code=400, detail="streaming not eligible: tool calls require non-streaming path")
 
-    # Thread identity is an opaque key; tenant/user identity comes from request.state
-    # only. A foreign/unknown thread id simply yields empty history (no cross-user leak).
+    svc = MemoryService(db=_db, tenant_id=t)
     thread_id = req.thread_id
     history = []
     if thread_id:
         history = svc.list_conversation(u, thread_id)
     else:
         thread_id = str(uuid.uuid4())
-
-    # Bound the injected history to the approved window (most recent messages).
     context_history = history[-HISTORY_WINDOW:] if history else []
 
-    # Resolve the active brand once, up front. This is explicit/tenant-validated and
-    # never mixes facts across brands; ambiguity (multiple brands, no default) asks
-    # the caller to select a brand before running.
     brand_id = _resolve_brand_id(BrandService(db=_db, tenant_id=t), req.brand_id)
 
-    # Step 3: authoritative grounding on the selected project's existing goals.
-    # GoalService.list is tenant/user-scoped, so a foreign project simply yields
-    # no grounding (no cross-user leak); the values are display-only and never
-    # bypass the in-tool ownership/policy checks that actually create records.
     project_context: dict = {}
     if req.project_id:
-        from core.workspace import GoalService
-
         pid = req.project_id
         owned = _db.query(
             "SELECT id FROM projects WHERE id=? AND tenant_id=? AND user_id=?",
             (pid, t, u))
         if owned:
+            from core.workspace import GoalService
             goals = GoalService(db=_db, tenant_id=t, user_id=u).list(pid) or []
             project_context["goals"] = [
                 {"id": g.get("id"), "title": g.get("title"),
@@ -175,133 +384,138 @@ def run_agent(name: str, req: RunReq, request: Request):
                 for g in goals
             ]
 
-    # Read-only tool calls: normalize to dicts and drop anything not whitelisted
-    # (whitelist + manifest + policy + in-tool checks all gate execution).
-    requested_tools = req.tool_calls or []
-    tool_calls: list = []
-    if isinstance(requested_tools, list):
-        for call in requested_tools:
-            if not isinstance(call, dict):
-                continue
-            tool_name = str(call.get("tool") or "").strip()
-            if tool_name not in _READONLY_TOOLS:
-                continue
-            tool_calls.append({
-                "tool": tool_name,
-                "args": call.get("args") if isinstance(call.get("args"), dict) else {},
-                "approved": True,  # read-only tools need no human approval
-            })
-
-    # Consequential tools: only via a server-verified, unconsumed approval.
-    if isinstance(requested_tools, list):
-        for call in requested_tools:
-            if not isinstance(call, dict):
-                continue
-            tool_name = str(call.get("tool") or "").strip()
-            if tool_name in _READONLY_TOOLS:
-                continue
-            approval_id = call.get("approval_id")
-            if not approval_id:
-                continue
-            args = call.get("args") if isinstance(call.get("args"), dict) else {}
-            # verify approval
-            rows = _db.query(
-                "SELECT * FROM tool_approvals WHERE id=? AND tenant_id=? AND user_id=?",
-                (approval_id, t, u))
-            if not rows:
-                continue
-            ap = rows[0]
-            if ap["agent_id"] != name or ap["tool_name"] != tool_name:
-                continue
-            if ap["status"] != "approved":
-                continue
-            # expiry check
-            try:
-                exp = datetime.fromisoformat(ap["expires_at"].replace("Z", "+00:00"))
-                if datetime.now(timezone.utc) > exp:
-                    continue
-            except Exception:
-                continue
-            # args hash check
-            ah = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()
-            if ah != ap["args_hash"]:
-                continue
-            # Atomic claim: only succeeds if still approved.
-            import sqlite3
-            claimed = False
-            try:
-                with _db.transaction_immediate() as c:
-                    cur = c.execute(
-                        "UPDATE tool_approvals SET status='consumed', consumed_at=? "
-                        "WHERE id=? AND tenant_id=? AND user_id=? AND status='approved' "
-                        "AND args_hash=? AND agent_id=? AND tool_name=?",
-                        (datetime.now(timezone.utc).isoformat(), approval_id, t, u,
-                         ah, ap["agent_id"], ap["tool_name"]))
-                    if cur.rowcount == 1:
-                        claimed = True
-            except Exception:
-                claimed = False
-            if not claimed:
-                continue
-            tool_calls.append({"tool": tool_name, "args": args, "approved": True, "approval_id": approval_id})
-
     orch = build_runtime(_db, t, u)
-    try:
-        result = orch.dispatch(name, task, context={
-            "thread_id": thread_id,
-            "conversation": context_history,
-            "brand_id": brand_id,
-            "work_intent": req.work_intent,
-            "project_id": req.project_id,
-            "workspace_id": req.workspace_id,
-            "project_name": req.project_name,
-            "workspace_name": req.workspace_name,
-            "project_context": project_context,
-            "tool_calls": tool_calls,
-        })
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except RuntimeError as e:
-        # Ollama unreachable or provider error (no cloud fallback).
-        raise HTTPException(status_code=502, detail=str(e))
-    except ValueError as e:
-        # Invalid structured output was rejected before acceptance.
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=500, detail="agent execution failed")
 
-    # Persist both turns (success or failed-generation). A write failure must not
-    # silently lose a successful reply, and a failed turn still records the user
-    # message and the honest assistant response so retry loses no context.
-    reply_text = result.get("reply", "")
-    try:
-        # Human-triggered retry: if the most recent *user* message in this thread
-        # is already the task being retried, do not persist a duplicate user row.
-        duplicate_user = False
-        if req.retry and thread_id:
-            recent = svc.list_conversation(u, thread_id)
-            users = [m for m in recent if m.get("role") == "user"]
-            if users and users[-1].get("content") == task:
-                duplicate_user = True
-        if not duplicate_user:
-            svc.add_conversation(u, task, "user", thread_id)
-        svc.add_conversation(u, reply_text, "assistant", thread_id)
-        # Persist thread metadata (agent + auto-title) without ever overwriting a
-        # manual rename. New threads are attributed to this agent; existing ones are
-        # only touched to refresh last-activity.
-        if req.thread_id:
-            svc.touch_thread(u, thread_id)
-        else:
-            svc.get_or_create_thread(u, thread_id, name, task)
-    except Exception as e:
-        result["history_warning"] = (
-            f"reply generated but conversation history failed to save ({type(e).__name__})"
-        )
+    from core.observability import log_event
+    log_event("run.started", agent_id=name)
 
-    result["thread_id"] = thread_id
-    result["context_messages"] = len(context_history)
-    result["brand_id"] = brand_id
-    return result
+    import asyncio
+    import queue
+    import threading
+    import logging
+
+    _logger = logging.getLogger(__name__)
+    _QUEUE_CAPACITY = 64
+
+    async def event_gen():
+        q: "queue.Queue" = queue.Queue(maxsize=_QUEUE_CAPACITY)
+        cancelled = threading.Event()
+        result_holder = {"result": None, "error": None}
+
+        def on_chunk(c):
+            # Cancellation-aware backpressure: retry until the chunk is enqueued
+            # or cancellation is signaled. Never silently drop a chunk on a
+            # successful stream.
+            while not cancelled.is_set():
+                try:
+                    q.put(("chunk", c), timeout=0.1)
+                    return
+                except queue.Full:
+                    continue
+
+        def worker():
+            try:
+                result = orch.dispatch(
+                    name, task,
+                    context={
+                        "thread_id": thread_id,
+                        "conversation": context_history,
+                        "brand_id": brand_id,
+                        "work_intent": False,
+                        "project_id": req.project_id,
+                        "workspace_id": req.workspace_id,
+                        "project_name": req.project_name,
+                        "workspace_name": req.workspace_name,
+                        "project_context": project_context,
+                        "tool_calls": [],
+                    },
+                    stream=True,
+                    on_chunk=on_chunk,
+                )
+                if not cancelled.is_set():
+                    result_holder["result"] = result
+            except Exception as e:
+                _logger.exception("stream worker failed")
+                if not cancelled.is_set():
+                    result_holder["error"] = e
+            finally:
+                try:
+                    q.put(("done", None), timeout=0.5)
+                except queue.Full:
+                    pass
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        disconnected = False
+        try:
+            while True:
+                if cancelled.is_set() or await request.is_disconnected():
+                    cancelled.set()
+                    disconnected = True
+                    break
+                try:
+                    item = await asyncio.to_thread(q.get, timeout=0.1)
+                except Exception:
+                    continue
+                kind, payload = item
+                if kind == "chunk":
+                    if cancelled.is_set():
+                        break
+                    yield f"data: {json.dumps({'type':'chunk','text':payload})}\n\n"
+                elif kind == "done":
+                    break
+        except (GeneratorExit, Exception):
+            cancelled.set()
+            raise
+
+        # After drain, check cancellation before persistence.
+        if disconnected or cancelled.is_set():
+            cancelled.set()
+            _record_agent_run_history(t, u, name, getattr(req, "thread_id", None), "cancelled", getattr(req, "task", None), "cancelled")
+            return
+
+        if result_holder["error"] is not None:
+            _record_agent_run_history(t, u, name, getattr(req, "thread_id", None), "failed", getattr(req, "task", None), "stream_error")
+            yield f"data: {json.dumps({'type':'error','message':'agent execution failed'})}\n\n"
+            return
+
+        result = result_holder["result"]
+        if result is None:
+            _record_agent_run_history(t, u, name, getattr(req, "thread_id", None), "failed", getattr(req, "task", None), "stream_error")
+            yield f"data: {json.dumps({'type':'error','message':'agent execution failed'})}\n\n"
+            return
+
+        # Fresh disconnect check immediately before persistence.
+        if await request.is_disconnected() or cancelled.is_set():
+            cancelled.set()
+            _record_agent_run_history(t, u, name, getattr(req, "thread_id", None), "cancelled", getattr(req, "task", None), "cancelled")
+            return
+
+        # Persist only after successful completion + validation.
+        reply_text = result.get("reply", "")
+        try:
+            duplicate_user = False
+            if req.retry and thread_id:
+                recent = svc.list_conversation(u, thread_id)
+                users = [m for m in recent if m.get("role") == "user"]
+                if users and users[-1].get("content") == task:
+                    duplicate_user = True
+            if not duplicate_user:
+                svc.add_conversation(u, task, "user", thread_id)
+            svc.add_conversation(u, reply_text, "assistant", thread_id)
+            if req.thread_id:
+                svc.touch_thread(u, thread_id)
+            else:
+                svc.get_or_create_thread(u, thread_id, name, task)
+        except Exception:
+            _logger.exception("persistence failed")
+
+        _record_agent_run_history(t, u, name, thread_id, "completed", getattr(req, "task", None), None)
+        yield f"data: {json.dumps({'type':'done','thread_id':thread_id,'reply':reply_text})}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/plan")
@@ -431,3 +645,43 @@ def reject_tool(approval_id: str, request: Request):
         raise HTTPException(status_code=404, detail="approval not found")
     _db.execute("UPDATE tool_approvals SET status='rejected' WHERE id=?", (approval_id,))
     return {"approval_id": approval_id, "status": "rejected"}
+
+
+@router.get("/runs")
+def list_agent_runs(request: Request, agent: Optional[str] = None, status: Optional[str] = None, thread_id: Optional[str] = None,
+                    limit: int = 50, offset: int = 0):
+    t, u = _identity(request)
+    if status is not None and status not in ("completed", "failed", "rejected", "cancelled"):
+        raise HTTPException(status_code=422, detail="invalid status")
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=422, detail="invalid limit")
+    if offset < 0:
+        raise HTTPException(status_code=422, detail="invalid offset")
+    sql = ("SELECT id, agent_id, thread_id, status, task_summary, error_category, created_at, finished_at "
+           "FROM agent_run_history WHERE tenant_id=? AND user_id=?")
+    params = [t, u]
+    if agent:
+        sql += " AND agent_id=?"
+        params.append(agent)
+    if status:
+        sql += " AND status=?"
+        params.append(status)
+    if thread_id:
+        sql += " AND thread_id=?"
+        params.append(thread_id)
+    sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    rows = _db.query(sql, tuple(params))
+    items = []
+    for r in rows:
+        items.append({
+            "run_id": r["id"],
+            "agent_id": r["agent_id"],
+            "thread_id": r["thread_id"],
+            "status": r["status"],
+            "task_summary": r["task_summary"],
+            "error_category": r["error_category"],
+            "created_at": r["created_at"],
+            "finished_at": r["finished_at"],
+        })
+    return {"items": items, "limit": limit, "offset": offset, "count": len(items)}

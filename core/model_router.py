@@ -102,6 +102,35 @@ class ModelRouter:
             end_span(span)
             raise
 
+    def complete_stream(
+        self,
+        agent_id: str,
+        prompt: str,
+        system: str = "",
+        model_spec: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        json_format: bool = False,
+        json_schema: Optional[Dict[str, Any]] = None,
+    ):
+        if _mock_enabled():
+            yield MOCK_REPLIES.get(agent_id, MOCK_REPLIES["workspace_architect"])
+            return
+        provider, model = self._resolve(model_spec)
+        if provider != "ollama":
+            raise RuntimeError(
+                f"Provider '{provider}' is not available in M8 (local-only Ollama). "
+                "No cloud routing or fallback is enabled."
+            )
+        from core.llm_client import LLMClient
+
+        client = LLMClient(provider="ollama", model=model, base_url=self.base_url)
+        if json_schema is not None:
+            yield from client.complete_stream(prompt, system, timeout=self.timeout, json_schema=json_schema)
+        elif json_format:
+            yield from client.complete_stream(prompt, system, timeout=self.timeout, format_json=True)
+        else:
+            yield from client.complete_stream(prompt, system, timeout=self.timeout)
+
     def _resolve(self, model_spec: Optional[Dict[str, Any]]):
         spec = model_spec or {}
         provider = str(spec.get("provider") or AI_PROVIDER).lower()

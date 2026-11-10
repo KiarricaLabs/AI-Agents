@@ -152,7 +152,14 @@ class TeamRouter:
         """
         ctx = context or {}
         subject = str(ctx.get("subject_agent") or "").strip().lower()
-        shortlist = [subject] if subject else self.relevant(message)
+        broadcast = bool(ctx.get("broadcast"))
+        # Detect whole-team intent from natural language if flag not set and no subject
+        if not broadcast and not subject and any(p in message.lower() for p in ["whole team", "entire team", "each agent", "every agent", "all agents", "everyone respond"]):
+            broadcast = True
+        if broadcast:
+            shortlist = [s for s in self.registry.list()]
+        else:
+            shortlist = [subject] if subject else self.relevant(message)
         responses: List[Dict[str, Any]] = []
         errors: List[Dict[str, Any]] = []
         for slug in shortlist:

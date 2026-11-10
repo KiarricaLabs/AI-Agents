@@ -414,6 +414,8 @@ class Database:
             apply_agent_project_tables(c)
             from storage.migrations_agent_runs import apply_agent_runs_table
             apply_agent_runs_table(c)
+            from storage.migrations_agent_run_history import apply_agent_run_history_table
+            apply_agent_run_history_table(c)
             from storage.migrations_media_assets import apply_media_assets_table
             apply_media_assets_table(c)
             from storage.migrations_credentials import apply_credentials_table
@@ -459,6 +461,8 @@ class Database:
             "ALTER TABLE agent_projects ADD COLUMN last_error TEXT",
             "ALTER TABLE agent_projects ADD COLUMN approved_plan_hash TEXT",
             "ALTER TABLE agent_tasks ADD COLUMN task_attempt INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE conversation_memory ADD COLUMN turn_id TEXT",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_memory_turn ON conversation_memory(tenant_id, user_id, thread_id, turn_id, role) WHERE turn_id IS NOT NULL",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_projects_create_key ON agent_projects(tenant_id, user_id, idempotency_key) WHERE idempotency_key IS NOT NULL",
         ]
         for m in migrations:

@@ -921,3 +921,41 @@ describe("Task Center delete", () => {
     expect(await screen.findByText(/No tasks yet/)).toBeInTheDocument();
   });
 });
+
+describe("Live Activity", () => {
+  it("renders nonzero counts", async () => {
+    const fetchMock = makeFetch({ [API + "/runs/queue"]: () => ok({ queued_count: 2, running_count: 1, oldest_queued_age_seconds: null }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    expect(await screen.findByText(/Running: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Queued: 2/)).toBeInTheDocument();
+  });
+  it("preserves zero counts", async () => {
+    const fetchMock = makeFetch({ [API + "/runs/queue"]: () => ok({ queued_count: 0, running_count: 0, oldest_queued_age_seconds: null }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    expect(await screen.findByText(/Running: 0/)).toBeInTheDocument();
+  });
+  it("shows error on failure", async () => {
+    const fetchMock = makeFetch({ [API + "/runs/queue"]: () => fail({ detail: "error" }, 500) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    expect(await screen.findByText(/Activity unavailable/)).toBeInTheDocument();
+  });
+});
+
+describe("Recent Failures", () => {
+  it("renders failure diagnostics", async () => {
+    const fetchMock = makeFetch({
+      [API + "/agents/runs?status=failed&limit=3"]: () => ok({ items: [{ id: "1", agent_id: "tutor", error_category: "timeout", task_summary: "test task", created_at: new Date(Date.now()-5000).toISOString(), finished_at: new Date().toISOString() }] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    expect(await screen.findByText(/tutor/)).toBeInTheDocument();
+  });
+});
+

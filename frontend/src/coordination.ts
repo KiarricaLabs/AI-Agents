@@ -13,6 +13,144 @@
 export const API = (import.meta.env?.VITE_API_BASE as string | undefined) || "http://127.0.0.1:8001";
 
 // ---------------------------------------------------------------------------
+// SSE streaming helper for agent runs (V1.3.2b.3.1)
+// ---------------------------------------------------------------------------
+
+export interface RunAgentStreamCallbacks {
+  onChunk: (text: string) => void;
+  onDone: (meta: { thread_id?: string; reply?: string }) => void;
+  onError: (message: string) => void;
+}
+
+export interface RunAgentStreamRequest {
+  task: string;
+  thread_id?: string | null;
+  brand_id?: string | null;
+  work_intent?: boolean;
+  project_id?: string | null;
+  workspace_id?: string | null;
+  project_name?: string | null;
+  workspace_name?: string | null;
+  retry?: boolean;
+  tool_calls?: unknown[];
+}
+
+export async function runAgentStream(
+  name: string,
+  req: RunAgentStreamRequest,
+  callbacks: RunAgentStreamCallbacks,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = (typeof localStorage !== "undefined" && localStorage.getItem("pat_token")) || "";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+  };
+  if (token) headers["x-token"] = token;
+
+  let res: Response;
+  try {
+    res = await fetch(`${API}/agents/${encodeURIComponent(name)}/run/stream`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(req),
+      signal,
+    });
+  } catch (e) {
+    if (signal?.aborted) return;
+    callbacks.onError(e instanceof Error ? e.message : String(e));
+    return;
+  }
+
+  if (!res.ok || !res.body) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j && typeof j.detail === "string") msg = j.detail;
+    } catch {
+      /* ignore */
+    }
+    callbacks.onError(msg);
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let completed = false;
+
+  function handleEvent(raw: string) {
+    const lines = raw.split(/\r?\n/);
+    let data = "";
+    for (const line of lines) {
+      if (line.startsWith("data:")) {
+        data += line.slice(5).trimStart();
+      }
+    }
+    if (!data) return;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      callbacks.onError("Malformed event payload");
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") return;
+    if (parsed.type === "chunk" && typeof parsed.text === "string") {
+      callbacks.onChunk(parsed.text);
+    } else if (parsed.type === "done") {
+      completed = true;
+      callbacks.onDone({ thread_id: parsed.thread_id, reply: parsed.reply });
+    } else if (parsed.type === "error") {
+      callbacks.onError(typeof parsed.message === "string" ? parsed.message : "agent execution failed");
+    }
+    // unknown types ignored
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // Process complete events (delimited by blank line)
+      let idx: number;
+      while ((idx = buffer.indexOf("\n\n")) !== -1 || (idx = buffer.indexOf("\r\n\r\n")) !== -1) {
+        // find earliest delimiter
+        const lf = buffer.indexOf("\n\n");
+        const crlf = buffer.indexOf("\r\n\r\n");
+        let pos = -1;
+        let delimLen = 0;
+        if (lf !== -1 && (crlf === -1 || lf < crlf)) {
+          pos = lf;
+          delimLen = 2;
+        } else if (crlf !== -1) {
+          pos = crlf;
+          delimLen = 4;
+        }
+        if (pos === -1) break;
+        const event = buffer.slice(0, pos);
+        buffer = buffer.slice(pos + delimLen);
+        handleEvent(event);
+      }
+    }
+    // Flush remaining buffer as final event if any
+    if (buffer.trim()) {
+      handleEvent(buffer);
+    }
+  } catch (e) {
+    if (signal?.aborted) return;
+    callbacks.onError(e instanceof Error ? e.message : String(e));
+    return;
+  } finally {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+  }
+
+  if (!completed && !signal?.aborted) {
+    callbacks.onError("Stream ended without completion");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Types (mirroring the backend response shapes)
 // ---------------------------------------------------------------------------
 

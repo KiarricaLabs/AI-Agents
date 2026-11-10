@@ -301,3 +301,4 @@ Direct SQL: `sqlite3 data/pat.db "SELECT agent,event,substr(details,1,60) FROM a
 
 *Reflects the consolidated state at `c6c55af`. Re-run the cited tests/commands to re-verify
 before relying on anything.*
+

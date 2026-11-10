@@ -49,10 +49,40 @@ class MemoryService:
         return rows
 
     # --- Conversation memory (episodic, never auto-promoted) ---
-    def add_conversation(self, user_id: str, content: str, role: str = "user", thread_id: Optional[str] = None):
+    def add_conversation(self, user_id: str, content: str, role: str = "user", thread_id: Optional[str] = None, turn_id: Optional[str] = None):
         self.db.execute(
-            "INSERT INTO conversation_memory (id,tenant_id,user_id,thread_id,role,content,created_at) VALUES (?,?,?,?,?,?,?)",
-            (str(uuid.uuid4()), self.tenant_id, user_id, thread_id, role, content, _now()))
+            "INSERT INTO conversation_memory (id,tenant_id,user_id,thread_id,role,content,created_at,turn_id) VALUES (?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), self.tenant_id, user_id, thread_id, role, content, _now(), turn_id))
+
+    def add_conversation_pair(self, user_id: str, thread_id: str, user_content: str, assistant_content: str, turn_id: Optional[str] = None):
+        """Atomically persist user+assistant messages for one turn."""
+        with self.db.transaction_immediate() as c:
+            c.row_factory = __import__("sqlite3").Row
+            # check existing
+            if turn_id:
+                rows = c.execute(
+                    "SELECT role, content FROM conversation_memory WHERE tenant_id=? AND user_id=? AND thread_id=? AND turn_id=?",
+                    (self.tenant_id, user_id, thread_id, turn_id)).fetchall()
+                if rows:
+                    # validate exact pair
+                    existing = {(r["role"], r["content"]) for r in rows}
+                    expected = {("user", user_content), ("assistant", assistant_content)}
+                    if existing != expected:
+                        raise RuntimeError("conflicting conversation pair for turn_id")
+                    if len(rows) != 2:
+                        raise RuntimeError("partial conversation pair for turn_id")
+                    return
+            now = _now()
+            c.execute(
+                "INSERT INTO conversation_memory (id,tenant_id,user_id,thread_id,role,content,created_at,turn_id) VALUES (?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), self.tenant_id, user_id, thread_id, "user", user_content, now, turn_id))
+            c.execute(
+                "INSERT INTO conversation_memory (id,tenant_id,user_id,thread_id,role,content,created_at,turn_id) VALUES (?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), self.tenant_id, user_id, thread_id, "assistant", assistant_content, now, turn_id))
+            # touch thread
+            c.execute(
+                "UPDATE conversation_threads SET updated_at=? WHERE thread_id=? AND tenant_id=? AND user_id=?",
+                (now, thread_id, self.tenant_id, user_id))
 
     def list_conversation(self, user_id: str, thread_id: Optional[str] = None) -> List[Dict[str, Any]]:
         # Deterministic chronological order; `id` breaks ties on equal timestamps.

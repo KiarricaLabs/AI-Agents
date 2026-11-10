@@ -21,6 +21,7 @@ import {
   execStatusLabel,
   versionStatusLabel,
   humanizeAgent,
+  runAgentStream,
 } from "./coordination";
 
 function ok(data: unknown) {
@@ -220,5 +221,133 @@ describe("coordination API layer", () => {
     expect(versionStatusLabel("revision_requested")).toBe("Revision requested");
     expect(humanizeAgent("workspace_architect")).toBe("Workspace Architect");
     expect(humanizeAgent("")).toBe("Unknown agent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSE streaming client tests (V1.3.2b.3.1)
+// ---------------------------------------------------------------------------
+
+describe("runAgentStream", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function makeResponse(chunks: string[], status = 200, ok = true) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const c of chunks) controller.enqueue(encoder.encode(c));
+        controller.close();
+      },
+    });
+    return { ok, status, body: stream, json: () => Promise.resolve({}) } as any;
+  }
+
+  it("posts to correct URL with headers and body", async () => {
+    const spy = vi.fn(() => Promise.resolve(makeResponse(["data: {\"type\":\"done\"}\n\n"]))) as any;
+    vi.stubGlobal("fetch", spy);
+    const req = { task: "hi", thread_id: "t1" };
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("agent1", req as any, cb);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toContain("/agents/agent1/run/stream");
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(init.headers.Accept).toBe("text/event-stream");
+    expect(JSON.parse(init.body)).toEqual(req);
+  });
+
+  it("handles a chunk split across multiple reads", async () => {
+    const spy = vi.fn(() => Promise.resolve(makeResponse(["data: {\"type\":\"chunk\",\"text\":\"hel", "lo\"}\n\n"]))) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb);
+    expect(cb.onChunk).toHaveBeenCalledWith("hello");
+  });
+
+  it("handles multiple events in one read", async () => {
+    const body = "data: {\"type\":\"chunk\",\"text\":\"A\"}\n\ndata: {\"type\":\"chunk\",\"text\":\"B\"}\n\n";
+    const spy = vi.fn(() => Promise.resolve(makeResponse([body]))) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb);
+    expect(cb.onChunk).toHaveBeenNthCalledWith(1, "A");
+    expect(cb.onChunk).toHaveBeenNthCalledWith(2, "B");
+  });
+
+  it("handles CRLF delimiters", async () => {
+    const body = "data: {\"type\":\"chunk\",\"text\":\"hi\"}\r\n\r\n";
+    const spy = vi.fn(() => Promise.resolve(makeResponse([body]))) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb);
+    expect(cb.onChunk).toHaveBeenCalledWith("hi");
+  });
+
+  it("forwards completion metadata", async () => {
+    const body = "data: {\"type\":\"done\",\"thread_id\":\"t9\",\"reply\":\"hi\"}\n\n";
+    const spy = vi.fn(() => Promise.resolve(makeResponse([body]))) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb);
+    expect(cb.onDone).toHaveBeenCalledWith({ thread_id: "t9", reply: "hi" });
+  });
+
+  it("forwards sanitized backend error", async () => {
+    const body = "data: {\"type\":\"error\",\"message\":\"agent execution failed\"}\n\n";
+    const spy = vi.fn(() => Promise.resolve(makeResponse([body]))) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb);
+    expect(cb.onError).toHaveBeenCalledWith("agent execution failed");
+    expect(cb.onDone).not.toHaveBeenCalled();
+  });
+
+  it("handles HTTP errors", async () => {
+    const spy = vi.fn(() => Promise.resolve({ ok: false, status: 401, body: null, json: () => Promise.resolve({ detail: "unauthorized" }) })) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb);
+    expect(cb.onError).toHaveBeenCalledWith("unauthorized");
+  });
+
+  it("handles malformed JSON", async () => {
+    const body = "data: {not json}\n\n";
+    const spy = vi.fn(() => Promise.resolve(makeResponse([body]))) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb);
+    expect(cb.onError).toHaveBeenCalledWith("Malformed event payload");
+  });
+
+  it("handles abort", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const spy = vi.fn(() => { throw new DOMException("aborted", "AbortError"); }) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb, controller.signal);
+    expect(cb.onError).not.toHaveBeenCalled();
+    expect(cb.onDone).not.toHaveBeenCalled();
+  });
+
+  it("errors when stream ends without done", async () => {
+    const body = "data: {\"type\":\"chunk\",\"text\":\"x\"}\n\n";
+    const spy = vi.fn(() => Promise.resolve(makeResponse([body]))) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb);
+    expect(cb.onError).toHaveBeenCalledWith("Stream ended without completion");
+  });
+
+  it("does not duplicate chunks", async () => {
+    const body = "data: {\"type\":\"chunk\",\"text\":\"z\"}\n\n";
+    const spy = vi.fn(() => Promise.resolve(makeResponse([body, ""]))) as any;
+    vi.stubGlobal("fetch", spy);
+    const cb = { onChunk: vi.fn(), onDone: vi.fn(), onError: vi.fn() };
+    await runAgentStream("a", { task: "x" } as any, cb);
+    expect(cb.onChunk).toHaveBeenCalledTimes(1);
   });
 });

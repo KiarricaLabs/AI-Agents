@@ -1,14 +1,15 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { diffLines } from "./diff";
 import { Markdown } from "./markdown";
 import { KNOWN_SAMPLE_IDS } from "./knownSamples";
 import { statusLabel, priorityText } from "./uiText";
-import { proposeTeamGoal, validateTeamGoalDraft } from "./coordination";
+import { proposeTeamGoal, validateTeamGoalDraft, runAgentStream } from "./coordination";
 import { TeamMemory } from "./team_memory";
 import { TeamChat } from "./team_chat";
 import { CommandCenterSidebar } from "./command_center_sidebar";
 import { WorkflowOverview } from "./workflow_overview";
 import { StructuredProjects } from "./structured_projects";
+import { VoicePanel } from "./voice/VoicePanel";
 import "./App.css";
 
 const API = (import.meta.env.VITE_API_BASE as string | undefined) || "http://127.0.0.1:8001";
@@ -21,10 +22,11 @@ const WS_INTENT_RE = /(?:create|make|set up|start|add|open|new|build|establish)[
 const SAMPLE_VISIBLE_KEY = "pat.sampleData.visible";
 const SAMPLE_REVEALED_KEY = "pat.sampleData.revealed";
 
-type Tab = "home" | "projects" | "tasks" | "settings";
+type Tab = "home" | "agents" | "projects" | "tasks" | "settings";
 
 const NAV: { id: Tab; icon: string; label: string }[] = [
   { id: "home", icon: "home", label: "Home" },
+  { id: "agents", icon: "bot", label: "Agents" },
   { id: "projects", icon: "briefcase", label: "Projects" },
   { id: "tasks", icon: "checklist", label: "Task Center" },
   { id: "settings", icon: "gear", label: "Settings" },
@@ -32,6 +34,7 @@ const NAV: { id: Tab; icon: string; label: string }[] = [
 
 const NAV_HINTS: Record<Tab, string> = {
   home: "Chat",
+  agents: "Run",
   projects: "Plans",
   tasks: "Review",
   settings: "Learn",
@@ -272,6 +275,8 @@ function Stat({ icon, label, value }: { icon: string; label: string; value: numb
   );
 }
 
+const STANDARD_AGENTS = ["strategist", "communications", "tutor", "executive_assistant", "workspace_architect", "soundboard"];
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("home");
   // Task Center <-> chat linkage: open a conversation thread in the group chat.
@@ -285,6 +290,8 @@ export default function App() {
   // Projects tab is segmented: "browse" (workspaces/projects) vs "proposals".
   const [projectsSection, setProjectsSection] = useState<"browse" | "proposals">("browse");
   const [health, setHealth] = useState("checking...");
+  const [systemReady, setSystemReady] = useState<"checking" | "ready" | "not-ready" | "unavailable">("checking");
+  const [queuedCount, setQueuedCount] = useState<number | null>(null);
   const [workspaces, setWorkspaces] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [goals, setGoals] = useState<any[]>([]);
@@ -302,8 +309,69 @@ export default function App() {
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [task, setTask] = useState("");
   const [agentRunning, setAgentRunning] = useState(false);
+  const [agentStreaming, setAgentStreaming] = useState(false);
   const [agentResult, setAgentResult] = useState<any>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const runTokenRef = useRef(0);
+  const statusInFlightRef = useRef(false);
   const [agentError, setAgentError] = useState("");
+  const [recentRuns, setRecentRuns] = useState<any[]>([]);
+  const [recentRunsLoading, setRecentRunsLoading] = useState(false);
+  const [recentRunsError, setRecentRunsError] = useState("");
+  const [recentAgentFilter, setRecentAgentFilter] = useState("");
+  const [recentStatusFilter, setRecentStatusFilter] = useState("");
+  const [recentOffset, setRecentOffset] = useState(0);
+  const RECENT_LIMIT = 10;
+  const [staleRuns, setStaleRuns] = useState<any[]>([]);
+  const [staleLoading, setStaleLoading] = useState(false);
+  const [approvalsPreview, setApprovalsPreview] = useState<any[]>([]);
+  const [queueInfo, setQueueInfo] = useState<any>(null);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueError, setQueueError] = useState("");
+  const [recentFailures, setRecentFailures] = useState<any[]>([]);
+  const [failuresLoading, setFailuresLoading] = useState(false);
+  const [failuresError, setFailuresError] = useState("");
+  const [threadRuns, setThreadRuns] = useState<any[]>([]);
+  // Clear stale result/error when the selected agent changes; preserve task input.
+  useEffect(() => {
+    setAgentResult(null);
+    setAgentError("");
+  }, [selectedAgent]);
+
+  const loadRecentRuns = async () => {
+    setRecentRunsLoading(true);
+    setRecentRunsError("");
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", String(RECENT_LIMIT));
+      params.set("offset", String(recentOffset));
+      if (recentAgentFilter) params.set("agent", recentAgentFilter);
+      if (recentStatusFilter) params.set("status", recentStatusFilter);
+      const r = await fetch(`${API}/agents/runs?${params.toString()}`, { headers: { "x-token": localStorage.getItem("pat_token") || "" } });
+      if (r.ok) {
+        const data = await r.json();
+        setRecentRuns(data.items || []);
+      } else {
+        setRecentRunsError("Failed to load history.");
+      }
+    } catch {
+      setRecentRunsError("Failed to load history.");
+    } finally {
+      setRecentRunsLoading(false);
+    }
+  };
+  useEffect(() => { if (tab === "agents") loadRecentRuns(); }, [tab, recentOffset, recentAgentFilter, recentStatusFilter]);
+  const loadStaleRuns = async () => {
+    setStaleLoading(true);
+    try { const r = await fetch(`${API}/runs/stale`, { headers: { "x-token": localStorage.getItem("pat_token") || "" } }); if (r.ok) { const d = await r.json(); setStaleRuns(d.stale || d.items || []); } } catch {} finally { setStaleLoading(false); }
+  };
+  const loadApprovalsPreview = async () => {
+    try { const r = await fetch(`${API}/work/proposals?status=pending&limit=3`, { headers: { "x-token": localStorage.getItem("pat_token") || "" } }); if (r.ok) { const d = await r.json(); setApprovalsPreview(d.items || d.proposals || []); } } catch {}
+  };
+  const loadQueueInfo = async () => { setQueueLoading(true); setQueueError(""); try { const r = await fetch(`${API}/runs/queue`, { headers: { "x-token": localStorage.getItem("pat_token") || "" } }); if (!r.ok) throw new Error(); const d = await r.json(); if (typeof d.running_count!=="number" || typeof d.queued_count!=="number") throw new Error(); setQueueInfo(d); } catch { setQueueError("Activity unavailable."); } finally { setQueueLoading(false); } };
+  const loadRecentFailures = async () => { setFailuresLoading(true); setFailuresError(""); try { const r = await fetch(`${API}/agents/runs?status=failed&limit=3`, { headers: { "x-token": localStorage.getItem("pat_token") || "" } }); if (!r.ok) throw new Error(); const d = await r.json(); setRecentFailures(d.items || []); } catch { setFailuresError("Failures unavailable."); } finally { setFailuresLoading(false); } };
+  const loadThreadRuns = async () => { const tid = localStorage.getItem("ai-team-shared-thread"); if (!tid) return; try { const r = await fetch(`${API}/agents/runs?thread_id=${encodeURIComponent(tid)}&limit=5`, { headers: { "x-token": localStorage.getItem("pat_token") || "" } }); if (r.ok) { const d = await r.json(); setThreadRuns(d.items || []); } } catch {} };
+  useEffect(() => { if (tab === "home") { loadStaleRuns(); loadApprovalsPreview(); loadQueueInfo(); loadRecentFailures(); loadThreadRuns(); } }, [tab]);
   // --- Chunk 5: conversation -> assignment/deliverable draft extraction ---
   const [extractBusy, setExtractBusy] = useState(false);
   const [extractError, setExtractError] = useState("");
@@ -446,6 +514,43 @@ export default function App() {
   const [planDelegateBusy, setPlanDelegateBusy] = useState(false);
   const [planDelegateMsg, setPlanDelegateMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    return () => { streamAbortRef.current?.abort(); };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const refreshStatus = async () => {
+      if (statusInFlightRef.current) return;
+      statusInFlightRef.current = true;
+      try {
+        const r = await fetch(`${API}/ready`);
+        if (cancelled) return;
+        if (!r.ok) { setSystemReady("unavailable"); setQueuedCount(null); return; }
+        const d = await r.json().catch(() => ({}));
+        if (cancelled) return;
+        setSystemReady(d && d.ready ? "ready" : "not-ready");
+        try {
+          const qr = await fetch(`${API}/runs/queue`);
+          if (cancelled) return;
+          if (qr.ok) {
+            const qd = await qr.json().catch(() => ({}));
+            if (!cancelled) setQueuedCount(typeof qd.queued_count === "number" ? qd.queued_count : null);
+          } else {
+            if (!cancelled) setQueuedCount(null);
+          }
+        } catch {
+          if (!cancelled) setQueuedCount(null);
+        }
+      } catch {
+        if (!cancelled) { setSystemReady("unavailable"); setQueuedCount(null); }
+      } finally {
+        statusInFlightRef.current = false;
+      }
+    };
+    refreshStatus();
+    const id = setInterval(refreshStatus, 15000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
   useEffect(() => {
     try {
       localStorage.setItem(SAMPLE_VISIBLE_KEY, sampleDataVisible ? "1" : "0");
@@ -1064,6 +1169,59 @@ export default function App() {
   // duplicate user message for an already-saved task. It never repeats
   // consequential tool calls, proposals, or execution.
   const performRun = async (submitted: string, payload: any) => {
+    const eligible =
+      !payload?.work_intent &&
+      !(Array.isArray(payload?.tool_calls) && payload.tool_calls.length) &&
+      STANDARD_AGENTS.includes(selectedAgent);
+    const token = ++runTokenRef.current;
+    if (eligible) {
+      const controller = new AbortController();
+      streamAbortRef.current = controller;
+      setAgentRunning(true);
+      setAgentStreaming(true);
+      setAgentError("");
+      setAgentResult({ reply: "", thread_id: payload?.thread_id || null });
+      setAgentGenError(null);
+      try {
+        await runAgentStream(selectedAgent, payload, {
+          onChunk: (text) => {
+            if (runTokenRef.current !== token) return;
+            setAgentResult((prev: any) => ({ ...(prev || {}), reply: (prev?.reply || "") + text }));
+          },
+          onDone: (meta) => {
+            if (runTokenRef.current !== token) return;
+            setAgentResult((prev: any) => ({ ...(prev || {}), reply: meta.reply ?? prev?.reply ?? "", thread_id: meta.thread_id ?? prev?.thread_id }));
+            if (meta.thread_id) setThreadIds((prev) => ({ ...prev, [selectedAgent]: meta.thread_id as string }));
+            setAgentStreaming(false);
+            setAgentRunning(false);
+            loadRecentRuns();
+          },
+          onError: (msg) => {
+            if (runTokenRef.current !== token) return;
+            setAgentError(msg);
+            setAgentStreaming(false);
+            setAgentRunning(false);
+            loadRecentRuns();
+          },
+        }, controller.signal);
+        if (controller.signal.aborted) {
+          setAgentStreaming(false);
+          setAgentRunning(false);
+        } else if (runTokenRef.current === token) {
+          // ensure terminal if stream ended without callback
+          setAgentStreaming(false);
+          setAgentRunning(false);
+        }
+      } catch (e: any) {
+        if (runTokenRef.current !== token) return;
+        setAgentError(e?.message || "network error");
+        setAgentStreaming(false);
+        setAgentRunning(false);
+      } finally {
+        if (streamAbortRef.current === controller) streamAbortRef.current = null;
+      }
+      return;
+    }
     try {
       const r = await fetch(`${API}/agents/${selectedAgent}/run`, {
         method: "POST",
@@ -1086,6 +1244,7 @@ export default function App() {
         }
         setTask(submitted); // preserve the message on a rejected submission
         setAgentGenError(null);
+        loadRecentRuns();
       } else {
         // Record a structured generation failure (if any) for the failure panel
         // and one-click retry, without losing the honest reply body below.
@@ -1124,6 +1283,7 @@ export default function App() {
           setContextCounts((prev) => ({ ...prev, [selectedAgent]: body.context_messages }));
         }
         loadConvos();
+        loadRecentRuns();
       }
     } catch (e: any) {
       setAgentError(e?.message || "network error");
@@ -2023,6 +2183,22 @@ export default function App() {
             {status === "checking" ? "Connecting…" : status === "online" ? "Connected" : "Offline"}
           </span>
           <span className="status__chip">On-device · Ollama</span>
+          <span className="status__chip" data-testid="system-status">
+            {systemReady === "checking" ? "System: checking…" : systemReady === "ready" ? `System: ready${queuedCount !== null && queuedCount > 0 ? ` · ${queuedCount} queued` : ""}` : systemReady === "not-ready" ? "System: not ready" : "System: unavailable"}
+          </span>
+          {agentStreaming && (
+            <span className="status__chip" data-testid="agent-streaming-indicator">Agent is responding…</span>
+          )}
+          {agentStreaming && (
+            <button
+              className="status__chip"
+              data-testid="agent-stop-button"
+              type="button"
+              onClick={() => { streamAbortRef.current?.abort(); }}
+            >
+              Stop
+            </button>
+          )}
         </div>
       </header>
 
@@ -2111,6 +2287,7 @@ export default function App() {
               <div className="command-center__main">
                 <div className="workspace-label"><span>01</span><div><strong>Group chat</strong><small>Coordinate with your whole AI team</small></div></div>
                 <TeamChat onOpenTasks={() => setTab("tasks")} />
+                <VoicePanel />
 
                 {(() => {
                   const pendingApprovals = (feed || []).filter((p) => p && p.status === "proposed").length;
@@ -2138,8 +2315,99 @@ export default function App() {
               </div>
               <div className="command-center__rail">
                 <CommandCenterSidebar />
+                <div className="command-card" style={{ marginTop: 12 }}>
+                  <h4 style={{ margin: "0 0 8px" }}>Stale Runs {staleRuns.length > 0 ? `· ${staleRuns.length}` : ""}</h4>
+                  {staleLoading ? <div>Loading…</div> : staleRuns.length === 0 ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No stale runs.</div> : staleRuns.slice(0,5).map((r: any, i: number) => (
+                    <div key={i} style={{ fontSize: 12, padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
+                      {r.agent_id || r.agent || r.id} · {r.started_at ? Math.round((Date.now() - new Date(r.started_at).getTime())/1000/60) + "m ago" : ""}
+                    </div>
+                  ))}
+                </div>
+                <div className="command-card" style={{ marginTop: 12 }}>
+                  <h4 style={{ margin: "0 0 8px" }}>Activity</h4>
+                  {queueLoading ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading…</div> : queueError ? <div style={{ fontSize: 12, color: "var(--red)" }}>{queueError}</div> : queueInfo ? <div style={{ fontSize: 12, display: "flex", gap: 12 }}><span>Running: {queueInfo.running_count}</span><span>Queued: {queueInfo.queued_count}</span></div> : <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Unavailable</div>}
+                </div>
+                <div className="command-card" style={{ marginTop: 12 }}>
+                  <h4 style={{ margin: "0 0 8px" }}>Recent Failures</h4>
+                  {failuresLoading ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading…</div> : failuresError ? <div style={{ fontSize: 12, color: "var(--red)" }}>{failuresError}</div> : recentFailures.length===0 ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No recent failures.</div> : recentFailures.map((f:any,i:number)=>{
+                    const dur = f.created_at && f.finished_at ? Math.round((new Date(f.finished_at).getTime()-new Date(f.created_at).getTime())/1000) : null;
+                    return (<div key={i} style={{ fontSize: 12, padding: "6px 0", borderBottom: "1px solid var(--border)" }}><div style={{ display: "flex", justifyContent: "space-between" }}><span><span style={{color:"var(--red)"}}>●</span> {f.agent_id} · {f.error_category || "failed"}</span><span style={{ color: "var(--text-faint)" }}>{f.finished_at ? new Date(f.finished_at).toLocaleTimeString() : ""}{dur!==null?` · ${dur}s`:""}</span></div>{f.task_summary && <div style={{ color: "var(--text-muted)", marginTop: 2, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.task_summary.slice(0,80)}</div>}</div>)
+                  })}
+                  {recentFailures.length>0 && <button className="btn btn--ghost" style={{ marginTop: 8, fontSize: 11 }} onClick={()=>{ setTab("agents" as any); setRecentStatusFilter("failed"); setRecentOffset(0); }}>View all failed runs</button>}
+                </div>
+                <div className="command-card" style={{ marginTop: 12 }}>
+                  <h4 style={{ margin: "0 0 8px" }}>Thread Activity</h4>
+                  {threadRuns.length===0 ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No runs for this thread.</div> : threadRuns.map((r:any,i:number)=><div key={i} style={{ fontSize: 12, padding: "4px 0", borderBottom: "1px solid var(--border)" }}>{r.agent_id} · {r.status}</div>)}
+                </div>
+                <div className="command-card" style={{ marginTop: 12 }}>
+                  <h4 style={{ margin: "0 0 8px" }}>Approvals {approvalsPreview.length > 0 ? `· ${approvalsPreview.length}` : ""}</h4>
+                  {approvalsPreview.length === 0 ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No pending approvals.</div> : approvalsPreview.map((p: any, i: number) => (
+                    <div key={i} style={{ fontSize: 12, padding: "4px 0", borderBottom: "1px solid var(--border)" }}>{p.title || p.key || p.id}</div>
+                  ))}
+                  {approvalsPreview.length > 0 && <button className="btn btn--ghost" style={{ marginTop: 8 }} onClick={()=>setTab("tasks" as any)}>View inbox</button>}
+                </div>
               </div>
             </div>
+          </section>
+        )}
+
+                {tab === "agents" && (
+          <section className="panel" data-testid="agents-tab">
+            <div className="panel__head"><h2>Agent execution</h2></div>
+            <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+              <select className="select" value={selectedAgent} onChange={(e) => setSelectedAgent(e.target.value)} aria-label="Select agent" data-testid="agent-select">
+                <option value="">Select an agent…</option>
+                {STANDARD_AGENTS.map((a) => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
+            </div>
+            <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+              <input className="input" value={task} onChange={(e) => setTask(e.target.value)} placeholder="Enter a task…" data-testid="agent-task" />
+              <button className="btn btn--primary" onClick={runAgent} disabled={agentRunning || !selectedAgent || !task.trim()} data-testid="agent-run">Run</button>
+              {agentStreaming && (
+                <button className="btn" data-testid="agent-stop-button" type="button" onClick={() => { streamAbortRef.current?.abort(); }}>Stop</button>
+              )}
+            </div>
+            {agentStreaming && <div data-testid="agent-streaming-indicator">Agent is responding…</div>}
+            {agentError && <div className="error" data-testid="agent-error">{agentError}</div>}
+            {agentResult && agentResult.reply && (
+              <div className="panel" data-testid="agent-result">
+                <Markdown source={agentResult.reply} />
+              </div>
+            )}
+            <section className="panel" data-testid="recent-runs">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h3>Recent Runs</h3>
+                <button className="btn" onClick={loadRecentRuns} disabled={recentRunsLoading}>Refresh</button>
+              </div>
+              <div style={{ display: "flex", gap: 8, margin: "8px 0" }}>
+                <input placeholder="agent filter" value={recentAgentFilter} onChange={(e) => { setRecentAgentFilter(e.target.value); setRecentOffset(0); }} />
+                <select value={recentStatusFilter} onChange={(e) => { setRecentStatusFilter(e.target.value); setRecentOffset(0); }}>
+                  <option value="">all statuses</option>
+                  <option value="completed">completed</option>
+                  <option value="failed">failed</option>
+                  <option value="rejected">rejected</option>
+                  <option value="cancelled">cancelled</option>
+                </select>
+                {(recentAgentFilter || recentStatusFilter) && (
+                  <button className="btn" onClick={() => { setRecentAgentFilter(""); setRecentStatusFilter(""); setRecentOffset(0); }}>Clear</button>
+                )}
+              </div>
+              {recentRunsLoading && <div>Loading…</div>}
+              {recentRunsError && <div className="error">{recentRunsError} <button className="btn" onClick={loadRecentRuns}>Retry</button></div>}
+              {!recentRunsLoading && !recentRunsError && recentRuns.length === 0 && <div>No runs yet.</div>}
+              {recentRuns.map((run) => (
+                <div key={run.run_id} style={{ padding: "6px 0", borderBottom: "1px solid #eee" }}>
+                  <strong>{run.agent_id}</strong> — {run.status} — {run.task_summary}
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>{run.created_at}</div>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button className="btn" disabled={recentOffset === 0} onClick={() => setRecentOffset((o) => Math.max(0, o - RECENT_LIMIT))}>Prev</button>
+                <button className="btn" disabled={recentRuns.length < RECENT_LIMIT} onClick={() => setRecentOffset((o) => o + RECENT_LIMIT)}>Next</button>
+              </div>
+            </section>
           </section>
         )}
 
